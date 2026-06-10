@@ -1,0 +1,26 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Logs and temporary captures
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+video_frame_*.png
+video_dense_*.jpg
+video_contact_sheet.jpg
+
+# Local generated archives/build outputs
+*.zip
+*.7z
+*.rar
+*.gma
+
+# Keep the Garry's Mod addon source tracked, but do not track local runtime dumps.
+garrysmod/data/
+garrysmod/cache/

@@ -1,0 +1,14 @@
+{
+  "title": "MC Mob in GMod Prototype",
+  "type": "npc",
+  "tags": ["fun", "roleplay"],
+  "ignore": [
+    "*.psd",
+    "*.blend",
+    "*.bbmodel",
+    "*.qc",
+    "*.smd",
+    "*.dmx",
+    ".git/*"
+  ]
+}
