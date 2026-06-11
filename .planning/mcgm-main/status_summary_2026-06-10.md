@@ -286,16 +286,20 @@
   - 迷宫绕路中途 `path_no_goal_progress` 放弃 = 直线距离 watchdog 误杀合法绕路；修为节点推进刷新 watchdog + timeout 0.9→1.2。
   - flatgrass 围墙窗台等窄 Source 路完全走不了 = HasSupport 只采格子中心的回归；修为中心悬空时补 ±12u 轴向偏移采样。
   - `path_hop` 状态有但不起跳 = 起跳 tick 在地面走了 Approach 把 SetVelocity 竖直速度冲掉的回归；修为 `BlockHopLaunchWindow=0.15s` 起跳保护窗强制空中转向。
-- **第十七轮用户复测**：绕路 ✅、窄沿 ✅；hop 仍不起跳（截图证实整砖 hop 从未离地、半砖"成功"是 StepHeight 走上去的）→ **第十八轮（最新，待复测）**：
+- **第十七轮用户复测**：绕路 ✅、窄沿 ✅；hop 仍不起跳（截图证实整砖 hop 从未离地、半砖"成功"是 StepHeight 走上去的）→ **第十八轮（已复测，继续第十九轮）**：
   - hop 真根因 = NextBot 落地态地面解算把 `loco:SetVelocity` 直写的竖直速度当帧压回（SetVelocity 单独起跳从未生效过）。修：`loco:SetJumpHeight(45)` + `loco:Jump()` 切跳跃态后再 SetVelocity 覆盖弹道。
   - 删 0.15s 保护窗 → 查 `loco:IsClimbingOrJumping()`（起跳当帧强制真）；重跳延时挂 `OnLandOnGround`（`BMBLastLandTime`），不轮询。
   - 新增**物理枪持握一等状态 `BMBHeld`**：抓羊抽搐/陷地 vs 安静悬挂 = 被抓瞬间 loco 醒/睡。持握中 loco 每 tick 缴械、行为挂起（state=held）、移动入口拒新；拾起 Interrupt 掐掉 move 协程（hop 计数随局部状态销毁，held×hop 握手）；松手 `SetVelocity(0,0,-10)` 踹醒睡眠 loco。
   - 查证 MCSWEP：半砖 `BlockIsFullCube=false` → A* 当空气，混半砖地形会跳整格（观感问题，待 `MC.BlockBoxes` 细化）。
+- **第十八轮用户复测**：hop 有抬脚/离地动作，但呈现"一陷一陷"的小跳节奏，最终仍上不去；物理枪抽动明显改善但还有轻微弹簧感 → **第十九轮（最新，待复测）**：
+  - BlockHop 改用 NextBot 原生 `loco:JumpAcrossGap(landingGoal, landingForward)`，落点给目标 foot cell 的地表点（`target.z - halfBlock`），`SetJumpHeight` 抬到至少 58u。原生 hop 期间只 FaceTowards + 刷 watchdog，不再 `SetVelocity` 空中弱控；老引擎缺接口才 fallback 到 `Jump()+SetVelocity`。
+  - 物理枪 held 每 tick 缴械升级为 `SetVelocity(vector_origin)` + `SetGravity(0)` + `SetDesiredSpeed(0)`；pickup 保存原 gravity，drop 恢复后向下踹醒。
+  - 若仍不上台，下轮先打 0.5s 逐 tick 日志（`IsClimbingOrJumping`、`IsOnGround`、`vel.z`、`pos.z`）区分 jump height/API、过早落地判定、hull 碰撞三类问题。
 
 ## Current Next Checklist
 
-1. **hop**：右键高一格平台应看到真实起跳动作并上台；贴墙站立也能跳；撞面掉回约 0.25s 重跳、3 次 `path_hop_fail`。
-2. **物理枪**：抓走路中/发呆中的羊都不抽不陷地（state=held）；拎着不蹬腿；松手（含半空松手、原本安静悬挂的）正常下落恢复游荡；hop 中被抓、松手不误报路径失败。
+1. **hop**：右键高一格平台应看到 `JumpAcrossGap` 触发的真实跳跃并上台，不再一陷一陷；贴墙站立也能跳；撞面掉回约 0.25s 重跳、3 次 `path_hop_fail`。
+2. **物理枪**：抓走路中/发呆中的羊都不抽不陷地，也没有轻微弹簧感（state=held，desired speed=0）；拎着不蹬腿；松手（含半空松手、原本安静悬挂的）正常下落恢复游荡；hop 中被抓、松手不误报路径失败。
 3. 回归：绕路、窄沿、不卡顿、不跳楼、正常下落、走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、mock 回退。
 4. 下一步仍是 Flee 坑/封闭结构采样：枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
 5. 粒子/吃草动画/音效、半砖 `MC.BlockBoxes` 细化放在移动层稳定之后。

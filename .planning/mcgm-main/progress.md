@@ -521,3 +521,21 @@
   - `CLAUDE.md`
   - `docs/STATE.md`
   - `.planning/mcgm-main/*`
+
+### 第十九轮：JumpAcrossGap 原生 hop + held gravity/desired speed 归零（2026-06-11，待复测）
+
+- 用户复测第十八轮：BlockHop 有动作、脚会离地一点，但呈现"一陷一陷"的小跳节奏，最终仍上不去；物理枪抓取抽动已经明显好很多，但还残留轻微弹簧感。
+- 采用 Fable 建议：先不用继续手术式 `Jump()` + `SetVelocity`，改用 NextBot 原生 `loco:JumpAcrossGap(landingGoal, landingForward)`。它会一次性计算到指定落点的弹道并进入跳跃状态，避免 Jump 内部冲量、SetVelocity 和地面解算在同 tick 互相覆盖。
+- `bmb_base_mob.lua`
+  - 新增 `BlockHopJumpHeight = 58`。
+  - `StartBMBBlockHop` 优先 `SetJumpHeight(max(BlockHopApex, BlockHopJumpHeight))` 后 `JumpAcrossGap(landing, forward)`；落点用目标 foot cell 的底面/地表点（`target.z - blockSize * 0.5`），朝向用目标方向的水平单位向量。
+  - 原生 hop 返回 `true`，`MoveAlongPath` 记录 `hopNative[nodeIndex]`；原生 hop 空中只 `FaceTowards` + 刷新 watchdog，不再 `SteerBMBInAir` 写水平速度。老引擎没有 `JumpAcrossGap` 时才 fallback 到第十八轮 `Jump()+SetVelocity`。
+  - 物理枪 held 期间每 tick 进一步 `SetGravity(0)` + `SetDesiredSpeed(0)` + `SetVelocity(vector_origin)`；pickup 保存原 gravity，drop 恢复后再向下踹醒。
+- `CLAUDE.md`：BlockHop 约定改为优先 `JumpAcrossGap`；物理枪持握约定加入 `SetGravity(0)` / `SetDesiredSpeed(0)`。
+- 若第十九轮仍失败，下轮优先加 0.5s 逐 tick hop 诊断日志（`IsClimbingOrJumping`、`IsOnGround`、`vel.z`、`pos.z`）分型，再决定调 `BlockHopJumpHeight`、落点 z，还是查 hull 碰撞。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`

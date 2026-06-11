@@ -39,6 +39,7 @@ ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
 ENT.StepHeight = 28
 ENT.BlockHopApex = 45
+ENT.BlockHopJumpHeight = 58
 ENT.BlockHopTriggerDistance = 42
 ENT.BlockHopAirSteerStrength = 0.08
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
@@ -305,6 +306,15 @@ function ENT:Think()
             -- 物理枪持握中：loco 每 tick 缴械。否则 loco 醒着时重力下拽 + 出固体
             -- 解算上顶，和物理枪的持握点拉扯 = 上下抽搐/陷地循环；loco 恰好睡着的
             -- 个体则不抽——哪只抽哪只挂取决于被抓瞬间 loco 醒睡，看着随机
+            if self.loco.SetGravity then
+                self.loco:SetGravity(0)
+            end
+
+            if self.loco.SetDesiredSpeed then
+                self.loco:SetDesiredSpeed(0)
+                self:SetNWFloat("BMBDesiredSpeed", 0)
+            end
+
             self.loco:SetVelocity(vector_origin)
         else
             self:CheckPhysicsImpacts()
@@ -329,6 +339,11 @@ function ENT:OnBMBPhysgunPickup(_)
     if self.BMBHeld then return end
 
     self.BMBHeld = true
+    if self.loco.GetGravity and self.loco.SetGravity then
+        self.BMBHeldGravity = self.loco:GetGravity()
+        self.loco:SetGravity(0)
+    end
+
     self:InterruptBMBMovement()
     self:MaintainBMBMoveSpeed(0)
     self:SetBMBMoveMode("held")
@@ -339,6 +354,11 @@ function ENT:OnBMBPhysgunDrop(_)
     if not self.BMBHeld then return end
 
     self.BMBHeld = false
+    if self.loco.SetGravity and self.BMBHeldGravity then
+        self.loco:SetGravity(self.BMBHeldGravity)
+    end
+
+    self.BMBHeldGravity = nil
     -- 踹一脚向下速度：被抓瞬间 loco 若在睡眠（零速 + 自认在地面）物理更新被短路，
     -- 松手悬空也不掉；这脚把它踹醒，挂天上/半空松手的都正常受重力下落
     self.loco:SetVelocity(Vector(0, 0, -10))
@@ -1001,35 +1021,56 @@ function ENT:StartBMBBlockHop(target, speed)
     if gravity <= 0 then gravity = 600 end
 
     local apex = self.BlockHopApex or 45
+    local jumpHeight = math.max(apex, self.BlockHopJumpHeight or 58)
     local verticalSpeed = math.sqrt(2 * gravity * apex)
     local velocity = self:GetVelocity()
     local horizontal = Vector(velocity.x, velocity.y, 0)
     local direction = Vector(target.x - self:GetPos().x, target.y - self:GetPos().y, 0)
+    local forward = Vector(direction.x, direction.y, 0)
 
     -- 贴墙起跳时水平速度近零，纯保留水平速度会原地直上直下、永远上不去：
     -- 朝目标方向的分量不足行走速度就补足，已有横向速度照旧保留
-    if direction:LengthSqr() > 1 then
-        direction:Normalize()
+    if forward:LengthSqr() > 1 then
+        forward:Normalize()
 
         local minForward = speed or self.WalkSpeed
-        local forward = horizontal:Dot(direction)
+        local forwardSpeed = horizontal:Dot(forward)
 
-        if forward < minForward then
-            horizontal = horizontal + direction * (minForward - forward)
+        if forwardSpeed < minForward then
+            horizontal = horizontal + forward * (minForward - forwardSpeed)
+        end
+    else
+        forward = self:GetForward()
+        forward.z = 0
+
+        if forward:LengthSqr() <= 1 then
+            forward = Vector(1, 0, 0)
+        else
+            forward:Normalize()
         end
     end
 
-    -- 关键：必须先 loco:Jump() 把 locomotion 切进跳跃态——落地态的地面解算会在
-    -- 当帧把直写的竖直速度压回地面，表现就是"有 path_hop 状态但人不起跳"
-    -- （半砖那两次"跳跃成功"其实是 StepHeight=28 > 18 走上去的）。
-    -- Jump 之后再用 SetVelocity 覆盖成固定弹道：45u 顶点 + 朝目标补足的水平分量
     if self.loco.SetJumpHeight then
-        self.loco:SetJumpHeight(apex)
+        self.loco:SetJumpHeight(jumpHeight)
     end
 
+    if self.loco.JumpAcrossGap then
+        local blockSize = BMB.Config.BlockSize or 36
+        local landing = Vector(target.x, target.y, target.z - blockSize * 0.5)
+
+        -- JumpAcrossGap 是 NextBot 原生"跳到指定落点"原子操作：它自己进跳跃态、
+        -- 算水平/竖直速度、处理落地，避免 Jump 和 SetVelocity 同 tick 互相覆盖。
+        self.loco:JumpAcrossGap(landing, forward)
+        self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
+        return true
+    end
+
+    -- fallback：老版本没有 JumpAcrossGap 时才保留手写弹道。
     self.loco:Jump()
     self.loco:SetVelocity(Vector(horizontal.x, horizontal.y, verticalSpeed))
     self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
+
+    return false
 end
 
 function ENT:SteerBMBInAir(target, speed, progressWatch)
@@ -1051,6 +1092,19 @@ function ENT:SteerBMBInAir(target, speed, progressWatch)
             velocity.y + (targetVelocity.y - velocity.y) * strength,
             velocity.z
         ))
+    end
+
+    if progressWatch then
+        progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+    end
+end
+
+function ENT:MaintainBMBNativeHop(target, progressWatch)
+    local current = self:GetPos()
+    local aim = Vector(target.x, target.y, current.z)
+
+    if flatDistanceSqr(current, aim) > 1 then
+        self.loco:FaceTowards(aim)
     end
 
     if progressWatch then
@@ -1095,6 +1149,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local goalProgressWatch = self:StartBMBGoalProgressWatch(final)
     local hopStartedAt = {}
     local hopAttempts = {}
+    local hopNative = {}
 
     while CurTime() < timeout do
         if self.BMBMoveInterrupt then return false end
@@ -1206,7 +1261,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
             if not hopStartedAt[nodeIndex] and onGround and not jumping
                 and flatDistance(current, actionNode) <= triggerDistance then
-                self:StartBMBBlockHop(actionNode, pathSpeed)
+                hopNative[nodeIndex] = self:StartBMBBlockHop(actionNode, pathSpeed)
                 hopStartedAt[nodeIndex] = CurTime()
                 hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
                 -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
@@ -1216,7 +1271,11 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             -- 空中转向只在跳跃态/真离地时接管（它会刷新 no-progress watchdog，
             -- 落地贴墙阶段还用它等于把卡死兜底关掉）
             if jumping or not onGround then
-                self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+                if hopNative[nodeIndex] then
+                    self:MaintainBMBNativeHop(carrot, progressWatch)
+                else
+                    self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+                end
             else
                 self:SteerTowards(carrot, progressWatch)
             end

@@ -319,3 +319,11 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **状态查询永远优于时间窗**：保护窗（0.15s）是在没有状态可查时用时间猜物理；`IsClimbingOrJumping` 是引擎真值。两者并存时"不一致谁说了算"就是隐患，有真值就删掉魔法数。同理重跳计时挂 `OnLandOnGround` 回调而非轮询 IsOnGround。
 - **物理枪 vs loco 的拉扯**：抓起的 nextbot 抽不抽取决于被抓瞬间 loco 醒/睡（醒 = 重力下拽 + 出固体上顶 + 物理枪回拉的循环；睡 = 物理更新短路、安静悬挂连掉都不掉）。修法不是逐 bug 补，而是"被持握"升一等状态：loco 每 tick 缴械 + 行为挂起 + 移动入口拒新 + 松手向下踹一脚唤醒。GMod 沙盒里物理枪抓 mob 是高频操作，所有 mob 都从 base 免费继承这套。
 - **held 与移动状态必须握手**：拾起时 Interrupt 掐掉 move 协程，hop 重跳计数这类局部状态随协程销毁——任何"挂起类"状态切换都要问一句：正在跑的状态机还有什么会在后台继续计数/计时？
+
+## 2026-06-11: JumpAcrossGap 与 held gravity（第十九轮）
+
+- **脚离地但一陷一陷 = 自定义跳跃仍在和引擎解算抢控制权**：`Jump()+SetVelocity` 比纯 SetVelocity 前进了一步，但用户看到的周期性小跳说明竖直速度仍可能只活 1-2 tick 就被地面/locomotion 状态吃掉。遇到这种"半成功"时，优先换成引擎为此设计的原子接口，而不是继续叠时间窗。
+- **`loco:JumpAcrossGap(landingGoal, landingForward)` 是更合适的 BlockHop primitive**：它自己算水平/竖直速度、进跳跃态、处理落地。BMB 只给 A* 授权的 hop 落点和朝向；原生 hop 期间不能再 `SetVelocity` 弱控，否则等于又把方向盘抢回来。老引擎缺接口时才保留 `Jump()+SetVelocity` fallback。
+- **落点 z 要按实体脚底语义给**：BMB waypoint 的 `target.z` 是 foot cell 中心，不是地表；NextBot landing goal 按实体 origin/脚底位置理解，所以给 `target.z - blockSize * 0.5`，即上层空气格底面/支撑方块顶面。
+- **物理枪 held 的缴械要包含目标速度和重力**：只清 velocity 能压掉大抽动，但 loco 仍可能保留 desired speed 或重力求解，表现成轻微弹簧。held 每 tick 应同时 `SetVelocity(0)`、`SetGravity(0)`、`SetDesiredSpeed(0)`；drop 必须恢复原 gravity。
+- **下一轮诊断签名**：若 JumpAcrossGap 仍不上台，先记录 0.5 秒逐 tick：`IsClimbingOrJumping`、`IsOnGround`、`vel.z`、`pos.z`。`vel.z` 起步低看 jump height/API；起步正常但瞬间归零看落地判定；`vel.z` 正常而 `pos.z` 不涨看 hull/碰撞。

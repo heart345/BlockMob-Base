@@ -70,8 +70,10 @@ Phase 2
 - [x] 复测第十六轮：hop 贴墙重跳；>3 格高差右键不卡顿、有梯逐级下/纯崖走到边停；非 MC 地面右键可达；Flee 被围住仍会放弃；旧走廊/墙角/地图墙/悬崖保护不回归（用户已验证：不卡 ✅ 不跳楼 ✅ 下落正常 ✅；发现三个新问题 → 第十七轮）
 - [x] 第十七轮：修绕路被 `path_no_goal_progress` 误杀（节点推进刷新 goal watchdog + timeout 0.9→1.2）；修窄 Source 沿走不了（HasSupport 中心悬空时补 ±12u 轴向偏移采样）；修 `path_hop` 不起跳（起跳保护窗 0.15s 内禁 Approach，防 SetVelocity 竖直速度被冲掉）（待用户复测）
 - [x] 复测第十七轮：迷宫绕路不中途放弃；围墙窗台/窄沿恢复可走；hop 真起跳（贴墙也能上）；第十六轮成果（不卡/不跳楼/下落）不回归（用户已验证：绕路 ✅ 窄沿 ✅；hop 仍不起跳 → 第十八轮）
-- [x] 第十八轮：hop 真根因 = 落地态 SetVelocity 竖直速度被地面解算压回，改 `loco:Jump()`+SetVelocity 弹道；删 0.15s 保护窗改查 `IsClimbingOrJumping`；重跳延时挂 `OnLandOnGround`；新增物理枪持握一等状态 `BMBHeld`（loco 缴械/行为挂起/移动拒新/松手踹醒，held×hop 握手）（待用户复测）
-- [ ] 复测第十八轮：hop 看到真实起跳动作并上台（贴墙也行）；物理枪抓任意状态的羊不抽搐不陷地、松手正常下落恢复游荡；旧场景回归
+- [x] 第十八轮：hop 真根因 = 落地态 SetVelocity 竖直速度被地面解算压回，改 `loco:Jump()`+SetVelocity 弹道；删 0.15s 保护窗改查 `IsClimbingOrJumping`；重跳延时挂 `OnLandOnGround`；新增物理枪持握一等状态 `BMBHeld`（loco 缴械/行为挂起/移动拒新/松手踹醒，held×hop 握手）
+- [x] 复测第十八轮：hop 有抬脚/离地动作但一陷一陷仍跳不上台；物理枪抽动大幅改善但仍有轻微弹簧感 → 第十九轮
+- [x] 第十九轮：BlockHop 优先用 `loco:JumpAcrossGap(landingGoal, landingForward)` 原生跳到上层脚底落点，`SetJumpHeight` 至少 58u；原生 hop 期间不再 `SetVelocity` 空中弱控；物理枪 held 每 tick `SetGravity(0)` + `SetDesiredSpeed(0)`，drop 恢复 gravity（待用户复测）
+- [ ] 复测第十九轮：hop 不再小陷跳并能跳上一格台阶（贴墙也行）；物理枪抓任意状态的羊无弹簧抽动、松手正常下落恢复游荡；旧场景回归
 - [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
 - **Status:** in_progress
 
