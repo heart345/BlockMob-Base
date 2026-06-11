@@ -1,5 +1,50 @@
 # Findings
 
+## mock 切真环境炸出的对接坑（第十轮，2026-06-11）
+
+- **接口的"隐式约定"在 mock 里看不出来，切真环境才炸**，这批都是接 RealBlockWorld 时发现的：
+  1. `GetBlockAt` 返回值类型：mock 存的是 `BMB.BlockTypes` 字符串，real 拿到的是 MC 数字 id——行为层 `blockType ~= BMB.BlockTypes.Grass` 在 real 下恒真。**adapter 必须把 id 映射回 BMB 枚举**，行为层永远只见 BMB 类型（架构铁律的具体化）。
+  2. "mob 所在方块"的歧义：mock 是 2D 平面（z 恒 0），`WorldToBlock(GetPos())` 怎么写都对；real 里 mob 原点在脚底、落在**脚部空气格**，吃草要查的是**脚下的支撑方块**——`GetPos() - Vector(0,0,4)` 再换算。凡"mob 站的格子"语义都要想清楚是脚部格还是支撑格。
+  3. 2D mock 让 A* 的 3D 缺陷隐形：头部格检查（mob 高 44 < 2 格）在 z=0 世界恒通过，real 必须显式查 `z+1`。
+  4. 参数和世界几何的耦合：`MaxStepDown 34` 在 Source 地图上没问题，但方块世界台阶就是 36 一格——**所有距离类参数都要按 36 的倍数想一遍**（StepHeight 28 上不去一格，是下一个要补的：MC 自动跳）。
+- **加载顺序**：addons 按字母序加载，`gmod_addon` < `mcswep-main`，BMB include 时 `MC` 不存在。依赖 MC 的初始化（实现选择、ResolveBlock 缓存）都要懒执行（生成 mob 时/首次用到时），不能在文件作用域做。
+- `MC.SV.SetBlock` 实测签名（`mc/sv_world.lua:392`）：`(bx, by, bz, id, orient, options)`，options 可直接传实体（等价 `{actor=ent}`）；返回 `ok, err`，`err == "unchanged"` 不算真失败（同类型覆写）。`MC.GetBlock` 空格返回 **0** 不是 nil。
+
+## MC 官方源码可直接对照（2026-06-10 起）
+
+- 用户本地有最新版 MC 反编译源码：`C:\Users\ADMIN\Downloads\Compressed\mcswep-main\out`（包结构 `net/minecraft/...`）。**做行为前先读对应 Goal 的真实实现，不要凭记忆猜**。
+- 已确认的关键事实（第九轮 Flee 重写依据）：
+  - `PanicGoal`（羊/猪/牛受击恐慌）**不看受击方向**：`DefaultRandomPos.getPos(mob, 5, 4)` 在 ±5 格随机选点，10 次候选过寻路校验取权重最优；全失败 → `canUse` false → 不恐慌（站住）。"朝反方向跑"是 `AvoidEntityGoal`（怕人生物：猫/兔）才有的，用 `getPosAway` 限制背离方向 ±90°。
+  - 恐慌持续 = `lastDamageSource` 有效期 **40 tick（2s）**（`LivingEntity` 1420 行附近），每次受击刷新；当前段跑完才停（`canContinueToUse = !navigation.isDone()`）。所以原版友好生物受击后跑不远。
+  - PanicGoal 速度倍率：羊 1.25、猪 1.25、牛 2.0、兔 2.2（各生物 `registerGoals` 里 `addGoal(1, new PanicGoal(this, x))`）。
+  - BMB 对应：候选点可达性校验用前向 `IsMovementTargetSafe` 预检代替 MC 的寻路 malus（BMB 方块 A* 看不到 prop 和 Source 平台边缘）；"确认无路可逃"用**连续 N 次失败计数**（选不出点或 dash 起步即被挡）代替 MC 的纯选点失败——因为撞 prop 只有跑过去才知道。
+
+## 移动手感根因三连（Fable, 2026-06-10）
+
+- **NextBot `loco:Approach` 的减速区会和 watchdog 互相打架**：Approach 接近目标点时自动减速。两个后果：
+  1. `goalTolerance(12) < nodeTolerance(18)` 时，离终点 12-18 units 是死区——节点推不进、到达判不过、carrot=终点在减速区，速度归零原地修正朝向 = 当初的"原地扭动"。到达阈值必须 >= waypoint 容差（现在都是 18 = 0.5 方块）。
+  2. 终点减速把速度拖到 no-progress watchdog 阈值以下，正常到站被误判"卡住"返回失败，行为层以为没走成。解法：`GetPathCarrot` 在路径尾部把 carrot 投到终点**之外**，mob 全速跨过到达圈再停；watchdog 失败时距终点 <= 2x tolerance 按成功兜底。
+- **不要用 `SetAngles` 做平滑转向**：每 tick SetAngles 打断客户端插值，视觉抽搐（CLAUDE.md 已立铁律）。正确做法 `loco:FaceTowards(target)` 每 tick 调 + `loco:SetMaxYawRate` 控转速。
+- **`loco:Approach` 不顾朝向**：目标在身后会直接倒着走。`ENT:SteerTowards` 统一入口：夹角 > `TurnInPlaceAngle`(110°) 只转身不前进，转身期间要刷新 no-progress watchdog 的 deadline（原地速度 0 是预期，不是卡住）。
+- **A* 路径头部是出发格中心**，可能在 mob 身后 ~20 units，起步前要跳过，否则开局回头拐一下。
+- **Wander 不能按固定时长切段**：codex 之前"直线走 1.0-1.8s 就返回"的方案每段必刹停换向。正确节奏 = 选点 -> A* 完整走到 -> 到站长停顿。
+- **原版 MC 游荡是"站很久、偶尔走一段"**：stroll goal 低概率触发，站立是常态。当前到站停顿 6-14s（`WanderPauseMin/Max`），单段行程 2-5 格（`WanderDistanceMin/Max`）。吃草同理是低频行为：吃完冷却 25-45s（`EatGrassCooldownMin/Max`）。
+- **carrot 跟随的节点推进不能只看距离**：切弯时 mob 会从 waypoint 旁边掠过（横向 > nodeTolerance），距离判定推进不了，`GetPathCarrot` 从当前位置折回身后的漏过节点再前投，carrot 落在身后 → mob 掉头追 → 推进后又转回来 = 行进中"莫名转圈"。修法：距节点 <= 1.5 格且已越过"该节点 -> 下一节点"的垂面（dot > 0）就视为通过。垂面跳点要配距离上限，否则 U 形路径会提前抄近路。
+- **安全探测必须跑赢刹车距离，失败后必须急刹**（平台边缘冻住/跳崖，2026-06-10）：
+  1. 固定 48u 前向探测在 Flee 145u/s（刹车距离约 40u）下没有余量，探到悬崖时动量已经把 mob 带下去。探测距离要随速度放大：`max(ForwardSafetyDistance, vel2D x SafetyProbeSpeedScale(0.45))`。
+  2. 安全检查失败只 return 不刹车，loco 残留速度照样滑下边缘。`FailBMBMove` 现在主动杀水平动量（x0.1，z 保留）。`loco:SetVelocity` 急停兜底不算"驱动移动"，CLAUDE.md 禁的是 SetPos/SetAngles 驱动位移/转向。
+  3. 选方向（getSafeDirection）和移动中校验用的探测距离必须一致或前者更长：选方向短探测会放行"再跑几步就是悬崖"的方向，起跑后每个 slice 都在边缘失败，反复选向-失败空转 = Flee 在边缘冻住。现在选方向用 `min(lookAhead, 110)`。
+- **`LengthSqr()` 阈值绝不能拿 1 当"是否有效向量"判据**（Flee 冻住真根因，2026-06-10 第七轮）：归一化单位向量的 LengthSqr ≈ 1.0，`> 1` 恒 false、`<= 1` 恒 true。`getSafeDirection` 因此从第一天起恒返回 nil（十方向选择从未运行，Flee 永远在走"朝 away 直线兜底"），`MoveAlongDirection` 也会拒收归一化方向。零向量守卫一律用 `> 0.01` / `< 0.01` 这种量级。调试教训：HUD mode 一直显示 `direct_blocked`（兜底分支）而非 `direction_blocked`（主分支），早该据此发现主分支根本没被执行，而不是反复调主分支的参数。
+- **二元"安全/不安全"判定需要 StartSolid 例外和降级阶梯**（Flee 冻住第二轮根修，2026-06-10）：
+  1. mob 贴住/被挤进 prop（尤其斜放 prop）时，安全 hull trace 从重叠开始（`StartSolid`），所有方向都判 Hit，抬高复查也在 prop 内 → 十个方向全灭 → Flee 冻住（HUD 卡 `direct_blocked`、vel 0）。StartSolid 时不能按墙处理：放行，撞不动的方向交给 loco 碰撞 + no-progress watchdog 换向。
+  2. 单一探测距离（110）在围栏圈/石坡上会全方向失败（110 外落差超 MaxStepDown、坡度超标都是距离放大出来的假悬崖）。要做探测阶梯（110 → 48 → 24）：长档全失败就降档，让 mob 至少贴着障碍挪动。
+  3. 阶梯选出的方向必须用**同档**距离在移动循环里复查（`options.safetyProbe`），否则短档选中、长档复查 = 选中即失败。短档的悬崖风险由"每 tick 复查 + FailBMBMove 急刹"兜住。
+- **墙和悬崖必须分治，不能共用一个"危险距离"**（Flee 犹豫掉速根修，2026-06-10 第八轮）：撞墙无害——loco 碰撞自己就能挡住，提前避让墙只会让 mob 在离 prop 一个探测距离（110u）外就急刹-重选-再加速地"犹豫"，三面围起来时更是全方向被毙、压根不敢靠近；悬崖才需要跑赢刹车距离的前瞻。修法三件套：
+  1. 安全检查区分失败原因（`false, "wall"` / `false, "cliff"`）；墙只在贴脸 `WallStopDistance`（20u）内算挡路，更远的墙放行但把地面探测截到墙跟前（探测点落进墙体/墙顶会误报悬崖）。
+  2. 急刹（杀水平动量）只给 cliff 失败；wall 失败保留动量顺势转向（`FailBMBMove(mode, keepMomentum)`）。
+  3. 每 tick 复查距离 = `min(选向档位, max(48, vel×0.45))`（`GetBMBTickSafetyProbe`）：悬崖前瞻随速度缩放即可，固定长档复查会把"减速点"推到危险还很远的地方。
+- 行为节奏参数全部放 ENT 字段（每怪可调），行为模块只取默认值——符合"行为模块无怪物特化"的架构铁律。
+
 ## Latest physics and flee notes
 
 - BMB mobs are NextBots, not normal rigid-body props. Physics-kill style impacts need explicit detection in `bmb_base_mob`.

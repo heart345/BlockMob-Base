@@ -46,9 +46,21 @@ Phase 2
 - [x] 加入高速物理 prop 冲击伤害和速度衰减反馈
 - [ ] 复测 Sheep 枪击受伤后 Flee 是否稳定触发
 - [ ] 复测高速 prop 砸中/砸死 Sheep 后是否沿原方向衰减而不是反向弹飞
-- [ ] 复测 DefaultGoalTolerance=12 后走路是否还抽动
-- [ ] 复测 Flee direct burst 后受击是否能立刻连续跑开
-- [ ] 复测 `MoveAlongDirection` 连续巡航后普通走路和 Flee 是否还有分段停顿
+- [x] 修"走一会停一下换方向"：Wander 改回 A* 完整路径 + 到站停顿（Fable 2026-06-10，用户已验证）
+- [x] 修原地扭动真根因：goalTolerance 12->18 消减速区死区；FaceTarget 改 loco:FaceTowards（用户已验证）
+- [x] 修面朝前方倒退：SteerTowards 先原地转身再走（用户已验证）
+- [x] 吃草频率调低：吃完冷却 25-45s（用户已验证）
+- [x] 复测 MC 式游荡节奏：到站停顿 4-10s 生效，无 `path_blocked`/`path_no_goal_progress`（用户已验证）
+- [x] 复测游荡微调：停顿 6-14s OK；单段距离用户要求上调，2-5 格 -> 3-8 格（WanderDistanceMin/Max 108/288，待复测）
+- [x] 复测行进中"莫名转圈"修复：垂面跳点判定生效（用户已验证）
+- [x] 复测跳崖修复：速度缩放安全探测 + FailBMBMove 急刹生效（用户已验证）
+- [x] 复测 Flee 冻住第七轮真根因修复：getSafeDirection / MoveAlongDirection 的单位向量 LengthSqr 阈值 bug（1 -> 0.01）——用户已验证贴脸 prop 不再冻住
+- [x] 复测第八轮墙/悬崖分治：离 prop/边缘不再远距离犹豫掉速——用户已验证边缘不急停、撞 prop 换方向
+- [x] 复测第九轮 MC PanicGoal 式 Flee：受击随机近点 dash（不朝反方向）、平地跑 1-2 段就停、被围住冲几下放弃站住（用户已验证，Flee 整体 ✅）
+- [x] 复测 Flee 受击掉头先转身后跑、无倒退（用户已验证）
+- [x] 接通 `BMB.RealBlockWorld`：MC.SV.SetBlock 写入、id↔BMB.BlockTypes 映射、吃草改查脚下格、A* 头部格检查、MaxStepDown 40、mock/real 切换（bmb_use_real_world / bmb_world 命令）
+- [ ] 真方块世界全链路复测：游荡（含从一格地板走下来）→ 受击逃 → 吃草 grass_block→dirt（同步/音效/存档）；`bmb_world mock` 回退正常
+- [ ] 羊一格台阶自动跳（StepHeight 28 < 36 缺口）+ A* 3D 邻接
 - **Status:** in_progress
 
 ### Phase 3: Zombie 迁移回新架构

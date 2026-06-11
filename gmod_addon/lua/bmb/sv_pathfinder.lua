@@ -24,6 +24,14 @@ local function neighbors(coord)
     }
 end
 
+-- 可通行 = 脚部格和头部格都不是实心（mob 高 44 < 2 格）。
+-- mock 是 z=0 平面世界、z=1 恒为空，行为不变；real 世界（3D）必须查头顶
+local function isPassable(blockWorld, cell)
+    if blockWorld.IsSolid(cell) then return false end
+
+    return not blockWorld.IsSolid({ x = cell.x, y = cell.y, z = (cell.z or 0) + 1 })
+end
+
 local function lowest(open, fScore)
     local bestIndex = 1
     local bestScore = fScore[coordKey(open[1])] or math.huge
@@ -97,7 +105,7 @@ function pathfinder.FindPath(startPos, goalPos)
         for _, nextCoord in ipairs(neighbors(current)) do
             local nextKey = coordKey(nextCoord)
 
-            if not closedSet[nextKey] and not blockWorld.IsSolid(nextCoord) then
+            if not closedSet[nextKey] and isPassable(blockWorld, nextCoord) then
                 local tentative = (gScore[currentKey] or math.huge) + 1
 
                 if tentative < (gScore[nextKey] or math.huge) then

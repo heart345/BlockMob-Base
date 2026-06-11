@@ -11,15 +11,21 @@ ENT.AdminOnly = false
 ENT.Model = "models/kleiner.mdl"
 ENT.StartHealth = 20
 ENT.WalkSpeed = 70
-ENT.RunSpeed = 145
+-- MC PanicGoal 速度倍率：羊/猪 1.25×走速（牛 2.0×、兔 2.2×，做新怪时参考源码各自的 addGoal）
+ENT.RunSpeed = 90
 ENT.Acceleration = 240
 ENT.Deceleration = 260
-ENT.WanderRadius = 420
-ENT.FleeDistance = 520
-ENT.FleeDirectDistance = 220
-ENT.FleeDirectDuration = 0.85
-ENT.FleeDurationMin = 3.5
-ENT.FleeDurationMax = 6.0
+ENT.WanderDistanceMin = 108  -- 单段游荡 3~8 格
+ENT.WanderDistanceMax = 288
+ENT.WanderPauseMin = 6.0     -- 到站站立 6~14s，站立是常态
+ENT.WanderPauseMax = 14.0
+-- MC 恐慌窗口 = lastDamageSource 有效期 40 tick（2s），每次受击刷新；窗口内一段接一段跑，
+-- 窗口过了跑完当前段就停，所以原版友好生物受击后跑不远
+ENT.FleeDurationMin = 2.0
+ENT.FleeDurationMax = 2.5
+ENT.FleePanicRadius = 180        -- 恐慌单段目标 ±5 格（MC DefaultRandomPos.getPos(mob, 5, 4)）
+ENT.FleePanicMinDistance = 36
+ENT.FleeGiveUpFailures = 4       -- 连续 4 次选不出点/起步即被挡 → 认定无路可逃，放弃恐慌
 ENT.CollisionMins = Vector(-14, -14, 0)
 ENT.CollisionMaxs = Vector(14, 14, 44)
 
@@ -31,7 +37,7 @@ function ENT:Initialize()
     self.FleeThreat = nil
     self.FleeThreatPosition = nil
     self.FleeUntil = 0
-    self.NextEatGrassTime = CurTime() + math.Rand(1.0, 3.0)
+    self.NextEatGrassTime = CurTime() + math.Rand(8.0, 20.0)
 end
 
 function ENT:RunBehaviour()

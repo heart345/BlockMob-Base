@@ -1,7 +1,12 @@
 BMB = BMB or {}
-BMB.BlockWorld = BMB.BlockWorld or {}
 
-local world = BMB.BlockWorld
+-- IBlockWorld 的 mock 实现（开发/测试用：z=0 平面世界 + 调试框渲染）。
+-- 运行时用哪个实现由 BMB.SelectBlockWorld()（sv_block_world_real.lua）决定，
+-- 业务代码一律通过 BMB.BlockWorld 访问，不要直接引用 Mock/RealBlockWorld
+BMB.MockBlockWorld = BMB.MockBlockWorld or {}
+BMB.BlockWorld = BMB.BlockWorld or BMB.MockBlockWorld
+
+local world = BMB.MockBlockWorld
 world.Blocks = world.Blocks or {}
 world.Initialized = world.Initialized or false
 world.BaseZ = world.BaseZ or 0

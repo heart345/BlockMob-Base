@@ -8,7 +8,8 @@ if SERVER then
     include("bmb/sv_behaviors.lua")
 
     if not GetConVar("bmb_use_source_path") then
-        CreateConVar("bmb_use_source_path", "1", FCVAR_ARCHIVE, "Use GMod Source PathFollower for smooth movement when navmesh is available.")
+        -- 默认关：寻路走自写方块 A*（CLAUDE.md：不用 navmesh），此开关仅留作普通地图实验
+        CreateConVar("bmb_use_source_path", "0", FCVAR_ARCHIVE, "EXPERIMENTAL: use GMod Source PathFollower instead of BMB block-grid A*.")
     end
 end
 
@@ -32,12 +33,16 @@ ENT.WaypointTimeout = 2.0
 ENT.GroundProbeHeight = 32
 ENT.GroundProbeDepth = 96
 ENT.ForwardSafetyDistance = 48
+ENT.SafetyProbeSpeedScale = 0.45
 ENT.SafetyHullScale = 0.65
+ENT.WallStopDistance = 20
 ENT.StepHeight = 28
-ENT.MaxStepDown = 34
-ENT.TurnRate = 420
+-- 必须 > 一格（36）：MC 生物下一格台阶是日常移动，34 会把"从方块地板走下来"判成悬崖；
+-- 两格（72）仍然算悬崖
+ENT.MaxStepDown = 40
+ENT.TurnRate = 400
+ENT.TurnInPlaceAngle = 110
 ENT.UseSourcePathFollower = true
-ENT.UseWanderPathFallback = false
 ENT.SourcePathLookAhead = 120
 ENT.SourcePathGoalTolerance = 18
 ENT.PathNodeTolerance = 18
@@ -85,6 +90,7 @@ function ENT:BaseInitialize()
 
     self.loco:SetStepHeight(self.StepHeight)
     self.loco:SetJumpHeight(58)
+    self.loco:SetMaxYawRate(self.TurnRate or 400)
     self.loco:SetAcceleration(self.Acceleration)
     self.loco:SetDeceleration(self.Deceleration)
     self.loco:SetDesiredSpeed(self.WalkSpeed)
@@ -96,6 +102,12 @@ function ENT:BaseInitialize()
     self.BMBDead = false
     self.NextPhysicsImpactCheck = 0
     self.PhysicsImpactTimes = {}
+
+    -- mock/real 块世界的懒选择：MCSWEP 比 BMB 后加载，include 时选不到 real，
+    -- 生成 mob 时再选一次（幂等，已选对则无操作）
+    if BMB and BMB.SelectBlockWorld then
+        BMB.SelectBlockWorld()
+    end
 
     if BMB and BMB.BlockWorld then
         BMB.BlockWorld.EnsureInitialized(self:GetPos())
@@ -227,7 +239,15 @@ function ENT:CheckBMBGoalProgress(watch, goal)
     return CurTime() < watch.deadline
 end
 
-function ENT:FailBMBMove(mode)
+function ENT:FailBMBMove(mode, keepMomentum)
+    -- 安全层拦下移动时主动杀掉水平动量：高速冲向平台边缘时仅靠自然减速刹不住，
+    -- 惯性会把 mob 顺势带下悬崖。撞墙类失败（keepMomentum）不急刹：墙本身挡得住，
+    -- 急刹反而造成"离 prop 还有段距离就掉速、一点一点给油转向"的犹豫观感
+    if not keepMomentum then
+        local velocity = self:GetVelocity()
+        self.loco:SetVelocity(Vector(velocity.x * 0.1, velocity.y * 0.1, velocity.z))
+    end
+
     self:SetBMBMoveMode(mode or "blocked")
     self:StartBMBIdleActivity()
     self:UpdateBMBApproachDebug(nil, 0)
@@ -333,8 +353,7 @@ function ENT:RunBMBDebugMove()
 
         self:MaintainBMBMoveSpeed(desiredSpeed)
         self:UpdateBMBApproachDebug(target, 0)
-        self:FaceTarget(target)
-        self.loco:Approach(target, 1)
+        self:SteerTowards(target, progressWatch)
         self:BodyMoveXY()
         self:MaybePlayStep()
 
@@ -475,6 +494,17 @@ function ENT:GetPathCarrot(waypoints, startIndex, carrotDistance)
     local final = waypoints[#waypoints]
     if not final then return nil end
 
+    -- 路径快走完时把 carrot 投到终点之外：让 mob 全速跨过到达圈再由行为层停下，
+    -- 否则 Approach 在终点减速区把速度拖到 watchdog 阈值以下，会被误判成"被卡住"
+    if remaining > 0 then
+        local overshoot = Vector(final.x - current.x, final.y - current.y, 0)
+
+        if overshoot:LengthSqr() > 1 then
+            overshoot:Normalize()
+            return Vector(final.x, final.y, current.z) + overshoot * remaining
+        end
+    end
+
     return Vector(final.x, final.y, current.z)
 end
 
@@ -510,6 +540,12 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local nodeIndex = 1
     local final = waypoints[#waypoints]
 
+    -- 路径头部是出发格中心，可能落在身后：起步前先跳过脚下这一格，避免开局回头拐一下
+    local startPos = self:GetPos()
+    while nodeIndex < #waypoints and flatDistance(startPos, waypoints[nodeIndex]) <= BMB.Config.BlockSize * 0.75 do
+        nodeIndex = nodeIndex + 1
+    end
+
     self:ClearBMBMovementInterrupt()
     self:MaintainBMBMoveSpeed(desiredSpeed)
     self:UpdateMoveActivity(desiredSpeed)
@@ -528,34 +564,67 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             return true
         end
 
-        while nodeIndex < #waypoints and flatDistance(current, waypoints[nodeIndex]) <= nodeTolerance do
-            nodeIndex = nodeIndex + 1
-            self:MarkBMBPathAdvanced(nodeIndex)
+        while nodeIndex < #waypoints do
+            local node = waypoints[nodeIndex]
+            local nodeDistance = flatDistance(current, node)
+
+            if nodeDistance <= nodeTolerance then
+                nodeIndex = nodeIndex + 1
+                self:MarkBMBPathAdvanced(nodeIndex)
+            elseif nodeDistance <= BMB.Config.BlockSize * 1.5 then
+                -- 切弯时会从节点旁边掠过（横向 > nodeTolerance），只按距离判定节点永远推进不了，
+                -- carrot 会折回身后的漏过节点导致原地转圈。已越过该节点朝下一节点的垂面就视为通过
+                local nextNode = waypoints[nodeIndex + 1]
+                local passedX = (nextNode.x - node.x) * (current.x - node.x)
+                local passedY = (nextNode.y - node.y) * (current.y - node.y)
+
+                if passedX + passedY > 0 then
+                    nodeIndex = nodeIndex + 1
+                    self:MarkBMBPathAdvanced(nodeIndex)
+                else
+                    break
+                end
+            else
+                break
+            end
         end
 
         local carrot = self:GetPathCarrot(waypoints, nodeIndex, carrotDistance)
         local safetyTarget = self:GetPathSafetyTarget(waypoints, nodeIndex)
         if not carrot or not safetyTarget then return false end
 
-        if not self:IsMovementTargetSafe(safetyTarget) then
-            self:FailBMBMove("path_blocked")
+        local safe, blockReason = self:IsMovementTargetSafe(safetyTarget)
+        if not safe then
+            self:FailBMBMove("path_blocked", blockReason == "wall")
             return false
         end
 
         self:SetBMBMoveMode("path_carrot")
         self:MaintainBMBMoveSpeed(desiredSpeed)
         self:UpdateBMBApproachDebug(carrot, nodeIndex)
-        self:FaceTarget(carrot)
-        self.loco:Approach(carrot, 1)
+        self:SteerTowards(carrot, progressWatch)
         self:BodyMoveXY()
         self:MaybePlayStep()
 
         if not self:CheckBMBMoveProgress(progressWatch) then
+            -- 已经贴到终点附近的"无进度"按到达处理：到站减速被 watchdog 误杀会跳过行为层的停顿
+            if flatDistance(current, final) <= goalTolerance * 2 then
+                self:SetBMBMoveMode("idle")
+                self:UpdateBMBApproachDebug(nil, 0)
+                return true
+            end
+
             self:FailBMBMove("path_blocked")
             return false
         end
 
         if not self:CheckBMBGoalProgress(goalProgressWatch, final) then
+            if flatDistance(current, final) <= goalTolerance * 2 then
+                self:SetBMBMoveMode("idle")
+                self:UpdateBMBApproachDebug(nil, 0)
+                return true
+            end
+
             self:FailBMBMove("path_no_goal_progress")
             return false
         end
@@ -594,15 +663,15 @@ function ENT:MoveDirectFallback(destination, speed, options)
 
         target.z = self:GetPos().z
 
-        if not self:IsMovementTargetSafe(target) then
-            self:FailBMBMove("direct_blocked")
+        local safe, blockReason = self:IsMovementTargetSafe(target, self:GetBMBTickSafetyProbe(options.safetyProbe))
+        if not safe then
+            self:FailBMBMove("direct_blocked", blockReason == "wall")
             return false
         end
 
         self:MaintainBMBMoveSpeed(desiredSpeed)
         self:UpdateBMBApproachDebug(target, 0)
-        self:FaceTarget(target)
-        self.loco:Approach(target, 1)
+        self:SteerTowards(target, progressWatch)
         self:BodyMoveXY()
         self:MaybePlayStep()
 
@@ -621,7 +690,8 @@ function ENT:MoveAlongDirection(direction, speed, options)
     options = options or {}
 
     local moveDirection = Vector(direction.x, direction.y, 0)
-    if moveDirection:LengthSqr() <= 1 then return false end
+    -- 只挡零向量：Flee 传进来的是归一化单位向量（LengthSqr ≈ 1.0），阈值用 1 会把它拒收
+    if moveDirection:LengthSqr() < 0.01 then return false end
 
     moveDirection:Normalize()
 
@@ -659,15 +729,15 @@ function ENT:MoveAlongDirection(direction, speed, options)
         local target = self:GetPos() + moveDirection * lookAhead
         target.z = self:GetPos().z
 
-        if not self:IsMovementTargetSafe(target) then
-            self:FailBMBMove("direction_blocked")
+        local safe, blockReason = self:IsMovementTargetSafe(target, self:GetBMBTickSafetyProbe(options.safetyProbe))
+        if not safe then
+            self:FailBMBMove("direction_blocked", blockReason == "wall")
             return false
         end
 
         self:MaintainBMBMoveSpeed(desiredSpeed)
         self:UpdateBMBApproachDebug(target, 0)
-        self:FaceTarget(target)
-        self.loco:Approach(target, 1)
+        self:SteerTowards(target, progressWatch)
         self:BodyMoveXY()
         self:MaybePlayStep()
 
@@ -699,15 +769,16 @@ function ENT:MoveToWaypoint(waypoint)
         delta.z = 0
 
         if delta:Length2D() <= BMB.Config.DefaultGoalTolerance then return true end
-        if not self:IsMovementTargetSafe(target) then
-            self:FailBMBMove("waypoint_blocked")
+
+        local safe, blockReason = self:IsMovementTargetSafe(target)
+        if not safe then
+            self:FailBMBMove("waypoint_blocked", blockReason == "wall")
             return false
         end
 
         self:MaintainBMBMoveSpeed(self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed))
         self:UpdateBMBApproachDebug(target, 0)
-        self:FaceTarget(target)
-        self.loco:Approach(target, 1)
+        self:SteerTowards(target, progressWatch)
         self:BodyMoveXY()
         self:MaybePlayStep()
 
@@ -728,7 +799,20 @@ function ENT:MoveToWaypoint(waypoint)
     return false
 end
 
-function ENT:IsMovementTargetSafe(target)
+-- 移动中每 tick 复查用的探测距离：悬崖前瞻随速度缩放（刹得住即可），
+-- 但不超过选方向时验证过的档位——选向短档、复查长档会"选中即失败"，又回到冻住
+function ENT:GetBMBTickSafetyProbe(selectionProbe)
+    local dynamicProbe = math.max(
+        self.ForwardSafetyDistance,
+        self:GetVelocity():Length2D() * (self.SafetyProbeSpeedScale or 0.45)
+    )
+
+    if selectionProbe then return math.min(selectionProbe, dynamicProbe) end
+
+    return dynamicProbe
+end
+
+function ENT:IsMovementTargetSafe(target, probeDistance)
     local current = self:GetPos()
     local probeHeight = self.GroundProbeHeight
     local delta = target - current
@@ -739,8 +823,13 @@ function ENT:IsMovementTargetSafe(target)
 
     delta:Normalize()
 
-    local probeDistance = math.min(distance, self.ForwardSafetyDistance)
-    local forwardTarget = current + delta * probeDistance
+    -- 探测距离随当前速度放大：固定 48u 在跑动速度（Flee 145u/s，刹车距离约 40u）下
+    -- 等探到没地面时动量已经把 mob 带下悬崖
+    local probe = math.min(distance, probeDistance or math.max(
+        self.ForwardSafetyDistance,
+        self:GetVelocity():Length2D() * (self.SafetyProbeSpeedScale or 0.45)
+    ))
+    local forwardTarget = current + delta * probe
     local startPos = current + Vector(0, 0, probeHeight)
     local endPos = forwardTarget + Vector(0, 0, probeHeight)
     local hullScale = self.SafetyHullScale
@@ -757,7 +846,20 @@ function ENT:IsMovementTargetSafe(target)
         mask = MASK_SOLID
     })
 
-    if wallTrace.Hit and not self:CanStepPastTrace(wallTrace, forwardTarget, traceFilter) then return false end
+    -- 起步就嵌在 prop 里（StartSolid）时不按墙处理：被 prop 挤住/贴住（尤其斜放的 prop）时
+    -- 所有方向的 hull 都从重叠开始，按墙判会全方向被毙 → Flee 原地冻住。
+    -- 放行后撞不动的方向由 loco 碰撞挡住、no-progress watchdog 换向，能走的方向自然脱困
+    if wallTrace.Hit and not wallTrace.StartSolid and not self:CanStepPastTrace(wallTrace, forwardTarget, traceFilter) then
+        -- 撞墙无害（loco 碰撞自己挡得住），不需要像悬崖那样在整个探测距离上提前避让：
+        -- 远处的墙允许继续接近，贴脸（WallStopDistance）才算挡路。否则 mob 在离 prop
+        -- 一个探测距离外就开始犹豫掉速，永远碰不到 prop（三面围起来时直接不敢进）
+        local hitDistance = wallTrace.Fraction * probe
+        if hitDistance <= (self.WallStopDistance or 20) then return false, "wall" end
+
+        -- 墙还远：把地面探测截到墙跟前，否则探测点落进墙体/墙顶会误报
+        probe = hitDistance - 4
+        forwardTarget = current + delta * probe
+    end
 
     local groundTrace = util.TraceHull({
         start = forwardTarget + Vector(0, 0, self.GroundProbeHeight),
@@ -768,9 +870,9 @@ function ENT:IsMovementTargetSafe(target)
         mask = MASK_SOLID
     })
 
-    if not groundTrace.Hit then return false end
-    if groundTrace.HitNormal.z < 0.65 then return false end
-    if current.z - groundTrace.HitPos.z > self.MaxStepDown then return false end
+    if not groundTrace.Hit then return false, "cliff" end
+    if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
+    if current.z - groundTrace.HitPos.z > self.MaxStepDown then return false, "cliff" end
 
     return true
 end
@@ -899,16 +1001,32 @@ function ENT:FaceTarget(position)
 
     if direction:LengthSqr() <= 1 then return end
 
-    local current = self:GetAngles()
-    local targetYaw = direction:Angle().y
-    local deltaTime = FrameTime()
-    if deltaTime <= 0 then deltaTime = engine.TickInterval() end
+    -- 转向只走 loco（CLAUDE.md：禁止 SetAngles 手动转向，会打断客户端插值）
+    -- 转速由 BaseInitialize 里的 loco:SetMaxYawRate(TurnRate) 控制
+    self.loco:FaceTowards(position)
+end
 
-    local maxStep = (self.TurnRate or 420) * deltaTime
-    local yawDelta = math.AngleDifference(targetYaw, current.y)
-    local nextYaw = current.y + math.Clamp(yawDelta, -maxStep, maxStep)
+-- 移动循环统一入口：目标在身后超过 TurnInPlaceAngle 时先原地转身再走，
+-- 否则 Approach 会不顾朝向直接倒退（MC 生物不会面朝前倒着走）
+function ENT:SteerTowards(target, progressWatch)
+    local direction = target - self:GetPos()
+    direction.z = 0
 
-    self:SetAngles(Angle(0, nextYaw, 0))
+    if direction:LengthSqr() <= 1 then return end
+
+    self.loco:FaceTowards(target)
+
+    local yawDiff = math.abs(math.AngleDifference(direction:Angle().y, self:GetAngles().y))
+    if yawDiff > (self.TurnInPlaceAngle or 110) then
+        -- 原地转身阶段速度为 0 是预期行为，不让 no-progress watchdog 计时
+        if progressWatch then
+            progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+        end
+
+        return
+    end
+
+    self.loco:Approach(target, 1)
 end
 
 function ENT:MaybePlayStep()

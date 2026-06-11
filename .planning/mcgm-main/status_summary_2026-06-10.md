@@ -1,5 +1,24 @@
 # BMB Status Summary - 2026-06-10
 
+> **当前状态的权威文件是 `docs/STATE.md`**（CLAUDE.md 指定的开工入口，每次改动后更新）。本文件保留 codex 时期的详细诊断记录，并在下方追加 Fable 接手后的增量；细节流水见同目录 `progress.md` 的 2026-06-10 session。
+
+## Fable 接手后的增量（2026-06-10，最新）
+
+- "走一会停一下换方向"已修：Wander 改回 A* 完整路径 + 到站停顿，根因和修法见 `findings.md` 开头一节。
+- 原地扭动真根因已定位并修复：goalTolerance 12->18 消减速区死区；FaceTarget 改 `loco:FaceTowards`（弃 SetAngles）。
+- 新增 `SteerTowards`：目标在身后先原地转身再走，修"面朝前方倒退"。`TurnRate=400`、`TurnInPlaceAngle=110`。
+- carrot 终点外投 + watchdog 近终点兜底：修"到站被 watchdog 误杀导致不停顿"。**MC 游荡节奏用户已验证 ✅（停顿正确、无 blocked 误报）。**
+- 吃草冷却 25-45s ✅。
+- 第四、五轮用户已复测：**行进中转圈 ✅（垂面跳点）、跳崖 ✅（速度缩放探测 + FailBMBMove 急刹）、游荡停顿 6-14s ✅**。
+  - 第四轮：单段游荡 `WanderDistanceMin/Max`（sheep 删 WanderRadius）；`MoveAlongPath` 节点推进加"越过节点垂面且距节点 <= 1.5 格则跳过"判定。
+  - 第五轮：`IsMovementTargetSafe` 探测随速度放大（`SafetyProbeSpeedScale=0.45`，可传 probeDistance 覆盖）；`FailBMBMove` 杀水平动量。
+- 第六轮（实测仍冻）-> **第七轮真根因（用户已验证 ✅ 贴脸 prop 不再冻住）**：`getSafeDirection` 的 `direction:LengthSqr() > 1` 把归一化单位向量全部跳过，**十方向选择从第一天起从未运行、恒返回 nil**，Flee 一直只走"朝 away 直线兜底"（侧跑没事、面朝 prop/边缘就冻的原因）；`MoveAlongDirection` 的 `<= 1` 同款拒收。两处阈值改 0.01。另：受击掉头先转身后跑 ✅（用户已验证）。
+- **第八轮（用户已验证 ✅）：墙/悬崖分治**——边缘不再急停、撞 prop 会换方向。`IsMovementTargetSafe` 区分 `wall`/`cliff` 失败，墙只在贴脸 `WallStopDistance`(20u) 内算挡路；wall 失败不杀动量；每 tick 复查距离改 `min(选向档位, max(48, vel×0.45))`（`GetBMBTickSafetyProbe`）。
+- **第九轮（用户已验证 ✅）：Flee 重写为 MC PanicGoal 式**（对照用户本地 MC 源码）：随机近点 dash、没路放弃、平地不跑远，全部通过。
+- **第十轮（最新，待复测）：RealBlockWorld 接通 MCSWEP**（addon 在 `D:\...\addons\mcswep-main`，`MC.SV.SetBlock` 已就位）。修掉五个对接隐藏 bug：BlockWorld 无切换机制（新增 `BMB.SelectBlockWorld` + `bmb_use_real_world` + `bmb_world` 命令）、GetBlockAt 数字 id 对不上 BMB.BlockTypes 枚举（adapter 双向映射）、吃草查成脚部空气格（改查脚下支撑格 + actor 透传）、A* 不查头部格（isPassable）、MaxStepDown 34<36 下不来一格地板（改 40）。已知缺口：一格台阶自动跳未实现。详见 findings.md 与 docs/STATE.md。
+- `bmb_use_source_path` 默认改 0（不用 navmesh）；`UseWanderPathFallback` 已删除。
+- 下方"New Fix For Standing Twist"一节描述的直线游走方案已被上述方案**取代**，仅作历史参考。
+
 ## Current Goal
 
 把 Minecraft 风格 mob 做成 GMod NextBot，并逐步形成一个薄 `BaseMob`、可复用行为模块、方块世界接口和调试工具链。当前切片是 `bmb_sheep`，用于验证被动生物的游荡、受击逃跑、吃草改方块、Source 安全检查和调试工具。
