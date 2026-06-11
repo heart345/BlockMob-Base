@@ -22,6 +22,7 @@ ENT.Spawnable = false
 ENT.AdminOnly = true
 
 ENT.Model = "models/kleiner.mdl"
+ENT.IsBMBMob = true
 ENT.StartHealth = 20
 ENT.WalkSpeed = 80
 ENT.RunSpeed = 120
@@ -40,6 +41,10 @@ ENT.StepHeight = 28
 ENT.BlockHopApex = 45
 ENT.BlockHopTriggerDistance = 42
 ENT.BlockHopAirSteerStrength = 0.08
+-- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
+-- 重跳要赶在它把路径判死之前
+ENT.BlockHopRetryDelay = 0.25
+ENT.BlockHopMaxAttempts = 3
 ENT.MaxPathDropCells = 3
 -- 必须 > 一格（36）：MC 生物下一格台阶是日常移动，34 会把"从方块地板走下来"判成悬崖；
 -- 两格（72）仍然算悬崖
@@ -64,7 +69,7 @@ ENT.MoveNoProgressGrace = 0.35
 ENT.MoveNoProgressTimeout = 0.25
 ENT.MoveNoProgressDistance = 8
 ENT.MoveNoProgressSpeed = 16
-ENT.PathGoalProgressTimeout = 0.9
+ENT.PathGoalProgressTimeout = 1.2
 ENT.PathGoalProgressDistance = 10
 ENT.PhysicsImpactRadius = 44
 ENT.PhysicsImpactInterval = 0.08
@@ -117,6 +122,8 @@ function ENT:BaseInitialize()
     self.NextStepSoundTime = 0
     self.BMBMoveInterrupt = false
     self.BMBDead = false
+    self.BMBHeld = false
+    self.BMBLastLandTime = 0
     self.NextPhysicsImpactCheck = 0
     self.PhysicsImpactTimes = {}
 
@@ -294,10 +301,62 @@ end
 
 function ENT:Think()
     if SERVER then
-        self:CheckPhysicsImpacts()
+        if self.BMBHeld then
+            -- 物理枪持握中：loco 每 tick 缴械。否则 loco 醒着时重力下拽 + 出固体
+            -- 解算上顶，和物理枪的持握点拉扯 = 上下抽搐/陷地循环；loco 恰好睡着的
+            -- 个体则不抽——哪只抽哪只挂取决于被抓瞬间 loco 醒睡，看着随机
+            self.loco:SetVelocity(vector_origin)
+        else
+            self:CheckPhysicsImpacts()
+        end
+
         self:NextThink(CurTime())
         return true
     end
+end
+
+function ENT:IsBMBHeld()
+    return self.BMBHeld == true
+end
+
+-- hop 重跳延时的计时基准：物理引擎的落地回调，不靠 IsOnGround 轮询
+-- （轮询间隔里"已落地又起跳"会抖动）
+function ENT:OnLandOnGround(_)
+    self.BMBLastLandTime = CurTime()
+end
+
+function ENT:OnBMBPhysgunPickup(_)
+    if self.BMBHeld then return end
+
+    self.BMBHeld = true
+    self:InterruptBMBMovement()
+    self:MaintainBMBMoveSpeed(0)
+    self:SetBMBMoveMode("held")
+    self:StartBMBIdleActivity()
+end
+
+function ENT:OnBMBPhysgunDrop(_)
+    if not self.BMBHeld then return end
+
+    self.BMBHeld = false
+    -- 踹一脚向下速度：被抓瞬间 loco 若在睡眠（零速 + 自认在地面）物理更新被短路，
+    -- 松手悬空也不掉；这脚把它踹醒，挂天上/半空松手的都正常受重力下落
+    self.loco:SetVelocity(Vector(0, 0, -10))
+    self:SetBMBMoveMode("idle")
+end
+
+if SERVER then
+    hook.Add("PhysgunPickup", "BMB_PhysgunHold", function(_, ent)
+        if ent.IsBMBMob and ent.OnBMBPhysgunPickup then
+            ent:OnBMBPhysgunPickup()
+        end
+    end)
+
+    hook.Add("PhysgunDrop", "BMB_PhysgunHold", function(_, ent)
+        if ent.IsBMBMob and ent.OnBMBPhysgunDrop then
+            ent:OnBMBPhysgunDrop()
+        end
+    end)
 end
 
 function ENT:SetBMBState(state)
@@ -417,6 +476,10 @@ end
 function ENT:MoveToWorldPosition(destination, speed, options)
     options = options or {}
 
+    -- 物理枪持握中不接新移动（held 与 hop/path 状态握手：当前 move 协程已被
+    -- InterruptBMBMovement 掐掉、hop 重跳计数随局部变量一起销毁，这里再挡新请求）
+    if self.BMBHeld then return false end
+
     local desiredSpeed = speed or self.WalkSpeed
     self.loco:SetDesiredSpeed(desiredSpeed)
     self:UpdateMoveActivity(desiredSpeed)
@@ -430,7 +493,10 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         if self.BMBMoveInterrupt then return false end
     end
 
-    local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination, { mob = self })
+    local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination, {
+        mob = self,
+        allowPartial = options.allowPartial
+    })
     if not waypoints or #waypoints == 0 then
         if options.allowDirectFallback then
             return self:MoveDirectFallback(destination, speed, options)
@@ -926,7 +992,7 @@ function ENT:IsBMBPathFinalReached(final, tolerance)
     return self:IsBMBPathActionAtTargetLevel(final)
 end
 
-function ENT:StartBMBBlockHop(target)
+function ENT:StartBMBBlockHop(target, speed)
     local gravity = 600
     if self.loco and self.loco.GetGravity then
         gravity = math.abs(self.loco:GetGravity() or gravity)
@@ -937,8 +1003,32 @@ function ENT:StartBMBBlockHop(target)
     local apex = self.BlockHopApex or 45
     local verticalSpeed = math.sqrt(2 * gravity * apex)
     local velocity = self:GetVelocity()
+    local horizontal = Vector(velocity.x, velocity.y, 0)
+    local direction = Vector(target.x - self:GetPos().x, target.y - self:GetPos().y, 0)
 
-    self.loco:SetVelocity(Vector(velocity.x, velocity.y, verticalSpeed))
+    -- 贴墙起跳时水平速度近零，纯保留水平速度会原地直上直下、永远上不去：
+    -- 朝目标方向的分量不足行走速度就补足，已有横向速度照旧保留
+    if direction:LengthSqr() > 1 then
+        direction:Normalize()
+
+        local minForward = speed or self.WalkSpeed
+        local forward = horizontal:Dot(direction)
+
+        if forward < minForward then
+            horizontal = horizontal + direction * (minForward - forward)
+        end
+    end
+
+    -- 关键：必须先 loco:Jump() 把 locomotion 切进跳跃态——落地态的地面解算会在
+    -- 当帧把直写的竖直速度压回地面，表现就是"有 path_hop 状态但人不起跳"
+    -- （半砖那两次"跳跃成功"其实是 StepHeight=28 > 18 走上去的）。
+    -- Jump 之后再用 SetVelocity 覆盖成固定弹道：45u 顶点 + 朝目标补足的水平分量
+    if self.loco.SetJumpHeight then
+        self.loco:SetJumpHeight(apex)
+    end
+
+    self.loco:Jump()
+    self.loco:SetVelocity(Vector(horizontal.x, horizontal.y, verticalSpeed))
     self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
 end
 
@@ -1004,6 +1094,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local progressWatch = self:StartBMBMoveProgressWatch()
     local goalProgressWatch = self:StartBMBGoalProgressWatch(final)
     local hopStartedAt = {}
+    local hopAttempts = {}
 
     while CurTime() < timeout do
         if self.BMBMoveInterrupt then return false end
@@ -1014,6 +1105,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             self:UpdateBMBApproachDebug(nil, 0)
             return true
         end
+
+        local advanceStartIndex = nodeIndex
 
         while nodeIndex < #waypoints do
             local node = waypoints[nodeIndex]
@@ -1039,6 +1132,14 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             else
                 break
             end
+        end
+
+        -- 沿路径推进节点 = 实打实的进展：绕墙的合法路径会有一段离终点直线距离越走越远，
+        -- 不刷新 goal-progress watchdog 会把绕路误杀成 path_no_goal_progress；
+        -- watchdog 保留原本"防原地绕圈"的用途（绕圈不会持续推进节点）
+        if goalProgressWatch and nodeIndex > advanceStartIndex then
+            goalProgressWatch.distance = flatDistance(current, final)
+            goalProgressWatch.deadline = CurTime() + (self.PathGoalProgressTimeout or 0.9)
         end
 
         local activeAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
@@ -1082,13 +1183,39 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         if activeAction == "hop" then
             local triggerDistance = self.BlockHopTriggerDistance or (BMB.Config.BlockSize or 36) * 1.15
             local onGround = self:IsBMBOnGround()
+            -- loco:Jump() 会同步置跳跃态，用它代替时间猜的"起跳保护窗"：
+            -- 跳跃态内不交回 Approach（地面驱动会和跳跃打架），状态和真实物理一致
+            local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
 
-            if not hopStartedAt[nodeIndex] and onGround and flatDistance(current, actionNode) <= triggerDistance then
-                self:StartBMBBlockHop(actionNode)
-                hopStartedAt[nodeIndex] = CurTime()
+            -- 跳过却落回地面且节点没推进 = 这一跳撞在方块面上掉回来了。
+            -- 重跳延时从 OnLandOnGround 回调时刻起算（物理给的时序，不靠轮询猜抖动）；
+            -- 连续 BlockHopMaxAttempts 次失败按路径失败交还行为层换目标
+            local hopStart = hopStartedAt[nodeIndex]
+            if hopStart and onGround and not jumping then
+                local landedAt = self.BMBLastLandTime or 0
+
+                if landedAt > hopStart and CurTime() - landedAt >= (self.BlockHopRetryDelay or 0.25) then
+                    if (hopAttempts[nodeIndex] or 0) >= (self.BlockHopMaxAttempts or 3) then
+                        self:FailBMBMove("path_hop_fail")
+                        return false
+                    end
+
+                    hopStartedAt[nodeIndex] = nil
+                end
             end
 
-            if hopStartedAt[nodeIndex] or not onGround then
+            if not hopStartedAt[nodeIndex] and onGround and not jumping
+                and flatDistance(current, actionNode) <= triggerDistance then
+                self:StartBMBBlockHop(actionNode, pathSpeed)
+                hopStartedAt[nodeIndex] = CurTime()
+                hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
+                -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
+                jumping = true
+            end
+
+            -- 空中转向只在跳跃态/真离地时接管（它会刷新 no-progress watchdog，
+            -- 落地贴墙阶段还用它等于把卡死兜底关掉）
+            if jumping or not onGround then
                 self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
             else
                 self:SteerTowards(carrot, progressWatch)
@@ -1184,6 +1311,8 @@ end
 
 function ENT:MoveAlongDirection(direction, speed, options)
     options = options or {}
+
+    if self.BMBHeld then return false end
 
     local moveDirection = Vector(direction.x, direction.y, 0)
     -- 只挡零向量：Flee 传进来的是归一化单位向量（LengthSqr ≈ 1.0），阈值用 1 会把它拒收

@@ -457,3 +457,67 @@
   - `CLAUDE.md`
   - `docs/STATE.md`
   - `.planning/mcgm-main/*`
+
+### 第十六轮：hop 贴墙重跳 + A* 支撑/预算/部分路径（2026-06-11，待复测）
+
+- 用户实测第十五轮报三个 bug：① hop 贴着方块不跳；② 右键高于 3 格的位置整帧卡一下且 NPC 不下去；③ 右键非 MC 地面同样卡一下且不动。
+- `bmb_base_mob.lua`（hop 卡死）
+  - 根因：每个 hop 节点只跳一次（`hopStartedAt` 永不复位），第一跳撞方块面落回后永远走 `SteerBMBInAir` 弱转向把羊往方块上蹭，且该分支每 tick 刷新 no-progress watchdog，把卡死兜底也关了；加上起跳"只保留水平速度"，贴墙时水平≈0 → 直上直下必然失败。
+  - 修法：落地未推进节点超过 `BlockHopRetryDelay`(0.25s，必须 < watchdog grace 0.35) 复位重跳；连续 `BlockHopMaxAttempts`(3) 次失败 `FailBMBMove("path_hop_fail")` 交还行为层；`StartBMBBlockHop(target, speed)` 朝目标方向水平分量不足行走速度时补足；空中转向只在 `not IsBMBOnGround()` 时接管。
+- `sv_pathfinder.lua`（卡顿 + 不可达）
+  - 根因：同层 walk 边只要求可通行不要求支撑，目标悬空/落在 Source 地面时搜索顺空中格泛洪扫满 900 迭代；每格 hull 扫描十几次 `MC.GetBlock` 且无缓存，全在一帧。drop 边要求落点下方必须 MC 实心 → 永远落不回 flatgrass。
+  - 修法：同层 walk 边要求 `isStandable`（passable + support）；目标格悬空向下吸附 ≤12 格；passable/support per-FindPath 缓存；搜索预算 `f ≤ hStart*2+24`（椭圆界）；每 64 迭代 `coroutine.yield()` 时间切片（FindPath 只在行为协程里调用）。预算管总开销、yield 管单帧，互补。
+  - 部分路径：中止时返回离目标最近已展开节点的路径（`waypoints.partial = true`，须比起点更接近目标）。>3 格纯垂直落差仍拒跳（MC 规则），观感从"卡顿拒动"变"走到崖边停住"。
+- `sv_block_world_real.lua`
+  - 新增 `real.HasSupport(cell)`：先查 MC 实心（纯表查询），无实心才兜底一次 `MASK_SOLID_BRUSHONLY` TraceLine（格顶 → 格底下 6u；StartSolid = 整格埋地不算支撑；prop 不算）。
+  - `GetRandomWalkablePoint` 候选支撑统一走 `HasSupport`，高台上的同层悬空候选在源头被拒。
+- `sv_behaviors.lua`
+  - Flee 的 `MoveToWorldPosition` 显式 `allowPartial = false`：partial 会把撞墙洗成成功冲刺、失败计数清零，破坏第九轮已验证的"被围住会放弃"。`MoveToWorldPosition` 把 `allowPartial` 透传给 FindPath。
+- CLAUDE.md 修订两条约定：A* 邻接补支撑/预算/切片/部分路径语义；BlockHop 由"只保留水平速度、触发一次"改为"水平分量补足 + 落地重试"。
+- glualint 通过；已同步 D 盘 GMod addons。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sv_pathfinder.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第十七轮：绕路误杀 / 窄沿支撑 / hop 起跳保护窗（2026-06-11，待复测）
+
+- 用户复测第十六轮：卡顿 ✅ 全消（"怎么样都不会卡"）、不跳楼 ✅、下落正常 ✅；并补认旧清单三项（枪击 Flee、prop 冲击衰减、真方块世界全链路 + mock 回退）全部通过。新报三个问题：
+  1. **迷宫绕路中途放弃 `path_no_goal_progress`**：goal-progress watchdog 要求每 0.9s 离终点直线距离近 10u，绕墙路径必有"越走越远"段。修：节点推进视为进展，推进时刷新 watchdog（baseline+deadline）；`PathGoalProgressTimeout` 0.9→1.2 给过弯减速留余量。watchdog 保留防绕圈用途（绕圈不推进节点）。
+  2. **flatgrass 围墙窗台等窄 Source 路完全走不了**（第十六轮回归）：`HasSupport` 兜底 trace 只打格子中心，窄沿比 36u 格子窄、网格中心悬在沿外 → 整条沿判无支撑。修：中心 StartSolid 仍判埋地；中心悬空没命中再补 4 个 ±12u 轴向偏移采样，任一命中算支撑（StartSolid 样本跳过）。
+  3. **`path_hop` 状态有但不起跳、试几次放弃/blocked**（第十六轮回归）：起跳 tick 还在地面，walked into `SteerTowards`→`loco:Approach`，把 `SetVelocity` 直写的竖直速度在物理生效前冲掉（第十五轮起跳 tick 走空中分支所以至少能跳）。修：`BlockHopLaunchWindow=0.15s`（< RetryDelay 0.25）起跳保护窗内强制空中转向；窗口外落地贴墙仍交回 SteerTowards+watchdog。
+- glualint 通过；已同步 D 盘；STATE.md / task_plan / findings / status_summary 同步更新。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第十八轮：loco:Jump 真起跳 + 物理枪持握一等状态（2026-06-11，待复测）
+
+- 用户复测第十七轮：绕路不再误杀 ✅、窄沿恢复可走 ✅；hop 仍不起跳，四张截图给出关键证据：整块方块 hop 有状态无动作（hop2/3），半砖"跳跃成功"其实是 StepHeight=28>18 走上去的（hop1/4）。
+- **hop 真根因**：NextBot 落地态的地面解算会把 `loco:SetVelocity` 直写的竖直速度当帧压回地面——SetVelocity 单独起跳从第十五轮起就从未生效过，保护窗治标不治本。修法：`StartBMBBlockHop` 先 `loco:SetJumpHeight(apex)` + `loco:Jump()` 切进跳跃态，再 `SetVelocity` 覆盖为固定弹道（45u 顶点 + 朝目标补足水平分量）。
+- 顺手拔掉两根刺（另一 Fable 建议）：
+  1. 删除 0.15s 起跳保护窗：空中分支改查 `loco:IsClimbingOrJumping()`（起跳当帧强制视为真，防引擎标志晚一帧），消灭"窗口与真实物理不一致"的隐患。
+  2. 重跳延时改以 `OnLandOnGround` 回调时刻（`BMBLastLandTime`）为基准，不靠 IsOnGround 轮询。
+- 查证 MCSWEP `sh_blocks.lua`：`BlockIsFullCube` 对半砖返回 false → BMB 当空气，A* 看不见半砖；混半砖地形会跳整格而非走半砖——观感问题，记录待 `MC.BlockBoxes` 细化。
+- **物理枪持握一等状态 `BMBHeld`**（用户反馈抓羊有的抽搐/陷地有的安静悬挂 = 被抓瞬间 loco 醒/睡的函数）：
+  - `PhysgunPickup`/`PhysgunDrop` 钩子 → `OnBMBPhysgunPickup/Drop`（`ent.IsBMBMob` 识别）。
+  - 持握中：base `Think` 每 tick `loco:SetVelocity(vector_origin)` 缴械（跳过 prop 冲击检测）、羊行为循环挂起（state=held）、`MoveToWorldPosition`/`MoveAlongDirection` 拒新请求。
+  - held×hop 握手：拾起时 `InterruptBMBMovement` 掐掉当前 move 协程，hop 重跳计数等局部状态随之销毁，松手不会误判路径失败。
+  - 松手：`SetVelocity(0,0,-10)` 踹醒可能睡眠的 loco，挂半空/天上的个体正常下落。
+- CLAUDE.md：BlockHop 约定改为 Jump+SetVelocity / IsClimbingOrJumping / OnLandOnGround；新增"物理枪持握是一等状态"约定。
+- glualint 通过；已同步 D 盘。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/entities/bmb_sheep.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`

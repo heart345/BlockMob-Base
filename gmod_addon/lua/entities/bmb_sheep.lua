@@ -44,7 +44,12 @@ function ENT:RunBehaviour()
     while true do
         local fleeThreat = IsValid(self.FleeThreat) and self.FleeThreat or self.FleeThreatPosition
 
-        if self.RunBMBDebugMove and self:RunBMBDebugMove() then
+        if self.BMBHeld then
+            -- 物理枪持握中：行为整体挂起（拎在手里不乱蹬腿、不触发吃草/游荡；
+            -- loco 缴械在 base Think 里做），松手后下一轮恢复正常调度
+            self:SetBMBState("held")
+            coroutine.wait(0.2)
+        elseif self.RunBMBDebugMove and self:RunBMBDebugMove() then
             self.BMBDebugMoveActive = true
         elseif CurTime() < self.FleeUntil and fleeThreat then
             self:SetBMBState("flee")

@@ -277,19 +277,25 @@
 ## 2026-06-11 Latest Status
 
 - 第十一到十四轮移动问题已由用户确认通过：一格宽走廊进/出、低顶、方块角、拐弯漂移、地图墙和平台边缘保护都不再复现。
-- 第十五轮已实现，待 GMod 实机复测：
-  - A* real 方块世界 3D 邻接：`walk` / `hop` / `drop`。
-  - `hop` = +1 格台阶，BlockHop 顶点 45u，`loco:SetVelocity` 加竖直速度，空中弱水平控。
-  - `drop` = 主动走下 ≤3 格落差，不跳，重力落地。
-  - `path_hop` / `path_drop` 期间豁免 `path_wall` / `path_cliff`，普通 `walk` 仍保留地图墙/悬崖 Source safety。
-  - final 如果是垂直边，必须落地且 `WorldToBlock(GetPos()).z` 到目标层才算到达。
-  - mock world 保持平面；real random walk target 会抽当前层附近，跨层候选要求 MC 支撑。
-- 本轮 lint 已通过。
+- 第十五轮（A* 3D 邻接 + BlockHop/drop）用户实测报三个 bug → **第十六轮（最新，待复测）**：
+  - hop 贴墙不跳 = `hopStartedAt` 一次性 + 空中弱转向落地后仍接管并刷 watchdog 的死锁；修为落地重跳（≤3 次，`path_hop_fail` 交还行为层）+ 起跳朝目标水平分量补足到行走速度 + 空中转向只在离地时接管。
+  - 右键高处/非 MC 地面"卡一下且不动" = 不可达目标 A* 泛洪（同层 walk 边无支撑要求 + drop 不认 Source 地皮 + 每格 hull 扫描无缓存）；修为 `IBlockWorld.HasSupport`（MC 实心或 Source 刷子地面，prop 不算）+ walk/hop/drop 落点统一要求可站立 + 目标悬空下吸 ≤12 格 + per-call 缓存 + f 预算（hStart*2+24）+ 每 64 迭代 yield。
+  - 新增部分路径（中止返回最近已展开点，标 `partial`）：>3 格纯垂直落差从"卡顿拒动"变"走到崖边停住"（仍按 MC 规则拒跳，要改调 `MaxPathDropCells`）；Flee 显式 `allowPartial=false` 保住"被围住会放弃"。
+- 本轮 lint 已通过，已同步 D 盘。
+- **第十六轮用户复测结果**：卡顿全消 ✅、不跳楼 ✅、下落正常 ✅；另确认旧清单三项（枪击 Flee、prop 冲击衰减、真方块世界全链路+mock 回退）通过。新报三个问题 → **第十七轮（最新，待复测）**：
+  - 迷宫绕路中途 `path_no_goal_progress` 放弃 = 直线距离 watchdog 误杀合法绕路；修为节点推进刷新 watchdog + timeout 0.9→1.2。
+  - flatgrass 围墙窗台等窄 Source 路完全走不了 = HasSupport 只采格子中心的回归；修为中心悬空时补 ±12u 轴向偏移采样。
+  - `path_hop` 状态有但不起跳 = 起跳 tick 在地面走了 Approach 把 SetVelocity 竖直速度冲掉的回归；修为 `BlockHopLaunchWindow=0.15s` 起跳保护窗强制空中转向。
+- **第十七轮用户复测**：绕路 ✅、窄沿 ✅；hop 仍不起跳（截图证实整砖 hop 从未离地、半砖"成功"是 StepHeight 走上去的）→ **第十八轮（最新，待复测）**：
+  - hop 真根因 = NextBot 落地态地面解算把 `loco:SetVelocity` 直写的竖直速度当帧压回（SetVelocity 单独起跳从未生效过）。修：`loco:SetJumpHeight(45)` + `loco:Jump()` 切跳跃态后再 SetVelocity 覆盖弹道。
+  - 删 0.15s 保护窗 → 查 `loco:IsClimbingOrJumping()`（起跳当帧强制真）；重跳延时挂 `OnLandOnGround`（`BMBLastLandTime`），不轮询。
+  - 新增**物理枪持握一等状态 `BMBHeld`**：抓羊抽搐/陷地 vs 安静悬挂 = 被抓瞬间 loco 醒/睡。持握中 loco 每 tick 缴械、行为挂起（state=held）、移动入口拒新；拾起 Interrupt 掐掉 move 协程（hop 计数随局部状态销毁，held×hop 握手）；松手 `SetVelocity(0,0,-10)` 踹醒睡眠 loco。
+  - 查证 MCSWEP：半砖 `BlockIsFullCube=false` → A* 当空气，混半砖地形会跳整格（观感问题，待 `MC.BlockBoxes` 细化）。
 
 ## Current Next Checklist
 
-1. 开 `bmb_debug_hud 1`，Tool Gun 右键点高一格平台，观察 HUD `mode=path_hop`，羊应跳上去，不应在台阶前 `path_wall`。
-2. 右键点低 1-3 格落点，观察 `mode=path_drop`，羊应主动走下去，不应 `path_cliff`。
-3. 回归旧移动场景：一格宽走廊、低顶、方块角、90 度拐弯、gm_flatgrass 地图墙、平台边缘。
-4. 下一步仍是 Flee 坑/封闭结构采样：枚举可站立格 -> 随机抽 -> A* 验证。
-5. 粒子/吃草动画/音效放在 A* 3D 和 BlockHop 稳定之后做。
+1. **hop**：右键高一格平台应看到真实起跳动作并上台；贴墙站立也能跳；撞面掉回约 0.25s 重跳、3 次 `path_hop_fail`。
+2. **物理枪**：抓走路中/发呆中的羊都不抽不陷地（state=held）；拎着不蹬腿；松手（含半空松手、原本安静悬挂的）正常下落恢复游荡；hop 中被抓、松手不误报路径失败。
+3. 回归：绕路、窄沿、不卡顿、不跳楼、正常下落、走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、mock 回退。
+4. 下一步仍是 Flee 坑/封闭结构采样：枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
+5. 粒子/吃草动画/音效、半砖 `MC.BlockBoxes` 细化放在移动层稳定之后。

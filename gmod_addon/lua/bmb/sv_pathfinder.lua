@@ -22,25 +22,56 @@ local directions = {
     { x = 0, y = -1 }
 }
 
+-- 可通行/支撑都带 per-FindPath 缓存：A* 里同一个格子会被反复当作 walk 邻居、hop 目标、
+-- drop 落柱检查，而每次判断都是一轮 hull 占格扫描（每格十几次 GetBlock）。无缓存时
+-- 目标不可达扫满迭代上限会放大成几十万次方块查询，全落在一帧里 = 肉眼可见的卡顿
+
 -- 可通行默认 = 脚部格和头部格都不是实心；有 mob 上下文时交给实体按自身 hull
 -- 做水平宽度/高度占格检查，避免成年羊从一格高洞或方块角落挤过去。
 local function isPassable(blockWorld, cell, options)
+    local cache = options and options.passableCache
+    local cellKey = cache and coordKey(cell)
+
+    if cache and cache[cellKey] ~= nil then return cache[cellKey] end
+
+    local passable
     local mob = options and options.mob
+
     if IsValid(mob) and mob.IsBMBPathCellPassable then
-        return mob:IsBMBPathCellPassable(cell)
+        passable = mob:IsBMBPathCellPassable(cell) and true or false
+    elseif blockWorld.IsSolid(cell) then
+        passable = false
+    else
+        passable = not blockWorld.IsSolid({ x = cell.x, y = cell.y, z = (cell.z or 0) + 1 })
     end
 
-    if blockWorld.IsSolid(cell) then return false end
+    if cache then cache[cellKey] = passable end
 
-    return not blockWorld.IsSolid({ x = cell.x, y = cell.y, z = (cell.z or 0) + 1 })
+    return passable
 end
 
-local function hasSolidBelow(blockWorld, cell)
-    return blockWorld.IsSolid({ x = cell.x, y = cell.y, z = (cell.z or 0) - 1 })
+-- 支撑 = 脚下有 MC 实心方块；实现若提供 HasSupport（real 用 Source 刷子地面兜底），
+-- flatgrass 地皮等非 MC 地面也算可站立，mob 才能在"方块结构 ↔ Source 地面"间寻路衔接
+local function hasSupport(blockWorld, cell, options)
+    local cache = options and options.supportCache
+    local cellKey = cache and coordKey(cell)
+
+    if cache and cache[cellKey] ~= nil then return cache[cellKey] end
+
+    local supported
+    if blockWorld.HasSupport then
+        supported = blockWorld.HasSupport(cell) and true or false
+    else
+        supported = blockWorld.IsSolid({ x = cell.x, y = cell.y, z = (cell.z or 0) - 1 })
+    end
+
+    if cache then cache[cellKey] = supported end
+
+    return supported
 end
 
 local function isStandable(blockWorld, cell, options)
-    return isPassable(blockWorld, cell, options) and hasSolidBelow(blockWorld, cell)
+    return isPassable(blockWorld, cell, options) and hasSupport(blockWorld, cell, options)
 end
 
 local function isDropColumnClear(blockWorld, current, target, options)
@@ -99,16 +130,24 @@ local function neighbors(coord, blockWorld, options)
             z = coord.z
         }
 
-        local dropTarget, dropCells
-        if allowVertical then
-            dropTarget, dropCells = findDropNeighbor(blockWorld, coord, sameLevel, options)
-        end
+        if not allowVertical then
+            -- mock 平面世界：只看可通行，不引入 z 轴语义（CLAUDE.md）
+            if isPassable(blockWorld, sameLevel, options) then
+                addNeighbor(found, copyCoord(sameLevel), "walk", 1)
+            end
+        else
+            -- 同层 walk 边必须有支撑：否则目标不可达时搜索会顺着悬空格把整片空域
+            -- 淹一遍直到迭代上限（= 右键不可达点时的整帧卡顿），路径本身也可能悬空
+            if isStandable(blockWorld, sameLevel, options) then
+                addNeighbor(found, copyCoord(sameLevel), "walk", 1)
+            else
+                local dropTarget, dropCells = findDropNeighbor(blockWorld, coord, sameLevel, options)
 
-        if isPassable(blockWorld, sameLevel, options) and not dropTarget then
-            addNeighbor(found, copyCoord(sameLevel), "walk", 1)
-        end
+                if dropTarget then
+                    addNeighbor(found, copyCoord(dropTarget), "drop", 1 + dropCells * 0.12)
+                end
+            end
 
-        if allowVertical then
             local hopTarget = {
                 x = sameLevel.x,
                 y = sameLevel.y,
@@ -117,10 +156,6 @@ local function neighbors(coord, blockWorld, options)
 
             if isStandable(blockWorld, hopTarget, options) then
                 addNeighbor(found, copyCoord(hopTarget), "hop", 1.25)
-            end
-
-            if dropTarget then
-                addNeighbor(found, copyCoord(dropTarget), "drop", 1 + dropCells * 0.12)
             end
         end
     end
@@ -171,27 +206,91 @@ local function reconstruct(cameFrom, cameAction, current)
     return reversed
 end
 
+local function buildWaypoints(blockWorld, cameFrom, cameAction, endCoord)
+    local coords = reconstruct(cameFrom, cameAction, endCoord)
+    local waypoints = {}
+
+    for i = 1, #coords do
+        local node = coords[i]
+        local pos = blockWorld.BlockToWorld(node.coord)
+
+        waypoints[#waypoints + 1] = {
+            x = pos.x,
+            y = pos.y,
+            z = pos.z,
+            coord = copyCoord(node.coord),
+            action = node.action
+        }
+    end
+
+    return waypoints
+end
+
+-- 目标格悬空时（debug 工具点高处墙面/空中、目标点被抬出后落在空气里）向下吸附到
+-- 第一个可站立格：目的地合法性属于目标产出方，但"悬空格"永远不合法，吸附到正下方
+-- 地表是规范化而非运动层兜底；同时让不可达目标快速失败，不再扫满迭代上限
+local function snapGoalToStandable(blockWorld, goalCoord, options)
+    if isStandable(blockWorld, goalCoord, options) then return goalCoord end
+
+    local cell = copyCoord(goalCoord)
+    local maxScan = (options and options.goalSnapDownCells) or 12
+
+    for _ = 1, maxScan do
+        cell = { x = cell.x, y = cell.y, z = cell.z - 1 }
+
+        if not isPassable(blockWorld, cell, options) then return nil end
+        if hasSupport(blockWorld, cell, options) then return cell end
+    end
+
+    return nil
+end
+
 function pathfinder.FindPath(startPos, goalPos, options)
     options = options or {}
+    options.passableCache = {}
+    options.supportCache = {}
 
     local blockWorld = BMB.BlockWorld
     blockWorld.EnsureInitialized(startPos)
 
+    local allowVertical = blockWorld.SupportsVerticalPath ~= false
     local startCoord = blockWorld.WorldToBlock(startPos)
     local goalCoord = blockWorld.WorldToBlock(goalPos)
-    local goalKey = coordKey(goalCoord)
 
     if not isPassable(blockWorld, goalCoord, options) then return nil end
 
+    if allowVertical then
+        goalCoord = snapGoalToStandable(blockWorld, goalCoord, options)
+        if not goalCoord then return nil end
+    end
+
+    local goalKey = coordKey(goalCoord)
+    local startKey = coordKey(startCoord)
+    local hStart = heuristic(startCoord, goalCoord)
+
+    -- 搜索预算：f = g + h 超过它的节点不展开（椭圆界）。yield 只把卡顿摊开，
+    -- 总开销没变；预算才是把"无路"结论的代价从扫满迭代上限压到起点-目标走廊一圈
+    local fLimit = options.searchBudget or (hStart * 2 + 24)
+
     local open = { startCoord }
-    local openSet = { [coordKey(startCoord)] = true }
+    local openSet = { [startKey] = true }
     local closedSet = {}
     local cameFrom = {}
     local cameAction = {}
-    local gScore = { [coordKey(startCoord)] = 0 }
-    local fScore = { [coordKey(startCoord)] = heuristic(startCoord, goalCoord) }
+    local gScore = { [startKey] = 0 }
+    local fScore = { [startKey] = hStart }
 
-    for _ = 1, BMB.Config.MaxPathIterations do
+    -- 部分路径：记录已展开节点里离目标最近的那个。搜索中止（预算/迭代耗尽、无路）
+    -- 时返回到它的路径——行为观感从"卡顿后拒动"变成"走到崖边/尽头停住"（原版手感）
+    local bestKey = startKey
+    local bestCoord = startCoord
+    local bestH = hStart
+
+    -- 时间切片：FindPath 只在 nextbot 行为协程里调用，定期 yield 把大搜索摊到多个
+    -- tick 上（mob 停半拍"想路"），不可达目标也不会再把单帧卡住
+    local yieldEvery = math.max(16, options.yieldEvery or 64)
+
+    for iteration = 1, BMB.Config.MaxPathIterations do
         if #open == 0 then break end
 
         local current = lowest(open, fScore)
@@ -199,39 +298,31 @@ function pathfinder.FindPath(startPos, goalPos, options)
         openSet[currentKey] = nil
 
         if currentKey == goalKey then
-            local coords = reconstruct(cameFrom, cameAction, current)
-            local waypoints = {}
-
-            for i = 1, #coords do
-                local node = coords[i]
-                local pos = blockWorld.BlockToWorld(node.coord)
-
-                waypoints[#waypoints + 1] = {
-                    x = pos.x,
-                    y = pos.y,
-                    z = pos.z,
-                    coord = copyCoord(node.coord),
-                    action = node.action
-                }
-            end
-
-            return waypoints
+            return buildWaypoints(blockWorld, cameFrom, cameAction, current)
         end
 
         closedSet[currentKey] = true
+
+        local currentH = heuristic(current, goalCoord)
+        if currentH < bestH then
+            bestH = currentH
+            bestKey = currentKey
+            bestCoord = current
+        end
 
         for _, neighbor in ipairs(neighbors(current, blockWorld, options)) do
             local nextCoord = neighbor.coord
             local nextKey = coordKey(nextCoord)
 
-            if not closedSet[nextKey] and isPassable(blockWorld, nextCoord, options) then
+            if not closedSet[nextKey] then
                 local tentative = (gScore[currentKey] or math.huge) + (neighbor.cost or 1)
+                local h = heuristic(nextCoord, goalCoord)
 
-                if tentative < (gScore[nextKey] or math.huge) then
+                if tentative + h <= fLimit and tentative < (gScore[nextKey] or math.huge) then
                     cameFrom[nextKey] = copyCoord(current)
                     cameAction[nextKey] = neighbor.action
                     gScore[nextKey] = tentative
-                    fScore[nextKey] = tentative + heuristic(nextCoord, goalCoord)
+                    fScore[nextKey] = tentative + h
 
                     if not openSet[nextKey] then
                         open[#open + 1] = copyCoord(nextCoord)
@@ -240,6 +331,18 @@ function pathfinder.FindPath(startPos, goalPos, options)
                 end
             end
         end
+
+        if iteration % yieldEvery == 0 and coroutine.running() then
+            coroutine.yield()
+        end
+    end
+
+    -- 走到这 = 无完整路径。能比起点更接近目标就交部分路径（标记 partial），
+    -- 一步都凑不近才算彻底失败
+    if options.allowPartial ~= false and bestKey ~= startKey and bestH < hStart then
+        local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, bestCoord)
+        waypoints.partial = true
+        return waypoints
     end
 
     return nil

@@ -44,8 +44,8 @@ Phase 2
 - [x] 将 mock 方块显示改为客户端渲染
 - [x] 验证 Source 小台阶上/下可走且不跳崖
 - [x] 加入高速物理 prop 冲击伤害和速度衰减反馈
-- [ ] 复测 Sheep 枪击受伤后 Flee 是否稳定触发
-- [ ] 复测高速 prop 砸中/砸死 Sheep 后是否沿原方向衰减而不是反向弹飞
+- [x] 复测 Sheep 枪击受伤后 Flee 是否稳定触发（用户已验证 ✅）
+- [x] 复测高速 prop 砸中/砸死 Sheep 后是否沿原方向衰减而不是反向弹飞（用户已验证 ✅）
 - [x] 修"走一会停一下换方向"：Wander 改回 A* 完整路径 + 到站停顿（Fable 2026-06-10，用户已验证）
 - [x] 修原地扭动真根因：goalTolerance 12->18 消减速区死区；FaceTarget 改 loco:FaceTowards（用户已验证）
 - [x] 修面朝前方倒退：SteerTowards 先原地转身再走（用户已验证）
@@ -62,11 +62,17 @@ Phase 2
 - [x] 修一格宽走廊"出得来、进不去"：A* 路径跟随退役 Source 安全二次否决，carrot 改 pure pursuit + 网格视线缩短（待用户复测）
 - [x] 修方块通行按中心点漏判：A*/随机候选/carrot 视线改用 mob hull 占格检查，sheep hull 调到 32u，Tool Gun 右键改走 A* debug path（待用户复测）
 - [x] 修 path 退役 Source safety 过头：MoveAlongPath 加回 path 专用地图墙/悬崖复查，MC 方块命中交给 hull 规则，Source 地图墙/平台边缘仍拦截（用户已验证）
-- [ ] 真方块世界全链路复测：游荡（含从一格地板走下来）→ 受击逃 → 吃草 grass_block→dirt（同步/音效/存档）；`bmb_world mock` 回退正常
+- [x] 真方块世界全链路复测：游荡（含从一格地板走下来）→ 受击逃 → 吃草 grass_block→dirt（同步/音效/存档）；`bmb_world mock` 回退正常（用户已验证 ✅）
 - [ ] Flee 在坑/封闭结构中改为先枚举可站立格再随机抽样，减少"有出口但盲采失败直接放弃"
 - [ ] 吃草原版手感版：羊自己补低头动画、草屑粒子和咀嚼音效（不靠破坏 fx 冒充）
 - [x] 羊一格台阶自动跳（BlockHop，StepHeight 仍 <36）+ A* 3D 邻接 + ≤3 格 drop 边（待用户复测）
-- [ ] 复测 hop/drop：Tool Gun 点高一格平台显示 `path_hop` 并跳上去；点低 1-3 格落点显示 `path_drop` 并主动走下去；旧的走廊/墙角/地图墙/悬崖保护不回归
+- [x] 第十六轮：修用户实测三 bug——hop 贴墙不跳（落地重跳 ≤3 次 + 起跳水平速度朝目标补足 + 空中转向只在离地时接管）；A* 不可达泛洪卡帧（walk 边要求可站立、`IBlockWorld.HasSupport` 认 Source 刷子地面、目标悬空下吸、per-call 缓存、f 预算 + yield 切片）；部分路径（走到崖边停住；Flee 关闭）（待用户复测）
+- [x] 复测第十六轮：hop 贴墙重跳；>3 格高差右键不卡顿、有梯逐级下/纯崖走到边停；非 MC 地面右键可达；Flee 被围住仍会放弃；旧走廊/墙角/地图墙/悬崖保护不回归（用户已验证：不卡 ✅ 不跳楼 ✅ 下落正常 ✅；发现三个新问题 → 第十七轮）
+- [x] 第十七轮：修绕路被 `path_no_goal_progress` 误杀（节点推进刷新 goal watchdog + timeout 0.9→1.2）；修窄 Source 沿走不了（HasSupport 中心悬空时补 ±12u 轴向偏移采样）；修 `path_hop` 不起跳（起跳保护窗 0.15s 内禁 Approach，防 SetVelocity 竖直速度被冲掉）（待用户复测）
+- [x] 复测第十七轮：迷宫绕路不中途放弃；围墙窗台/窄沿恢复可走；hop 真起跳（贴墙也能上）；第十六轮成果（不卡/不跳楼/下落）不回归（用户已验证：绕路 ✅ 窄沿 ✅；hop 仍不起跳 → 第十八轮）
+- [x] 第十八轮：hop 真根因 = 落地态 SetVelocity 竖直速度被地面解算压回，改 `loco:Jump()`+SetVelocity 弹道；删 0.15s 保护窗改查 `IsClimbingOrJumping`；重跳延时挂 `OnLandOnGround`；新增物理枪持握一等状态 `BMBHeld`（loco 缴械/行为挂起/移动拒新/松手踹醒，held×hop 握手）（待用户复测）
+- [ ] 复测第十八轮：hop 看到真实起跳动作并上台（贴墙也行）；物理枪抓任意状态的羊不抽搐不陷地、松手正常下落恢复游荡；旧场景回归
+- [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
 - **Status:** in_progress
 
 ### Phase 3: Zombie 迁移回新架构

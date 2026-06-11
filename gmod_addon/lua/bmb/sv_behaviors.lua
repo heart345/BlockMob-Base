@@ -91,7 +91,9 @@ function BMB.Behaviors.Flee.Run(mob)
         local moved = false
 
         if destination then
-            moved = mob:MoveToWorldPosition(destination, mob.RunSpeed, { skipSourcePath = true })
+            -- allowPartial=false：恐慌候选不可达就该算失败计数（MC：被围住冲几下放弃），
+            -- 部分路径会把"撞墙"洗成"成功冲刺"，失败计数永远清零、围栏里无限乱撞
+            moved = mob:MoveToWorldPosition(destination, mob.RunSpeed, { skipSourcePath = true, allowPartial = false })
         end
 
         if mob.BMBMoveInterrupt then

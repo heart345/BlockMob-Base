@@ -101,6 +101,57 @@ function real.IsSolid(blockCoord)
     return true
 end
 
+-- 窄 Source 几何比 36u 格子窄时，MC 网格中心可能悬在沿外侧：中心采样没命中
+-- 再用这四个轴向偏移兜一次（HasSupport 用）
+local supportSampleOffsets = {
+    { x = 12, y = 0 },
+    { x = -12, y = 0 },
+    { x = 0, y = 12 },
+    { x = 0, y = -12 }
+}
+
+-- 寻路"支撑"语义：脚下有 MC 实心方块，或这一格内有 Source 刷子地面（flatgrass 地皮、
+-- 地图静态几何）。prop 不算支撑——A* 不感知 prop，交给移动层 Source safety 兜。
+-- 有了它，mob 才能在"方块结构 ↔ Source 地面"之间寻路衔接（drop 落回地皮、目标点
+-- 落在非 MC 地面上也可达）
+function real.HasSupport(blockCoord)
+    if not real.Available() then return false end
+
+    local below = coord(blockCoord.x, blockCoord.y, (blockCoord.z or 0) - 1)
+    if real.IsSolid(below) then return true end
+
+    local center = real.BlockToWorld(blockCoord)
+    local half = (MC.BS or BMB.Config.BlockSize) * 0.5
+    local top = center.z + half - 1
+    local bottom = center.z - half - 6
+
+    -- 从格顶探到格底下方一点：命中 = 地面落在这一格内（可站立）；
+    -- 中心 StartSolid = 整格埋在地面以下，不可站立——挡掉"往地里钻"的 drop/walk 候选
+    local centerTrace = util.TraceLine({
+        start = Vector(center.x, center.y, top),
+        endpos = Vector(center.x, center.y, bottom),
+        mask = MASK_SOLID_BRUSHONLY
+    })
+
+    if centerTrace.StartSolid then return false end
+    if centerTrace.Hit then return true end
+
+    -- 窄 Source 几何（围墙窗台、薄沿）比 36u 格子窄，MC 网格中心可能正好悬在沿外侧、
+    -- 但格子大半压在沿上：偏移采样任一命中就算支撑。StartSolid 的样本（戳进旁边墙体）
+    -- 跳过，不代表这格不可站
+    for _, offset in ipairs(supportSampleOffsets) do
+        local trace = util.TraceLine({
+            start = Vector(center.x + offset.x, center.y + offset.y, top),
+            endpos = Vector(center.x + offset.x, center.y + offset.y, bottom),
+            mask = MASK_SOLID_BRUSHONLY
+        })
+
+        if trace.Hit and not trace.StartSolid then return true end
+    end
+
+    return false
+end
+
 function real.GetBlocksInRadius(pos, radius)
     if not real.Available() then return {} end
 
@@ -144,9 +195,9 @@ function real.GetRandomWalkablePoint(origin, radius, mob)
         end
 
         -- 候选点取 mob 脚部所在层：脚部格和头部格都要是空的（mob 高 44 < 2 格）。
-        -- 当前层不要求脚下有 MC 方块（flatgrass 地皮可支撑）；跨层候选必须有 MC 支撑。
-        local hasSupport = real.IsSolid(coord(bx, by, bz - 1))
-        if bz == center.z or hasSupport then
+        -- 支撑判断统一走 HasSupport（MC 实心或 Source 地皮都算），同层悬空候选
+        -- （站在高台上抽到平台外的空中格）在这里就被挡掉，不再依赖 A* 失败兜底
+        if real.HasSupport(coord(bx, by, bz)) then
             local candidate = MC.CellWorldCenter(bx, by, bz)
 
             if IsValid(mob) and mob.IsBMBHullClearAtPosition then
