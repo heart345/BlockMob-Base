@@ -539,3 +539,69 @@
   - `CLAUDE.md`
   - `docs/STATE.md`
   - `.planning/mcgm-main/*`
+
+### 第二十轮：BlockHop 起跳准入 + 落点余量 + hop 分类 HUD（2026-06-11，待复测）
+
+- 用户复测第十九轮：物理枪上下抽完全修好；BlockHop 仍有问题。平地两个半砖/一格台阶测试点里，反复用 debug 点某个方向才有概率跳上去，弧线很低且会擦进模型；其他地形显示 `path_hop` 但完全上不去。
+- 诊断：截图已经进 `mode=path_hop`，所以当前重点不是 A* 没标 hop，而是跟随层触发点/速度/落点导致 `JumpAcrossGap` 给出低弧或擦边弧线。
+- `bmb_base_mob.lua`
+  - `BlockHopJumpHeight` 改为默认 `BlockHopJumpHeightScale = 1.6`，按 `BlockSize` 算约 58u；保留 `BlockHopJumpHeight` 作为显式覆盖入口。
+  - `JumpAcrossGap` landing 从台面正好高度改为台面 +2u，且保持上层格中心 x/y。
+  - 新增 `GetBMBHopLaunchControl`：起跳必须在 0.85~1.4 格距离窗口内，且朝目标速度 ≥0.6×pathSpeed；太近或太慢时先 steer 到约 1.15 格的 backoff/助跑点，不再硬跳。
+  - 新增 hop 分类数据：每次 attempt 记录起跳距离、到方块面的 face 距离、朝目标速度、实际 apex、native/manual、ok/retry/fail；`bmb_debug_hop_log 1` 可打印控制台日志。
+- `cl_debug.lua`
+  - HUD 第三行在 hop 后 5 秒显示 `hop# native/manual d face v apex result`，下一轮截图能直接看出决定性变量。
+- 若第二十轮仍失败：若 `d/v` 合格但 `apex` 低，优先试底线方案：`Jump()` 开门后下一 tick 再 `SetVelocity` 覆盖弹道；若根本不进 `path_hop`，转查 A* hop 候选拒绝原因。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/bmb/cl_debug.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十一轮：错帧手写 BlockHop 弹道 + Wander 下层采样（2026-06-11，待复测）
+
+- 用户复测第二十轮：debug 从较远距离给一点助跑能跳上；wander 状态慢速靠近方块触发 hop 多半跳不上；有一次 wander hop 跳得很远。补充成功日志显示：`JumpAcrossGap` 成功样本 `dist≈47 face≈29 speed≈73 apex≈36`，失败样本多为 `dist≈36 face≈18 speed≈50 apex=0`。结论：native `JumpAcrossGap` 对一格爬升近距离不可靠，不是单纯窗口问题。
+- `bmb_base_mob.lua`
+  - `StartBMBBlockHop` 默认不再调用 `JumpAcrossGap`；改为 `SetJumpHeight(1.6*BlockSize)` + `loco:Jump()` 打开跳跃态，下一 tick `ApplyBMBPendingBlockHop` 用手写 `SetVelocity` 覆盖弹道。
+  - 手写弹道：竖直速度按顶点 `1.6*BlockSize`；水平速度按到上层格中心的距离 / 飞行时间计算，再 clamp 到 `BlockHopManualHorizontalMinSpeed..1.1*pathSpeed`，避免 debug 助跑导致跳很远。
+  - 手写速度写入后增加 `BlockHopManualControlTime` 短窗口，强制走空中 steering；否则同一轮 path loop 可能仍判 onGround 并交回 `Approach`，把刚写入的上抛吃掉。
+  - 起跳准入取消“已有速度 ≥0.6×pathSpeed”的硬门槛；保留 0.85~1.4 格距离窗口，太贴脸仍先 backoff。这样 wander 慢速靠近也能起跳。
+  - `InterruptBMBMovement` 清掉 pending hop，避免物理枪/受击打断后残留速度。
+- MC 源码核对：`Entity#getMaxFallDistance()` 默认 3；`LivingEntity#getComfortableFallDistance(0)=floor(3)`；`Mob#getMaxFallDistance()` 无目标时返回 comfortable fall distance；羊未覆写。所以 BMB 保持 `MaxPathDropCells=3`。
+- `sv_block_world_real.lua`
+  - real `GetRandomWalkablePoint` 尝试次数 24→36；前 14 次优先抽当前层下方 1~3 格的可站立候选，让 Wander 更容易主动选到台下目标并走 A* `drop` 边。A* 本来能走（debug 可下），问题主要是随机目标选不到。
+
+### 第二十二轮：BlockHop 两段式 manual lift（2026-06-12，待复测）
+
+- 用户复测第二十一轮：wander 主动下落 3 格内已实现；BlockHop 仍未成功过，无论助跑还是贴着都会做动作但不上台，半砖测试点也很费劲。
+- 关键日志：`hop velocity ... vz=339.4` 已写入，但结果多为 `apex=0.0`，少数仅 `apex=12.0`。结论：竖直速度数值不是主要问题，斜向速度/地面解算在实体真正抬高前就把上抛磨掉。
+- `bmb_base_mob.lua`
+  - 新增 `BMBActiveBlockHop` 两段控制器：`ApplyBMBPendingBlockHop` 不再直接给完整斜上速度，而是先只给竖直速度并记录 horizontal/vertical/target/窗口时间。
+  - lift 阶段：短时间只 `SetVelocity(0,0,vz)`；如果仍判 onGround，局部重复 `loco:Jump()`，目标是先让 hull 离开台阶侧面。
+  - forward 阶段：抬升到约 `0.8*BlockSize` 或超过 lift 时间后，再加水平速度和弱转向落向 carrot/目标格；保留 flight-time clamp，防 debug 助跑跳远。
+  - 成功/失败/中断时清理 `BMBPendingBlockHop`、`BMBActiveBlockHop` 和 air-control 窗口，避免残留速度。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十二轮复测：一格 BlockHop 成功，记录调优项（2026-06-12）
+
+- 用户复测确认：NPC 已能跳上一格台阶；wander 主动下 3 格内也已实现。
+- 新观察：
+  - hop 弧线偏高，成功日志 apex 约 54~65；偶发能误上两格，但 A* 不会主动规划两格 hop。
+  - debug 工具给较远目标时，mob 还在路上也可能因时间短而放弃目标；后续调 debug move/path timeout。
+  - 跳完后动作会持续一段时间；套皮后可能影响观感，先记录待查 activity/gesture reset。
+- 本轮不继续改代码，按用户要求先提交并 push。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/bmb/cl_debug.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`

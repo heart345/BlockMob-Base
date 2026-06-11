@@ -185,12 +185,16 @@ function real.GetRandomWalkablePoint(origin, radius, mob)
     local blockRadius = math.max(1, math.floor(radius / blockSize))
     local maxDropCells = (IsValid(mob) and mob.MaxPathDropCells) or BMB.Config.MaxPathDropCells or 3
 
-    for _ = 1, 24 do
+    for attempt = 1, 36 do
         local bx = center.x + math.random(-blockRadius, blockRadius)
         local by = center.y + math.random(-blockRadius, blockRadius)
         local bz = center.z
 
-        if math.random() < 0.45 then
+        -- MC 普通 mob 的 getMaxFallDistance() 默认是 3。高台上游荡时要主动抽
+        -- 下层候选，否则 A* 会走 drop，但 Wander 很少把目标选到台下。
+        if attempt <= 14 and maxDropCells > 0 then
+            bz = center.z - math.random(1, maxDropCells)
+        elseif math.random() < 0.55 then
             bz = center.z + math.random(-maxDropCells, 1)
         end
 

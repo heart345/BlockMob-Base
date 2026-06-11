@@ -72,8 +72,16 @@ Phase 2
 - [x] 复测第十七轮：迷宫绕路不中途放弃；围墙窗台/窄沿恢复可走；hop 真起跳（贴墙也能上）；第十六轮成果（不卡/不跳楼/下落）不回归（用户已验证：绕路 ✅ 窄沿 ✅；hop 仍不起跳 → 第十八轮）
 - [x] 第十八轮：hop 真根因 = 落地态 SetVelocity 竖直速度被地面解算压回，改 `loco:Jump()`+SetVelocity 弹道；删 0.15s 保护窗改查 `IsClimbingOrJumping`；重跳延时挂 `OnLandOnGround`；新增物理枪持握一等状态 `BMBHeld`（loco 缴械/行为挂起/移动拒新/松手踹醒，held×hop 握手）
 - [x] 复测第十八轮：hop 有抬脚/离地动作但一陷一陷仍跳不上台；物理枪抽动大幅改善但仍有轻微弹簧感 → 第十九轮
-- [x] 第十九轮：BlockHop 优先用 `loco:JumpAcrossGap(landingGoal, landingForward)` 原生跳到上层脚底落点，`SetJumpHeight` 至少 58u；原生 hop 期间不再 `SetVelocity` 空中弱控；物理枪 held 每 tick `SetGravity(0)` + `SetDesiredSpeed(0)`，drop 恢复 gravity（待用户复测）
-- [ ] 复测第十九轮：hop 不再小陷跳并能跳上一格台阶（贴墙也行）；物理枪抓任意状态的羊无弹簧抽动、松手正常下落恢复游荡；旧场景回归
+- [x] 第十九轮：BlockHop 优先用 `loco:JumpAcrossGap(landingGoal, landingForward)` 原生跳到上层脚底落点，`SetJumpHeight` 至少 58u；原生 hop 期间不再 `SetVelocity` 空中弱控；物理枪 held 每 tick `SetGravity(0)` + `SetDesiredSpeed(0)`，drop 恢复 gravity
+- [x] 复测第十九轮：物理枪上下抽完全修好 ✅；hop 有 `path_hop` 但低弧/概率上台/擦模，debug 反复点才偶尔成功 → 第二十轮
+- [x] 第二十轮：BlockHop 起跳准入窗口（0.85~1.4 格 + 朝目标速度 ≥0.6×pathSpeed，不合格先退到 1.15 格助跑点）；JumpAcrossGap 落点改台面 +2u；JumpHeight 默认 `1.6*BlockSize`；HUD/日志记录 hop 起跳距离、face 距离、速度、实际 apex、成败（待用户复测）
+- [x] 复测第二十轮：debug 有助跑能上；wander 慢速靠近多数上不去；native 近距离多次 apex=0，偶发成功样本 dist≈47/speed≈73/apex≈36；发现 wander 不主动下 2 格（debug 可下）→ 第二十一轮
+- [x] 第二十一轮：BlockHop 默认改为 `Jump()` 开门 + 下一 tick 手写 `SetVelocity` 弹道（不再用 `JumpAcrossGap`），写速度后短窗口走空中 steering；取消已有速度硬门槛，仅保留距离窗口；水平速度按距离/飞行时间计算并 clamp，避免助跑跳很远；MC 源码确认普通 mob `getMaxFallDistance=3`，保持 `MaxPathDropCells=3`，real Wander 随机候选前 14 次偏向 1~3 格下层
+- [x] 复测第二十一轮：wander 主动从 3 格内高处下落已实现 ✅；hop 仍全失败，manual `vz≈339` 已写入但 apex 多为 0、少数约 12 → 第二十二轮
+- [x] 第二十二轮：BlockHop 改两段式 manual lift（下一 tick 先竖直抬升，仍 onGround 时短窗口重复 `Jump()`；抬到约 `0.8*BlockSize` 或 lift 超时后再加水平速度落点），避免 hull 过早顶住方块侧面吞掉上抛
+- [x] 复测第二十二轮：NPC 已能跳上一格台阶 ✅；drop 主动下 3 格内 ✅；发现待调优：apex 偏高、偶发误上两格（A* 不主动规划两格）、debug move 长路径超时偏短、跳后动作保持偏久
+- [ ] 调优 BlockHop apex/lift，避免误上两格且保持一格可靠；检查跳后动作 reset
+- [ ] 调整 debug move 长路径 timeout，避免还在路上就放弃目标
 - [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
 - **Status:** in_progress
 

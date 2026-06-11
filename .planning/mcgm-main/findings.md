@@ -327,3 +327,26 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **落点 z 要按实体脚底语义给**：BMB waypoint 的 `target.z` 是 foot cell 中心，不是地表；NextBot landing goal 按实体 origin/脚底位置理解，所以给 `target.z - blockSize * 0.5`，即上层空气格底面/支撑方块顶面。
 - **物理枪 held 的缴械要包含目标速度和重力**：只清 velocity 能压掉大抽动，但 loco 仍可能保留 desired speed 或重力求解，表现成轻微弹簧。held 每 tick 应同时 `SetVelocity(0)`、`SetGravity(0)`、`SetDesiredSpeed(0)`；drop 必须恢复原 gravity。
 - **下一轮诊断签名**：若 JumpAcrossGap 仍不上台，先记录 0.5 秒逐 tick：`IsClimbingOrJumping`、`IsOnGround`、`vel.z`、`pos.z`。`vel.z` 起步低看 jump height/API；起步正常但瞬间归零看落地判定；`vel.z` 正常而 `pos.z` 不涨看 hull/碰撞。
+
+## 2026-06-11: BlockHop 概率上台的变量化（第二十轮）
+
+- **`path_hop` 触发不等于起跳条件合格**：只看"离目标中心足够近"会让太近、太慢、横向速度偏离的个体硬跳。表现就是 debug 反复点有时靠运气上台，有时低弧擦边。hop 需要准入窗口：距离、朝目标速度、落点都合格再交给 `JumpAcrossGap`。
+- **Source 里 MC 视觉顶点需要余量**：MC 视觉上 45u 顶点够，但 Source hull 会和方块面/碰撞解算打架。默认 jump height 用 `1.6 * BlockSize`，落点给台面 +2u，观感变化小，但能避免"目标点在台沿/台面正好高度"造成擦边弧线。
+- **先 backoff 再跳比重试硬跳便宜**：如果当前距离小于 0.85 格或速度不足，直接重跳只是在重复坏起点；退到约 1.15 格的助跑点，再带速度进入 0.85~1.4 格窗口，能把概率事件变成确定前置条件。
+- **HUD 诊断比猜测更值钱**：每次 hop 记录 `d/face/v/apex/result`。下一轮如果失败，先看 HUD：`d/v` 不合格就是准入/助跑；`d/v` 合格但 apex 低就是 native jump 弧线问题；apex 足够但不上台才看 hull/collision 或目标层判定。
+
+## 2026-06-11: Native Hop 失败签名与 MC Drop 高度（第二十一轮）
+
+- **`JumpAcrossGap` 的失败签名已经明确**：成功样本 `dist≈47/face≈29/speed≈73/apex≈36`，失败样本 `dist≈36/face≈18/speed≈50/apex=0`。也就是说 native hop 在近距离爬台时不是弧低，而是根本没给实体上升位移。继续调 landing/jumpheight 收益低，默认应切到错帧手写弹道。
+- **错帧手写弹道避开同 tick 顺序问题**：第十八轮 `Jump()+SetVelocity` 同 tick 仍可能被内部冲量/地面解算覆盖；第二十一轮改为先 `Jump()`，下一 tick 再 `SetVelocity`。如果这仍 apex=0，下一步就再延后一 tick 或等 `IsClimbingOrJumping` 真值稳定后写速度。
+- **错帧后仍要防 path loop 抢回地面控制**：下一 tick 写入手写速度后，当前循环可能还没离地、`IsOnGround` 仍为真；如果马上交回 `Approach`，等于又把上抛压回。写速度后给一个极短空中控制窗口，只做 hop steering，不改普通落地重试语义。
+- **手写水平速度要按飞行时间算**：不能简单保留 debug 助跑速度，否则会出现用户看到的“跳很远”。公式是水平距离 / 弹道飞行时间，再 clamp 到合理移动速度区间。
+- **MC 默认主动下落高度是 3 格**：源码链路是 `WalkNodeEvaluator.tryFindFirstGroundNodeBelow` 用 `mob.getMaxFallDistance()`；`Entity` 默认 3，`LivingEntity#getComfortableFallDistance(0)=3`，`Mob` 无目标时返回 comfortable fall distance，羊无覆写。所以 BMB 的 A* drop 上限 3 是对的；主动性问题在 Wander 目标采样，而不是 A* drop 高度。
+
+## 2026-06-12: Manual Hop 两段式 lift（第二十二轮）
+
+- **`vz` 写入不代表实体真的获得 apex**：用户日志里 `hop velocity ... vz≈339` 已打印，但 `apex=0~12`，说明计算值没错，问题在后续碰撞/地面解算。以后看到这种签名，不要继续调 jump height；要看写入后是否被台阶侧面或 ground state 磨掉。
+- **斜上速度会把 hull 推进台阶侧面**：一格爬升不是跨沟，贴台阶时水平分量过早生效会让 Source bbox 顶住垂直面，竖直位移也可能被碰撞解算吞掉。manual hop 改成两段：先竖直 lift，离开侧面后再水平落点。
+- **短窗口内重复 `Jump()` 是针对落地解算的局部补丁**：只在 lift 阶段仍判 onGround 时踢，不恢复旧版无限保护窗；落地未到目标层仍按 `OnLandOnGround` + retry/fail 交还行为层。
+- **第二十二轮实测成功但弧线偏高**：一格台阶已能上，成功样本 apex 约 54~65；但偶发能误上两格。下一步是调低 lift/jump 余量，而不是撤掉两段式。A* 仍只规划 +1 hop，不主动跳两格。
+- **debug move timeout 是独立可用性问题**：长路径明明在路上却被 debug 指令放弃，后续按路径长度放宽 debug timeout / goal-progress watchdog；不要和 hop 成败混在一起。

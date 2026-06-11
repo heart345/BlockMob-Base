@@ -71,9 +71,33 @@ hook.Add("HUDPaint", "BMB_DebugMobHUD", function()
                     ent:GetNWInt("BMBPathNode", 0),
                     ent:GetNWInt("BMBPathAdvance", 0)
                 )
+                local resultNames = {
+                    [0] = "air",
+                    [1] = "ok",
+                    [2] = "retry",
+                    [3] = "fail"
+                }
+                local hopLine
+
+                if CurTime() < ent:GetNWFloat("BMBHopDebugUntil", 0) then
+                    hopLine = string.format(
+                        "hop#%d %s d:%.1f face:%.1f v:%.1f apex:%.1f %s",
+                        ent:GetNWInt("BMBHopAttempt", 0),
+                        ent:GetNWBool("BMBHopNative", false) and "native" or "manual",
+                        ent:GetNWFloat("BMBHopDistance", 0),
+                        ent:GetNWFloat("BMBHopFaceDistance", 0),
+                        ent:GetNWFloat("BMBHopSpeed", 0),
+                        ent:GetNWFloat("BMBHopApex", 0),
+                        resultNames[ent:GetNWInt("BMBHopResult", 0)] or "?"
+                    )
+                end
 
                 draw.SimpleTextOutlined(line1, "DermaDefaultBold", screen.x, screen.y - 8, Color(255, 245, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 1, Color(0, 0, 0, 220))
                 draw.SimpleTextOutlined(line2, "DermaDefaultBold", screen.x, screen.y + 8, Color(180, 230, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 1, Color(0, 0, 0, 220))
+
+                if hopLine then
+                    draw.SimpleTextOutlined(hopLine, "DermaDefaultBold", screen.x, screen.y + 24, Color(210, 255, 190), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 1, Color(0, 0, 0, 220))
+                end
             end
         end
     end

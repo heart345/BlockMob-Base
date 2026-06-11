@@ -11,6 +11,10 @@ if SERVER then
         -- 默认关：寻路走自写方块 A*（CLAUDE.md：不用 navmesh），此开关仅留作普通地图实验
         CreateConVar("bmb_use_source_path", "0", FCVAR_ARCHIVE, "EXPERIMENTAL: use GMod Source PathFollower instead of BMB block-grid A*.")
     end
+
+    if not GetConVar("bmb_debug_hop_log") then
+        CreateConVar("bmb_debug_hop_log", "0", FCVAR_ARCHIVE, "Print BlockHop launch/apex/result diagnostics.")
+    end
 end
 
 ENT.Base = "base_nextbot"
@@ -39,8 +43,19 @@ ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
 ENT.StepHeight = 28
 ENT.BlockHopApex = 45
-ENT.BlockHopJumpHeight = 58
-ENT.BlockHopTriggerDistance = 42
+ENT.BlockHopJumpHeightScale = 1.6
+ENT.BlockHopLandingLift = 2
+ENT.BlockHopLaunchMinDistanceScale = 0.85
+ENT.BlockHopLaunchIdealDistanceScale = 1.15
+ENT.BlockHopLaunchMaxDistanceScale = 1.4
+ENT.BlockHopMinLaunchSpeedScale = 0.6
+ENT.BlockHopRequireLaunchSpeed = false
+ENT.BlockHopManualHorizontalMinSpeed = 32
+ENT.BlockHopManualHorizontalMaxScale = 1.1
+ENT.BlockHopManualControlTime = 0.7
+ENT.BlockHopManualLiftTime = 0.16
+ENT.BlockHopManualForwardStartHeightScale = 0.8
+ENT.BlockHopManualPostLiftMinVzScale = 0.35
 ENT.BlockHopAirSteerStrength = 0.08
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
 -- 重跳要赶在它把路径判死之前
@@ -145,6 +160,14 @@ function ENT:BaseInitialize()
     self:SetNWFloat("BMBDistToGoal", 0)
     self:SetNWInt("BMBPathNode", 0)
     self:SetNWInt("BMBPathAdvance", 0)
+    self:SetNWInt("BMBHopAttempt", 0)
+    self:SetNWInt("BMBHopResult", 0)
+    self:SetNWBool("BMBHopNative", false)
+    self:SetNWFloat("BMBHopDistance", 0)
+    self:SetNWFloat("BMBHopFaceDistance", 0)
+    self:SetNWFloat("BMBHopSpeed", 0)
+    self:SetNWFloat("BMBHopApex", 0)
+    self:SetNWFloat("BMBHopDebugUntil", 0)
 end
 
 function ENT:UpdateMoveActivity(speed)
@@ -165,6 +188,9 @@ end
 
 function ENT:InterruptBMBMovement()
     self.BMBMoveInterrupt = true
+    self.BMBPendingBlockHop = nil
+    self.BMBActiveBlockHop = nil
+    self.BMBBlockHopAirControlUntil = 0
 end
 
 function ENT:ClearBMBMovementInterrupt()
@@ -1012,7 +1038,291 @@ function ENT:IsBMBPathFinalReached(final, tolerance)
     return self:IsBMBPathActionAtTargetLevel(final)
 end
 
-function ENT:StartBMBBlockHop(target, speed)
+function ENT:GetBMBBlockHopJumpHeight(blockSize, apex)
+    local configured = self.BlockHopJumpHeight
+    if configured then
+        return math.max(apex or 0, configured)
+    end
+
+    return math.max(apex or 0, (blockSize or BMB.Config.BlockSize or 36) * (self.BlockHopJumpHeightScale or 1.6))
+end
+
+function ENT:GetBMBHopForward(current, target, previousNode)
+    local forward
+
+    if previousNode then
+        forward = Vector(target.x - previousNode.x, target.y - previousNode.y, 0)
+    else
+        forward = Vector(target.x - current.x, target.y - current.y, 0)
+    end
+
+    if forward:LengthSqr() <= 1 then
+        forward = Vector(target.x - current.x, target.y - current.y, 0)
+    end
+
+    if forward:LengthSqr() <= 1 then
+        forward = self:GetForward()
+        forward.z = 0
+    end
+
+    if forward:LengthSqr() <= 1 then
+        forward = Vector(1, 0, 0)
+    else
+        forward:Normalize()
+    end
+
+    return forward
+end
+
+function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
+    local blockSize = BMB.Config.BlockSize or 36
+    local distance = flatDistance(current, target)
+    local faceDistance = math.max(0, distance - blockSize * 0.5)
+    local forward = self:GetBMBHopForward(current, target, previousNode)
+    local velocity = self:GetVelocity()
+    local horizontal = Vector(velocity.x, velocity.y, 0)
+    local speed2D = horizontal:Length2D()
+    local speedAlong = horizontal:Dot(forward)
+    local minDistance = self.BlockHopLaunchMinDistance or blockSize * (self.BlockHopLaunchMinDistanceScale or 0.85)
+    local idealDistance = self.BlockHopLaunchIdealDistance or blockSize * (self.BlockHopLaunchIdealDistanceScale or 1.15)
+    local maxDistance = self.BlockHopLaunchMaxDistance or blockSize * (self.BlockHopLaunchMaxDistanceScale or 1.4)
+    local minSpeed = (speed or self.WalkSpeed) * (self.BlockHopMinLaunchSpeedScale or 0.6)
+    local backoff = Vector(target.x - forward.x * idealDistance, target.y - forward.y * idealDistance, current.z)
+    local approach = Vector(target.x, target.y, current.z)
+    local needsSpeed = self.BlockHopRequireLaunchSpeed == true
+    local ready = distance >= minDistance and distance <= maxDistance and (not needsSpeed or speedAlong >= minSpeed)
+    local steerTarget = approach
+    local reason = "approach"
+
+    if distance < minDistance then
+        steerTarget = backoff
+        reason = "close"
+    elseif needsSpeed and speedAlong < minSpeed then
+        steerTarget = distance < idealDistance and backoff or approach
+        reason = "slow"
+    elseif distance > maxDistance then
+        reason = "far"
+    else
+        reason = "ready"
+    end
+
+    return {
+        ready = ready,
+        reason = reason,
+        target = steerTarget,
+        forward = forward,
+        distance = distance,
+        faceDistance = faceDistance,
+        speed2D = speed2D,
+        speedAlong = speedAlong
+    }
+end
+
+function ENT:ShouldLogBMBHop()
+    local convar = GetConVar("bmb_debug_hop_log")
+    return convar and convar:GetBool()
+end
+
+function ENT:BeginBMBHopDebug(nodeIndex, target, launch, native)
+    self.BMBHopAttemptCount = (self.BMBHopAttemptCount or 0) + 1
+    self.BMBHopDebug = {
+        attempt = self.BMBHopAttemptCount,
+        nodeIndex = nodeIndex or 0,
+        launchZ = self:GetPos().z,
+        maxZ = self:GetPos().z,
+        distance = launch and launch.distance or flatDistance(self:GetPos(), target),
+        faceDistance = launch and launch.faceDistance or 0,
+        speed = launch and launch.speedAlong or self:GetVelocity():Length2D(),
+        native = native == true,
+        startedAt = CurTime()
+    }
+
+    self:SetNWInt("BMBHopAttempt", self.BMBHopAttemptCount)
+    self:SetNWInt("BMBHopResult", 0)
+    self:SetNWBool("BMBHopNative", native == true)
+    self:SetNWFloat("BMBHopDistance", self.BMBHopDebug.distance)
+    self:SetNWFloat("BMBHopFaceDistance", self.BMBHopDebug.faceDistance)
+    self:SetNWFloat("BMBHopSpeed", self.BMBHopDebug.speed)
+    self:SetNWFloat("BMBHopApex", 0)
+    self:SetNWFloat("BMBHopDebugUntil", CurTime() + 5)
+
+    if self:ShouldLogBMBHop() then
+        print(string.format("[BMB] hop start ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f target=%s",
+            tostring(self), self.BMBHopAttemptCount, nodeIndex or 0, tostring(native == true),
+            self.BMBHopDebug.distance, self.BMBHopDebug.faceDistance, self.BMBHopDebug.speed, tostring(target)))
+    end
+end
+
+function ENT:UpdateBMBHopDebug()
+    local debugData = self.BMBHopDebug
+    if not debugData then return end
+
+    debugData.maxZ = math.max(debugData.maxZ or self:GetPos().z, self:GetPos().z)
+    self:SetNWFloat("BMBHopApex", math.max(0, (debugData.maxZ or self:GetPos().z) - (debugData.launchZ or self:GetPos().z)))
+end
+
+function ENT:FinishBMBHopDebug(result)
+    local debugData = self.BMBHopDebug
+    if not debugData then return end
+
+    self:UpdateBMBHopDebug()
+    self.BMBPendingBlockHop = nil
+    self.BMBActiveBlockHop = nil
+    self.BMBBlockHopAirControlUntil = 0
+
+    local resultCode = 2
+    if result == "success" then
+        resultCode = 1
+    elseif result == "fail" then
+        resultCode = 3
+    end
+
+    self:SetNWInt("BMBHopResult", resultCode)
+    self:SetNWFloat("BMBHopDebugUntil", CurTime() + 5)
+
+    if self:ShouldLogBMBHop() then
+        print(string.format("[BMB] hop %s ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f apex=%.1f",
+            result or "retry", tostring(self), debugData.attempt or 0, debugData.nodeIndex or 0,
+            tostring(debugData.native == true), debugData.distance or 0, debugData.faceDistance or 0,
+            debugData.speed or 0, self:GetNWFloat("BMBHopApex", 0)))
+    end
+
+    self.BMBHopDebug = nil
+end
+
+function ENT:GetBMBManualHopVelocity(target, speed, launch, gravity, apex)
+    local blockSize = BMB.Config.BlockSize or 36
+    local current = self:GetPos()
+    local landingZ = target.z - blockSize * 0.5 + (self.BlockHopLandingLift or 2)
+    local dz = landingZ - current.z
+    local verticalSpeed = math.sqrt(2 * gravity * apex)
+    local discriminant = math.max(1, verticalSpeed * verticalSpeed - 2 * gravity * dz)
+    local flightTime = (verticalSpeed + math.sqrt(discriminant)) / gravity
+    local distance = launch and launch.distance or flatDistance(current, target)
+    local horizontalSpeed = distance / math.max(flightTime, 0.1)
+    local minSpeed = self.BlockHopManualHorizontalMinSpeed or 32
+    local maxSpeed = (speed or self.WalkSpeed) * (self.BlockHopManualHorizontalMaxScale or 1.1)
+    local forward = launch and launch.forward or self:GetBMBHopForward(current, target)
+
+    horizontalSpeed = math.Clamp(horizontalSpeed, minSpeed, maxSpeed)
+
+    local horizontal = Vector(forward.x * horizontalSpeed, forward.y * horizontalSpeed, 0)
+
+    return Vector(horizontal.x, horizontal.y, verticalSpeed), flightTime, horizontal, verticalSpeed
+end
+
+function ENT:QueueBMBManualBlockHop(target, speed, launch, gravity, apex)
+    local velocity, flightTime, horizontal, verticalSpeed = self:GetBMBManualHopVelocity(target, speed, launch, gravity, apex)
+
+    self.BMBPendingBlockHop = {
+        createdAt = CurTime(),
+        velocity = velocity,
+        horizontal = horizontal,
+        verticalSpeed = verticalSpeed,
+        flightTime = flightTime,
+        target = target
+    }
+end
+
+function ENT:ApplyBMBPendingBlockHop()
+    local pending = self.BMBPendingBlockHop
+    if not pending then return end
+    if CurTime() <= (pending.createdAt or 0) then return end
+
+    local now = CurTime()
+    local blockSize = BMB.Config.BlockSize or 36
+    local controlTime = math.max(
+        self.BlockHopManualControlTime or 0.7,
+        (pending.flightTime or 0.55) + 0.12
+    )
+
+    self.BMBPendingBlockHop = nil
+    self.BMBActiveBlockHop = {
+        startedAt = now,
+        launchZ = self:GetPos().z,
+        target = pending.target,
+        horizontal = pending.horizontal or Vector(pending.velocity.x, pending.velocity.y, 0),
+        verticalSpeed = pending.verticalSpeed or pending.velocity.z,
+        liftUntil = now + (self.BlockHopManualLiftTime or 0.16),
+        forwardStartZ = self:GetPos().z + blockSize * (self.BlockHopManualForwardStartHeightScale or 0.8),
+        controlUntil = now + controlTime
+    }
+
+    -- 再踢一次 Jump，防止上一 tick 的 Jump 状态已经被地面解算提前吃掉。
+    self.loco:Jump()
+    -- 第一段只向上抬，不立刻给水平速度；避免 hull 顶住方块侧面把 vz 磨没。
+    self.loco:SetVelocity(Vector(0, 0, pending.velocity.z))
+    self.BMBBlockHopAirControlUntil = now + controlTime
+
+    if self:ShouldLogBMBHop() then
+        print(string.format("[BMB] hop velocity ent=%s vx=%.1f vy=%.1f vz=%.1f flight=%.2f lift=%.2f target=%s",
+            tostring(self), pending.velocity.x, pending.velocity.y, pending.velocity.z,
+            pending.flightTime or 0, self.BlockHopManualLiftTime or 0.16, tostring(pending.target)))
+    end
+end
+
+function ENT:MaintainBMBManualBlockHop(carrot, speed, progressWatch)
+    local hop = self.BMBActiveBlockHop
+    if not hop then return false end
+
+    local now = CurTime()
+    if now > (hop.controlUntil or 0) then
+        self.BMBActiveBlockHop = nil
+        return false
+    end
+
+    local current = self:GetPos()
+    local velocity = self:GetVelocity()
+    local lifted = current.z >= (hop.forwardStartZ or current.z) or now >= (hop.liftUntil or now)
+    local target = hop.target or carrot
+
+    if target then
+        self.loco:FaceTowards(Vector(target.x, target.y, current.z))
+    end
+
+    if not lifted then
+        if self:IsBMBOnGround() then
+            self.loco:Jump()
+        end
+
+        self.loco:SetVelocity(Vector(0, 0, math.max(velocity.z, hop.verticalSpeed or 0)))
+    else
+        local horizontal = hop.horizontal or Vector(velocity.x, velocity.y, 0)
+        local aim = carrot or target
+
+        if aim then
+            local direction = Vector(aim.x - current.x, aim.y - current.y, 0)
+
+            if direction:LengthSqr() > 1 then
+                direction:Normalize()
+
+                local desired = direction * (speed or self.WalkSpeed)
+                local strength = math.max(self.BlockHopAirSteerStrength or 0.08, 0.18)
+                horizontal = Vector(
+                    horizontal.x + (desired.x - horizontal.x) * strength,
+                    horizontal.y + (desired.y - horizontal.y) * strength,
+                    0
+                )
+            end
+        end
+
+        local minVz = 0
+        if current.z < (hop.forwardStartZ or current.z) + 8 then
+            minVz = (hop.verticalSpeed or 0) * (self.BlockHopManualPostLiftMinVzScale or 0.35)
+        end
+
+        self.loco:SetVelocity(Vector(horizontal.x, horizontal.y, math.max(velocity.z, minVz)))
+    end
+
+    if progressWatch then
+        progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+    end
+
+    return true
+end
+
+function ENT:StartBMBBlockHop(target, speed, launch)
+    local blockSize = BMB.Config.BlockSize or 36
     local gravity = 600
     if self.loco and self.loco.GetGravity then
         gravity = math.abs(self.loco:GetGravity() or gravity)
@@ -1021,54 +1331,18 @@ function ENT:StartBMBBlockHop(target, speed)
     if gravity <= 0 then gravity = 600 end
 
     local apex = self.BlockHopApex or 45
-    local jumpHeight = math.max(apex, self.BlockHopJumpHeight or 58)
-    local verticalSpeed = math.sqrt(2 * gravity * apex)
-    local velocity = self:GetVelocity()
-    local horizontal = Vector(velocity.x, velocity.y, 0)
-    local direction = Vector(target.x - self:GetPos().x, target.y - self:GetPos().y, 0)
-    local forward = Vector(direction.x, direction.y, 0)
-
-    -- 贴墙起跳时水平速度近零，纯保留水平速度会原地直上直下、永远上不去：
-    -- 朝目标方向的分量不足行走速度就补足，已有横向速度照旧保留
-    if forward:LengthSqr() > 1 then
-        forward:Normalize()
-
-        local minForward = speed or self.WalkSpeed
-        local forwardSpeed = horizontal:Dot(forward)
-
-        if forwardSpeed < minForward then
-            horizontal = horizontal + forward * (minForward - forwardSpeed)
-        end
-    else
-        forward = self:GetForward()
-        forward.z = 0
-
-        if forward:LengthSqr() <= 1 then
-            forward = Vector(1, 0, 0)
-        else
-            forward:Normalize()
-        end
-    end
+    local jumpHeight = self:GetBMBBlockHopJumpHeight(blockSize, apex)
 
     if self.loco.SetJumpHeight then
         self.loco:SetJumpHeight(jumpHeight)
     end
 
-    if self.loco.JumpAcrossGap then
-        local blockSize = BMB.Config.BlockSize or 36
-        local landing = Vector(target.x, target.y, target.z - blockSize * 0.5)
-
-        -- JumpAcrossGap 是 NextBot 原生"跳到指定落点"原子操作：它自己进跳跃态、
-        -- 算水平/竖直速度、处理落地，避免 Jump 和 SetVelocity 同 tick 互相覆盖。
-        self.loco:JumpAcrossGap(landing, forward)
-        self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
-        return true
-    end
-
-    -- fallback：老版本没有 JumpAcrossGap 时才保留手写弹道。
+    -- JumpAcrossGap 在一格爬升时会出现 apex=0 的低弧/不起弧；这里改成先用
+    -- Jump 打开跳跃态，再下一 tick 覆盖手写弹道，避开同 tick 地面解算抢速度。
     self.loco:Jump()
-    self.loco:SetVelocity(Vector(horizontal.x, horizontal.y, verticalSpeed))
+    self:QueueBMBManualBlockHop(target, speed, launch, gravity, jumpHeight)
     self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
+    self:BeginBMBHopDebug(launch and launch.nodeIndex, target, launch, false)
 
     return false
 end
@@ -1155,7 +1429,14 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         if self.BMBMoveInterrupt then return false end
 
         local current = self:GetPos()
+        self:ApplyBMBPendingBlockHop()
+        self:UpdateBMBHopDebug()
+
         if self:IsBMBPathFinalReached(final, goalTolerance) then
+            if final.action == "hop" then
+                self:FinishBMBHopDebug("success")
+            end
+
             self:SetBMBMoveMode("idle")
             self:UpdateBMBApproachDebug(nil, 0)
             return true
@@ -1169,6 +1450,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             local nodeDistance = flatDistance(current, node)
 
             if self:ShouldAdvanceBMBPathNode(node, nodeAction, nodeDistance, nodeTolerance) then
+                if nodeAction == "hop" then
+                    self:FinishBMBHopDebug("success")
+                end
+
                 nodeIndex = nodeIndex + 1
                 self:MarkBMBPathAdvanced(nodeIndex)
             elseif not self:IsBMBPathVerticalAction(nodeAction) and nodeDistance <= BMB.Config.BlockSize * 1.5 then
@@ -1236,48 +1521,66 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         self:UpdateBMBApproachDebug(carrot, nodeIndex)
 
         if activeAction == "hop" then
-            local triggerDistance = self.BlockHopTriggerDistance or (BMB.Config.BlockSize or 36) * 1.15
+            local blockSize = BMB.Config.BlockSize or 36
+            local triggerDistance = self.BlockHopTriggerDistance or blockSize * (self.BlockHopLaunchMaxDistanceScale or 1.4)
             local onGround = self:IsBMBOnGround()
             -- loco:Jump() 会同步置跳跃态，用它代替时间猜的"起跳保护窗"：
             -- 跳跃态内不交回 Approach（地面驱动会和跳跃打架），状态和真实物理一致
             local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
+            local manualAirControl = CurTime() < (self.BMBBlockHopAirControlUntil or 0)
+            local hopSetupSteered = false
 
             -- 跳过却落回地面且节点没推进 = 这一跳撞在方块面上掉回来了。
             -- 重跳延时从 OnLandOnGround 回调时刻起算（物理给的时序，不靠轮询猜抖动）；
             -- 连续 BlockHopMaxAttempts 次失败按路径失败交还行为层换目标
             local hopStart = hopStartedAt[nodeIndex]
-            if hopStart and onGround and not jumping then
+            if hopStart and onGround and not jumping and not manualAirControl then
                 local landedAt = self.BMBLastLandTime or 0
 
                 if landedAt > hopStart and CurTime() - landedAt >= (self.BlockHopRetryDelay or 0.25) then
                     if (hopAttempts[nodeIndex] or 0) >= (self.BlockHopMaxAttempts or 3) then
+                        self:FinishBMBHopDebug("fail")
                         self:FailBMBMove("path_hop_fail")
                         return false
                     end
 
+                    self:FinishBMBHopDebug("retry")
                     hopStartedAt[nodeIndex] = nil
                 end
             end
 
             if not hopStartedAt[nodeIndex] and onGround and not jumping
                 and flatDistance(current, actionNode) <= triggerDistance then
-                hopNative[nodeIndex] = self:StartBMBBlockHop(actionNode, pathSpeed)
-                hopStartedAt[nodeIndex] = CurTime()
-                hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
-                -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
-                jumping = true
+                local launch = self:GetBMBHopLaunchControl(current, actionNode, pathSpeed, waypoints[nodeIndex - 1])
+                launch.nodeIndex = nodeIndex
+
+                if launch.ready then
+                    hopNative[nodeIndex] = self:StartBMBBlockHop(actionNode, pathSpeed, launch)
+                    hopStartedAt[nodeIndex] = CurTime()
+                    hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
+                    -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
+                    jumping = true
+                else
+                    self:UpdateBMBApproachDebug(launch.target, nodeIndex)
+                    self:SteerTowards(launch.target, progressWatch)
+                    hopSetupSteered = true
+                end
             end
 
             -- 空中转向只在跳跃态/真离地时接管（它会刷新 no-progress watchdog，
             -- 落地贴墙阶段还用它等于把卡死兜底关掉）
-            if jumping or not onGround then
-                if hopNative[nodeIndex] then
-                    self:MaintainBMBNativeHop(carrot, progressWatch)
-                else
-                    self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+            if not hopSetupSteered then
+                local manualHopHandled = self:MaintainBMBManualBlockHop(carrot, pathSpeed, progressWatch)
+
+                if not manualHopHandled and (jumping or manualAirControl or not onGround) then
+                    if hopNative[nodeIndex] then
+                        self:MaintainBMBNativeHop(carrot, progressWatch)
+                    else
+                        self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+                    end
+                elseif not manualHopHandled then
+                    self:SteerTowards(carrot, progressWatch)
                 end
-            else
-                self:SteerTowards(carrot, progressWatch)
             end
         elseif activeAction == "drop" and not self:IsBMBOnGround() then
             self:SteerBMBInAir(carrot, pathSpeed, progressWatch)

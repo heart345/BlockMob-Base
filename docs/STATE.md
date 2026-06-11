@@ -24,7 +24,10 @@
 - **第十八轮（用户已实测：hop 有抬脚/离地但一陷一陷仍上不去；物理枪好很多但仍轻微弹簧抽动 → 第十九轮）：hop 真根因第一版——落地态 `loco:SetVelocity` 写竖直速度无效**。用户四张截图证实：整块方块的 hop 从未真正离地（hop2/3 有状态无动作）；半砖两次"跳跃成功"其实是 `StepHeight=28 > 半砖18` **走**上去的（hop4：明明能走上去却显示跳跃失败、人却已在上面）。NextBot 落地态的地面解算会把直写的竖直速度当帧压回地面，保护窗（第十七轮）治标没治到本。修法：`StartBMBBlockHop` 先 `loco:SetJumpHeight(apex)` + `loco:Jump()` 把 locomotion 切进跳跃态，再 `SetVelocity` 覆盖成固定弹道（45u 顶点 + 朝目标补足的水平分量）。CLAUDE.md 的 BlockHop 约定同步改。另查证 MCSWEP 源码：`BlockIsFullCube` 对半砖返回 false → BMB 把半砖当空气，A* 看不见半砖，混半砖地形会选择跳整格而不是走半砖台阶——观感问题，遇到再用 `MC.BlockBoxes` 细化。
   - 顺手拔掉两根刺（另一 Fable 建议）：① 0.15s 起跳保护窗删除——`loco:Jump()` 同步置跳跃态，空中分支直接查 `loco:IsClimbingOrJumping()`（起跳当帧强制视为真，防引擎标志晚一帧），不再留"窗口与真实物理不一致谁说了算"的隐患；② 重跳延时改以 `OnLandOnGround` 回调时刻为基准（`BMBLastLandTime`），不靠 `IsOnGround` 轮询猜时序。
   - **新增物理枪持握一等状态 `BMBHeld`**（用户反馈：抓起来的羊有的上下抽搐/陷地、有的安静悬挂——取决于被抓瞬间 loco 醒/睡，醒的会和物理枪持握点拉扯）。`PhysgunPickup`/`PhysgunDrop` 钩子 → `OnBMBPhysgunPickup/Drop`：持握期间 base Think 每 tick `loco:SetVelocity(vector_origin)` 缴械、羊行为循环挂起（state=held）、`MoveToWorldPosition`/`MoveAlongDirection` 拒新请求；拾起时 `InterruptBMBMovement` 掐掉当前 move（hop 重跳计数等局部状态随协程销毁，不会后台数失败）；松手 `SetVelocity(0,0,-10)` 踹醒睡眠 loco，挂半空的正常下落。
-- **第十九轮（待复测）：BlockHop 改用 `loco:JumpAcrossGap` + 物理枪 held gravity/desired speed 归零**。第十八轮 `Jump()+SetVelocity` 让脚离地但表现为节律性小陷跳，符合"竖直速度起效一两 tick 又被 locomotion/地面解算压回"的签名。修法：`StartBMBBlockHop` 优先调用 NextBot 原生 `loco:JumpAcrossGap(landingGoal, landingForward)`，落点给上层脚部格的地表点（foot cell center z - 半格），`SetJumpHeight` 抬到至少 58u；原生 hop 期间只转向/刷新 watchdog，不再 `SetVelocity` 弱控水平，避免和原生跳跃解算抢方向盘。没有 `JumpAcrossGap` 的旧引擎才 fallback 到 `Jump()+SetVelocity`。物理枪 held 进一步每 tick `SetGravity(0)` + `SetDesiredSpeed(0)`，松手恢复原 gravity，压掉残留弹簧感。
+- **第十九轮（用户已实测：物理枪上下抽完全修好 ✅；hop 仍低弧/概率上台/擦模 → 第二十轮）：BlockHop 改用 `loco:JumpAcrossGap` + 物理枪 held gravity/desired speed 归零**。第十八轮 `Jump()+SetVelocity` 让脚离地但表现为节律性小陷跳，符合"竖直速度起效一两 tick 又被 locomotion/地面解算压回"的签名。修法：`StartBMBBlockHop` 优先调用 NextBot 原生 `loco:JumpAcrossGap(landingGoal, landingForward)`，落点给上层脚部格的地表点（foot cell center z - 半格），`SetJumpHeight` 抬到至少 58u；原生 hop 期间只转向/刷新 watchdog，不再 `SetVelocity` 弱控水平，避免和原生跳跃解算抢方向盘。没有 `JumpAcrossGap` 的旧引擎才 fallback 到 `Jump()+SetVelocity`。物理枪 held 进一步每 tick `SetGravity(0)` + `SetDesiredSpeed(0)`，松手恢复原 gravity，压掉残留弹簧感。
+- **第二十轮（用户已实测：debug 有助跑能上；wander 靠近常上不去；native 近距离多次 `apex=0`，偶发成功 `apex=36` → 第二十一轮）：BlockHop 起跳准入 + 落点/高度余量 + 分类 HUD**。用户截图显示失败处已进入 `path_hop`，且成功需要反复 debug 点击、弧线很低并会擦进模型，说明主要问题在跟随层触发点/速度/落点，不是 A* 完全没标 hop。修法：① `JumpHeight` 写成 `1.6 * BlockSize`（约 58u）；② `JumpAcrossGap` 落点改为上层格中心、z = 台面 +2u；③ 起跳准入窗口：2D 距离约 `0.85~1.4` 格，朝目标速度 ≥ `0.6 * pathSpeed`，太近/太慢先退到约 `1.15` 格的 backoff/助跑点再跳；④ Debug HUD 增加 `hop# native/manual d face v apex result`，并提供 `bmb_debug_hop_log 1` 控制台日志，把"概率"拆成起跳距离、速度、实际顶点和成败。
+- **第二十一轮（用户已实测：drop 主动下 3 格内 ✅；hop 仍全部失败 → 第二十二轮）：BlockHop 改错帧手写弹道 + Wander 主动下层采样**。第二十轮 HUD/日志结论：`JumpAcrossGap` 在 `dist≈36/face≈18/speed≈50` 的近距离爬台多次 `apex=0`，只有 `dist≈47/face≈29/speed≈73` 的助跑样本成功且 `apex≈36`，所以 native jump 对一格爬升不可靠。修法：默认不再调用 `JumpAcrossGap`；先 `loco:Jump()` 打开跳跃态，下一 tick 按弹道公式 `SetVelocity`（竖直顶点 `1.6*BlockSize`，水平速度 = 距离/飞行时间并 clamp 到 `32..1.1*pathSpeed`），速度写入后给一个极短空中控制窗口，避免同一轮 path loop 又把它交回 `Approach` 压掉上抛；同时取消“必须已有 0.6×pathSpeed”的起跳硬门槛，wander 慢速靠近也能跳。实测日志显示 `hop velocity ... vz≈339` 已写入，但 `apex=0~12`，说明问题不是速度数值，而是水平过早顶住方块侧面/地面解算把上抛磨掉。另查 MC 源码：`Entity#getMaxFallDistance()` 默认 3，`LivingEntity#getComfortableFallDistance(0)=3`，`Mob` 无目标时用 3，羊未覆写；BMB 的 `MaxPathDropCells=3` 保持不变，real `GetRandomWalkablePoint` 下层偏置已让 Wander 主动下落生效。
+- **第二十二轮（用户已实测：一格高 BlockHop 成功 ✅）：BlockHop 两段式 manual hop**。`ApplyBMBPendingBlockHop` 不再立刻给水平速度，而是建立 `BMBActiveBlockHop`：第一段 lift 只给竖直速度，短窗口内如果仍在地面就重复 `loco:Jump()`；达到约 `0.8*BlockSize` 抬升或超过 lift 时间后，第二段再加水平速度/弱转向落到上层格。实测日志 `apex≈54~65`，NPC 已能跳上一格台阶。保留问题：弧线偏高，偶发能误上两格（A* 不会主动规划两格 hop）；跳完动作会多保持一段时间，套皮后要复查观感。
 - 本轮修掉的对接隐藏 bug（接 real 之前就存在）：
   1. **mock 占死 `BMB.BlockWorld` 名字、无切换机制** → mock 改名 `BMB.MockBlockWorld`；新增 `BMB.SelectBlockWorld()` + convar `bmb_use_real_world`（默认 1，MCSWEP 不在场回退 mock）+ 控制台 `bmb_world mock|real`。MCSWEP 比 BMB 后加载（addons 字母序），所以 `BaseInitialize` 生成 mob 时会再选一次（幂等）。
   2. **类型枚举对不上**：real `GetBlockAt` 原来返回数字 id，行为层比较的是 `BMB.BlockTypes.Grass` 字符串，永远不相等 → adapter 现在做 id↔枚举双向映射（`blockTypeToId`/`idToBlockType`），未建模的 id 原样透传。
@@ -40,16 +43,19 @@
 2. **同步整个 `gmod_addon/` 到 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon\`**（用户在游戏里直接测）。
 3. **更新本文件 + `.planning/mcgm-main/` 四个文件**（task_plan / progress / findings / status_summary，codex 接手要看）。
 
-## 复测清单（当前：第十九轮 JumpAcrossGap + held gravity）
+## 复测清单（当前：第二十二轮已通过，待调优）
 
-1. **BlockHop（重点）**：右键高一格平台，应由 `path_hop` 触发一次干净的 `JumpAcrossGap`，不再一陷一陷地小跳，最终落到台上；贴墙站立也能原地跳上；撞面掉回约 0.25s 重跳、3 次后 `path_hop_fail`。混半砖地形允许它选择跳（A* 看不见半砖，观感问题后续细化）。
-2. **物理枪（重点）**：随便抓哪只羊（走路中/发呆中）都不应上下抽搐、陷地或像弹簧一样轻微抖动，HUD state=held 且 desired speed=0；拎着不乱蹬腿、不触发行为；松手（包括拖到半空松手、之前安静悬挂的个体）都应正常下落并恢复游荡；hop 重跳中被抓走、松手后不应立刻误报路径失败。
-3. 回归：绕路不误杀、窄沿可走、不卡顿、不跳楼、正常下落、一格走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、`bmb_world mock` 回退。
+1. **BlockHop（已通过，待调优）**：一格台阶可上；后续把 apex/lift 调低一些，避免偶发误上两格，同时保持一格可靠。
+2. **Drop（已通过，回归）**：站在 2~3 格高平台上，wander 能主动选台下目标并走 `path_drop` 下去；>3 格仍按 MC 默认拒绝。
+3. **物理枪（已通过，回归）**：随便抓哪只羊（走路中/发呆中）都不应上下抽搐、陷地或像弹簧一样轻微抖动，HUD state=held 且 desired speed=0；松手正常下落并恢复游荡；hop 重跳中被抓走、松手后不应立刻误报路径失败。
+4. 回归：绕路不误杀、窄沿可走、不卡顿、不跳楼、正常下落、一格走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、`bmb_world mock` 回退。
 
 ## 未解 bug / 风险
 
-- **第十九轮待实机验证**：`loco:JumpAcrossGap` 在当前 NextBot/方块坐标语义下的落点和弧线；若仍一陷一陷，先打 0.5s 逐 tick 日志（`IsClimbingOrJumping`、`IsOnGround`、`vel.z`、`pos.z`）分型：`vel.z` 起步不到约 300 = native 未吃到/起跳参数低；`vel.z` 起步正常但 1-2 tick 归零 = 地面判定抢跑；`vel.z` 正常但 `pos.z` 不涨 = hull/碰撞蹭方块面。若只是弧度低，优先调高 `BlockHopJumpHeight`。
-- **第十九轮物理枪持握**：若 `SetGravity(0)` + `SetDesiredSpeed(0)` 后仍有微抖，下一步再考虑 held 期间临时压 yaw/accel/decel 并在 drop 恢复；不要先动碰撞组，避免拎起时穿墙/穿方块。
+- **BlockHop 弧线偏高**：第二十二轮成功后 apex 约 54~65，可靠性达标但偶发能误上两格。下一轮优先小幅降低 `BlockHopManualForwardStartHeightScale` / jump height 或 lift 窗口，目标是仍稳定上一格但不误跨两格。
+- **debug 移动超时偏短**：用户反馈 debug 右键远点时，mob 明明还在路上但过一段时间会放弃目标。下一轮检查 `PathTimeoutPerNode`、debug move timeout、partial/path goal progress watchdog，debug 指令应按长路径长度给更宽松 timeout。
+- **跳后动作保持偏久**：BlockHop 成功后跳跃/动作姿态会持续一段时间。套皮后可能影响观感，后续检查 `IsClimbingOrJumping`/activity reset/gesture 清理。
+- **hop 候选分诊**：若失败处 HUD 根本不进 `path_hop`，不要按弹道修；要开 A* hop 候选日志看是上方净空/支撑正确拒绝，还是邻接标记漏判。
 - **PhysgunPickup 钩子语义**：它在"尝试抓取"时触发，若有第三方 addon 拒绝了这次拾取，BMBHeld 可能误置（下次松手钩子不来）；目前单机沙盒无此问题，联机装权限 addon 时留意。
 - **半砖对 A* 不可见**（`BlockIsFullCube`=false → BMB 当空气）：混半砖地形会选择跳整格而不是走半砖台阶，且半砖不能作为 MC 支撑（目前靠 Source 不了 trace——MCSWEP 方块碰撞不是刷子，`MASK_SOLID_BRUSHONLY` 探不到）。观感问题，需要时用 `MC.BlockBoxes` 细化 IsSolid/支撑语义。
 - **窄沿偏移采样的副作用**：紧挨沿边的悬空格可能因偏移样本擦到沿边被判可站立，理论上增加贴边坠落风险——`path_cliff` Source safety 仍兜底。
@@ -64,7 +70,8 @@
 
 ## 下一步
 
-1. 复测第十九轮 hop（`JumpAcrossGap` 真跳上台 + 无小陷跳）和物理枪 held（无弹簧抽动）；其余项回归。
-2. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
-3. 吃草原版粒子/动画/音效。
-4. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。
+1. 调优 BlockHop：降低过高弧线/误上两格风险，并检查跳后动作保持。
+2. 调整 debug move 长路径 timeout，避免还在路上就放弃目标。
+3. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
+4. 吃草原版粒子/动画/音效。
+5. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。
