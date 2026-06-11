@@ -37,6 +37,10 @@ ENT.SafetyProbeSpeedScale = 0.45
 ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
 ENT.StepHeight = 28
+ENT.BlockHopApex = 45
+ENT.BlockHopTriggerDistance = 42
+ENT.BlockHopAirSteerStrength = 0.08
+ENT.MaxPathDropCells = 3
 -- 必须 > 一格（36）：MC 生物下一格台阶是日常移动，34 会把"从方块地板走下来"判成悬崖；
 -- 两格（72）仍然算悬崖
 ENT.MaxStepDown = 40
@@ -49,6 +53,12 @@ ENT.PathNodeTolerance = 18
 ENT.PathCarrotMinDistance = 72
 ENT.PathCarrotMaxDistance = 150
 ENT.PathCarrotSpeedScale = 1.1
+ENT.PathCornerMinAngle = 35
+ENT.PathCornerSlowDistance = 72
+ENT.PathCornerSpeedScale = 0.55
+ENT.PathCornerMinSpeed = 32
+ENT.PathCornerCarrotDistance = 32
+ENT.PathCornerDeceleration = 720
 ENT.PathTimeoutPerNode = 0.8
 ENT.MoveNoProgressGrace = 0.35
 ENT.MoveNoProgressTimeout = 0.25
@@ -70,6 +80,13 @@ local function flatDistance(a, b)
     local dy = a.y - b.y
 
     return math.sqrt(dx * dx + dy * dy)
+end
+
+local function flatDistanceSqr(a, b)
+    local dx = a.x - b.x
+    local dy = a.y - b.y
+
+    return dx * dx + dy * dy
 end
 
 local function copyVector(vec)
@@ -297,12 +314,31 @@ function ENT:ClearBMBDebugMove()
     self.BMBDebugMoveUntil = 0
     self.BMBDebugMoveDirection = nil
     self.BMBDebugMoveTarget = nil
+    self.BMBDebugMoveUsePath = nil
 end
 
 function ENT:RunBMBDebugMove()
     if not self:HasBMBDebugMove() then return false end
 
     local desiredSpeed = self.BMBDebugMoveSpeed or self.RunSpeed
+
+    if self.BMBDebugMoveTarget and self.BMBDebugMoveUsePath then
+        local timeout = math.max(0.1, (self.BMBDebugMoveUntil or CurTime()) - CurTime())
+
+        self:SetBMBState("debug_move")
+        self:SetBMBMoveMode("debug_path")
+        self:MaintainBMBMoveSpeed(desiredSpeed)
+        self:UpdateMoveActivity(desiredSpeed)
+
+        self:MoveToWorldPosition(self.BMBDebugMoveTarget, desiredSpeed, {
+            skipSourcePath = true,
+            timeout = timeout,
+            goalTolerance = self.BMBDebugMoveTolerance or BMB.Config.DefaultGoalTolerance
+        })
+
+        self:ClearBMBDebugMove()
+        return true
+    end
 
     self:SetBMBState("debug_move")
     self:SetBMBMoveMode("debug_direct")
@@ -394,7 +430,7 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         if self.BMBMoveInterrupt then return false end
     end
 
-    local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination)
+    local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination, { mob = self })
     if not waypoints or #waypoints == 0 then
         if options.allowDirectFallback then
             return self:MoveDirectFallback(destination, speed, options)
@@ -465,59 +501,471 @@ function ENT:MoveWithSourcePath(destination, speed, options)
     return self:GetPos():DistToSqr(destination) <= goalTolerance * goalTolerance
 end
 
-function ENT:GetPathCarrot(waypoints, startIndex, carrotDistance)
+function ENT:GetClosestPathCursor(waypoints, startIndex)
     local current = self:GetPos()
-    local cursor = Vector(current.x, current.y, current.z)
-    local remaining = carrotDistance
+    local segmentStart = math.max(1, (startIndex or 1) - 1)
+    local segmentEnd = math.min(#waypoints - 1, segmentStart + 6)
 
-    for i = startIndex, #waypoints do
-        local node = Vector(waypoints[i].x, waypoints[i].y, current.z)
-        local segment = node - cursor
-        segment.z = 0
+    if #waypoints == 1 then
+        return Vector(waypoints[1].x, waypoints[1].y, current.z), 1
+    end
 
+    if segmentStart > segmentEnd then
+        segmentStart = segmentEnd
+    end
+
+    local bestPoint
+    local bestIndex = segmentStart
+    local bestDistance = math.huge
+
+    for i = segmentStart, segmentEnd do
+        local a = waypoints[i]
+        local b = waypoints[i + 1]
+        local dx = b.x - a.x
+        local dy = b.y - a.y
+        local lengthSqr = dx * dx + dy * dy
+
+        if lengthSqr > 0.01 then
+            local t = math.Clamp(((current.x - a.x) * dx + (current.y - a.y) * dy) / lengthSqr, 0, 1)
+            local point = Vector(a.x + dx * t, a.y + dy * t, current.z)
+            local distance = flatDistanceSqr(current, point)
+
+            if distance < bestDistance then
+                bestDistance = distance
+                bestPoint = point
+                bestIndex = i
+            end
+        end
+    end
+
+    if bestPoint then return bestPoint, bestIndex end
+
+    local fallback = waypoints[math.min(startIndex or 1, #waypoints)]
+    if not fallback then return nil end
+
+    return Vector(fallback.x, fallback.y, current.z), math.min(startIndex or 1, #waypoints)
+end
+
+function ENT:GetPathPointAhead(waypoints, cursor, segmentIndex, distance)
+    if not cursor or not segmentIndex then return nil end
+
+    local current = self:GetPos()
+    local remaining = math.max(distance or 0, 0)
+    local point = Vector(cursor.x, cursor.y, current.z)
+
+    for i = segmentIndex, #waypoints - 1 do
+        local nextNode = waypoints[i + 1]
+        local segment = Vector(nextNode.x - point.x, nextNode.y - point.y, 0)
         local length = segment:Length()
+
         if length > 0.1 then
             if length >= remaining then
                 segment:Normalize()
 
-                local carrot = cursor + segment * remaining
-                carrot.z = current.z
-
-                return carrot
+                point = point + segment * remaining
+                point.z = current.z
+                return point
             end
 
             remaining = remaining - length
-            cursor = node
+            point = Vector(nextNode.x, nextNode.y, current.z)
         end
     end
 
     local final = waypoints[#waypoints]
     if not final then return nil end
 
-    -- 路径快走完时把 carrot 投到终点之外：让 mob 全速跨过到达圈再由行为层停下，
-    -- 否则 Approach 在终点减速区把速度拖到 watchdog 阈值以下，会被误判成"被卡住"
-    if remaining > 0 then
-        local overshoot = Vector(final.x - current.x, final.y - current.y, 0)
+    point = Vector(final.x, final.y, current.z)
 
-        if overshoot:LengthSqr() > 1 then
-            overshoot:Normalize()
-            return Vector(final.x, final.y, current.z) + overshoot * remaining
+    if remaining > 0 then
+        local previous = waypoints[#waypoints - 1]
+
+        if previous then
+            local overshoot = Vector(final.x - previous.x, final.y - previous.y, 0)
+
+            if overshoot:LengthSqr() > 1 then
+                overshoot:Normalize()
+                point = point + overshoot * math.min(remaining, BMB.Config.DefaultGoalTolerance or 18)
+                point.z = current.z
+                return point
+            end
         end
     end
 
-    return Vector(final.x, final.y, current.z)
+    return point
 end
 
-function ENT:GetPathSafetyTarget(waypoints, nodeIndex)
-    local current = self:GetPos()
-    local target = waypoints[nodeIndex]
-    if not target then return nil end
+function ENT:GetBMBPathHullRadius()
+    return math.max(
+        math.abs(self.CollisionMins.x),
+        math.abs(self.CollisionMaxs.x),
+        math.abs(self.CollisionMins.y),
+        math.abs(self.CollisionMaxs.y)
+    )
+end
 
-    if nodeIndex < #waypoints and flatDistance(current, target) <= 4 then
-        target = waypoints[nodeIndex + 1]
+function ENT:GetBMBPathHeightCells()
+    local blockSize = BMB.Config.BlockSize or 36
+    local height = math.max(1, self.CollisionMaxs.z - self.CollisionMins.z)
+
+    return math.max(0, math.floor((height - 1) / blockSize))
+end
+
+function ENT:DoesBMBHullOverlapBlock(pos, blockCoord, radius)
+    local blockCenter = BMB.BlockWorld.BlockToWorld(blockCoord)
+    local half = (BMB.Config.BlockSize or 36) * 0.5
+    local closestX = math.Clamp(pos.x, blockCenter.x - half, blockCenter.x + half)
+    local closestY = math.Clamp(pos.y, blockCenter.y - half, blockCenter.y + half)
+    local dx = pos.x - closestX
+    local dy = pos.y - closestY
+
+    return dx * dx + dy * dy < radius * radius
+end
+
+function ENT:IsBMBHullClearAtPosition(pos)
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.IsSolid then return true end
+    if not BMB.BlockWorld.WorldToBlock or not BMB.BlockWorld.BlockToWorld then return true end
+
+    local centerCell = BMB.BlockWorld.WorldToBlock(pos)
+    local radius = self:GetBMBPathHullRadius()
+    local blockSize = BMB.Config.BlockSize or 36
+    local range = math.ceil((radius + blockSize * 0.5) / blockSize)
+    local maxZOffset = self:GetBMBPathHeightCells()
+
+    for dz = 0, maxZOffset do
+        for dx = -range, range do
+            for dy = -range, range do
+                local blockCoord = {
+                    x = centerCell.x + dx,
+                    y = centerCell.y + dy,
+                    z = (centerCell.z or 0) + dz
+                }
+
+                if BMB.BlockWorld.IsSolid(blockCoord) and self:DoesBMBHullOverlapBlock(pos, blockCoord, radius) then
+                    return false
+                end
+            end
+        end
     end
 
-    return Vector(target.x, target.y, current.z)
+    return true
+end
+
+function ENT:IsBMBPathCellPassable(blockCoord)
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.BlockToWorld then return true end
+
+    return self:IsBMBHullClearAtPosition(BMB.BlockWorld.BlockToWorld(blockCoord))
+end
+
+function ENT:IsPathGridVisible(target)
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock then return true end
+    if not BMB.BlockWorld.IsSolid then return true end
+
+    local current = self:GetPos()
+    local delta = target - current
+    delta.z = 0
+
+    local distance = delta:Length2D()
+    if distance <= 1 then return true end
+    if not self:IsBMBHullClearAtPosition(current) then return false end
+
+    delta:Normalize()
+
+    local step = math.max((BMB.Config.BlockSize or 36) * 0.25, 6)
+    local samples = math.max(1, math.ceil(distance / step))
+    for i = 1, samples do
+        local sampleDistance = math.min(distance, i * step)
+        local sample = current + delta * sampleDistance
+        if not self:IsBMBHullClearAtPosition(sample) then return false end
+    end
+
+    return true
+end
+
+function ENT:GetPathCarrot(waypoints, startIndex, carrotDistance)
+    local cursor, segmentIndex = self:GetClosestPathCursor(waypoints, startIndex)
+    if not cursor then return nil end
+
+    local rawCarrot = self:GetPathPointAhead(waypoints, cursor, segmentIndex, carrotDistance)
+    if not rawCarrot then return nil end
+
+    if self:IsPathGridVisible(rawCarrot) then return rawCarrot end
+
+    -- carrot 必须落在路径折线上，但 loco 仍会直线追 carrot；直角走廊里若直线视线被方块挡住，
+    -- 二分缩短前瞻距离，取当前能直视到的最远折线点，避免抄近路撞入口外壁
+    local low = 0
+    local high = carrotDistance
+    local best = cursor
+
+    for _ = 1, 7 do
+        local mid = (low + high) * 0.5
+        local candidate = self:GetPathPointAhead(waypoints, cursor, segmentIndex, mid)
+
+        if candidate and self:IsPathGridVisible(candidate) then
+            best = candidate
+            low = mid
+        else
+            high = mid
+        end
+    end
+
+    return best
+end
+
+function ENT:GetBMBPathCornerAngle(waypoints, cornerIndex)
+    local previousNode = waypoints[cornerIndex - 1]
+    local cornerNode = waypoints[cornerIndex]
+    local nextNode = waypoints[cornerIndex + 1]
+
+    if not previousNode or not cornerNode or not nextNode then return 0 end
+
+    local incoming = Vector(cornerNode.x - previousNode.x, cornerNode.y - previousNode.y, 0)
+    local outgoing = Vector(nextNode.x - cornerNode.x, nextNode.y - cornerNode.y, 0)
+
+    if incoming:LengthSqr() <= 1 or outgoing:LengthSqr() <= 1 then return 0 end
+
+    return math.abs(math.AngleDifference(incoming:Angle().y, outgoing:Angle().y))
+end
+
+function ENT:GetBMBPathDistanceToNode(waypoints, nodeIndex, cornerIndex, current)
+    if cornerIndex < nodeIndex then
+        return flatDistance(current, waypoints[cornerIndex])
+    end
+
+    local distance = flatDistance(current, waypoints[nodeIndex])
+
+    for i = nodeIndex, cornerIndex - 1 do
+        distance = distance + flatDistance(waypoints[i], waypoints[i + 1])
+    end
+
+    return distance
+end
+
+function ENT:GetBMBPathCornerControl(waypoints, nodeIndex, current, desiredSpeed, defaultCarrotDistance)
+    local minAngle = self.PathCornerMinAngle or 35
+    local startCorner = math.max(2, nodeIndex - 1)
+    local endCorner = math.min(#waypoints - 1, nodeIndex + 4)
+    local bestDistance
+    local bestAngle = 0
+
+    for cornerIndex = startCorner, endCorner do
+        local angle = self:GetBMBPathCornerAngle(waypoints, cornerIndex)
+
+        if angle >= minAngle then
+            local distance = self:GetBMBPathDistanceToNode(waypoints, nodeIndex, cornerIndex, current)
+
+            if not bestDistance or distance < bestDistance then
+                bestDistance = distance
+                bestAngle = angle
+            end
+        end
+    end
+
+    if not bestDistance then return desiredSpeed, defaultCarrotDistance, false end
+
+    local slowDistance = self.PathCornerSlowDistance or (BMB.Config.BlockSize or 36) * 2
+    local proximity = 1 - math.Clamp(bestDistance / slowDistance, 0, 1)
+    local angleFactor = math.Clamp((bestAngle - minAngle) / math.max(1, 90 - minAngle), 0, 1)
+    local slowAmount = proximity * angleFactor
+
+    if slowAmount <= 0 then return desiredSpeed, defaultCarrotDistance, false end
+
+    local cornerSpeed = math.max(self.PathCornerMinSpeed or 32, desiredSpeed * (self.PathCornerSpeedScale or 0.55))
+    local cornerCarrot = self.PathCornerCarrotDistance or (BMB.Config.BlockSize or 36) * 0.9
+    local speed = desiredSpeed - (desiredSpeed - cornerSpeed) * slowAmount
+    local carrotDistance = defaultCarrotDistance - (defaultCarrotDistance - cornerCarrot) * slowAmount
+
+    return speed, carrotDistance, true
+end
+
+function ENT:IsSourceHitBMBBlock(hitPos, hitNormal)
+    if not hitPos then return false end
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock then return false end
+    if not BMB.BlockWorld.IsSolid then return false end
+
+    local samples = { hitPos }
+    if hitNormal then
+        samples[#samples + 1] = hitPos - hitNormal * 4
+        samples[#samples + 1] = hitPos + hitNormal * 4
+        samples[#samples + 1] = hitPos - hitNormal * ((BMB.Config.BlockSize or 36) * 0.5)
+    end
+
+    for _, sample in ipairs(samples) do
+        local cell = BMB.BlockWorld.WorldToBlock(sample)
+
+        for dz = 0, self:GetBMBPathHeightCells() do
+            if BMB.BlockWorld.IsSolid({
+                x = cell.x,
+                y = cell.y,
+                z = (cell.z or 0) + dz
+            }) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function ENT:IsPathSourceTargetSafe(target, probeDistance)
+    local current = self:GetPos()
+    local delta = target - current
+    delta.z = 0
+
+    local distance = delta:Length2D()
+    if distance <= 1 then return true end
+
+    delta:Normalize()
+
+    local probe = math.min(distance, probeDistance or self:GetBMBTickSafetyProbe())
+    local forwardTarget = current + delta * probe
+    local traceFilter = function(ent)
+        return self:ShouldSafetyTraceHit(ent)
+    end
+    local hullScale = self.SafetyHullScale
+
+    local wallTrace = util.TraceHull({
+        start = current + Vector(0, 0, self.GroundProbeHeight),
+        endpos = forwardTarget + Vector(0, 0, self.GroundProbeHeight),
+        mins = Vector(self.CollisionMins.x * hullScale, self.CollisionMins.y * hullScale, -self.GroundProbeHeight * 0.35),
+        maxs = Vector(self.CollisionMaxs.x * hullScale, self.CollisionMaxs.y * hullScale, self.GroundProbeHeight * 0.45),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    if wallTrace.Hit and not wallTrace.StartSolid and not self:CanStepPastTrace(wallTrace, forwardTarget, traceFilter) then
+        if not self:IsSourceHitBMBBlock(wallTrace.HitPos, wallTrace.HitNormal) then
+            return false, "wall"
+        end
+
+        local hitDistance = wallTrace.Fraction * probe
+        probe = math.max(4, hitDistance - 4)
+        forwardTarget = current + delta * probe
+    end
+
+    local groundTrace = util.TraceHull({
+        start = forwardTarget + Vector(0, 0, self.GroundProbeHeight),
+        endpos = forwardTarget - Vector(0, 0, self.GroundProbeDepth),
+        mins = Vector(self.CollisionMins.x * 0.75, self.CollisionMins.y * 0.75, 0),
+        maxs = Vector(self.CollisionMaxs.x * 0.75, self.CollisionMaxs.y * 0.75, 4),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    if not groundTrace.Hit then return false, "cliff" end
+    if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
+    if current.z - groundTrace.HitPos.z > self.MaxStepDown then return false, "cliff" end
+
+    return true
+end
+
+function ENT:GetBMBWaypointAction(waypoints, nodeIndex)
+    local node = waypoints and waypoints[nodeIndex]
+    if not node then return "walk" end
+    if node.action then return node.action end
+
+    local previous = waypoints[nodeIndex - 1]
+    if node.coord and previous and previous.coord then
+        local dz = (node.coord.z or 0) - (previous.coord.z or 0)
+        if dz == 1 then return "hop" end
+        if dz < 0 then return "drop" end
+    end
+
+    return "walk"
+end
+
+function ENT:IsBMBPathVerticalAction(action)
+    return action == "hop" or action == "drop"
+end
+
+function ENT:IsBMBOnGround()
+    if self.loco and self.loco.IsOnGround then
+        return self.loco:IsOnGround()
+    end
+
+    local traceFilter = function(ent)
+        return self:ShouldSafetyTraceHit(ent)
+    end
+
+    local groundTrace = util.TraceHull({
+        start = self:GetPos() + Vector(0, 0, 4),
+        endpos = self:GetPos() - Vector(0, 0, 8),
+        mins = Vector(self.CollisionMins.x * 0.75, self.CollisionMins.y * 0.75, 0),
+        maxs = Vector(self.CollisionMaxs.x * 0.75, self.CollisionMaxs.y * 0.75, 4),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    return groundTrace.Hit
+end
+
+function ENT:IsBMBPathActionAtTargetLevel(node)
+    if not node or not node.coord then return true end
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock then return true end
+
+    local currentCell = BMB.BlockWorld.WorldToBlock(self:GetPos())
+    return (currentCell.z or 0) == (node.coord.z or 0)
+end
+
+function ENT:ShouldAdvanceBMBPathNode(node, action, nodeDistance, nodeTolerance)
+    if nodeDistance > nodeTolerance then return false end
+    if not self:IsBMBPathVerticalAction(action) then return true end
+
+    return self:IsBMBOnGround() and self:IsBMBPathActionAtTargetLevel(node)
+end
+
+function ENT:IsBMBPathFinalReached(final, tolerance)
+    if not final then return false end
+    if flatDistance(self:GetPos(), final) > tolerance then return false end
+    if not final.coord then return true end
+
+    if self:IsBMBPathVerticalAction(final.action) and not self:IsBMBOnGround() then
+        return false
+    end
+
+    return self:IsBMBPathActionAtTargetLevel(final)
+end
+
+function ENT:StartBMBBlockHop(target)
+    local gravity = 600
+    if self.loco and self.loco.GetGravity then
+        gravity = math.abs(self.loco:GetGravity() or gravity)
+    end
+
+    if gravity <= 0 then gravity = 600 end
+
+    local apex = self.BlockHopApex or 45
+    local verticalSpeed = math.sqrt(2 * gravity * apex)
+    local velocity = self:GetVelocity()
+
+    self.loco:SetVelocity(Vector(velocity.x, velocity.y, verticalSpeed))
+    self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
+end
+
+function ENT:SteerBMBInAir(target, speed, progressWatch)
+    local current = self:GetPos()
+    local aim = Vector(target.x, target.y, current.z)
+    local direction = aim - current
+    direction.z = 0
+
+    if direction:LengthSqr() > 1 then
+        direction:Normalize()
+        self.loco:FaceTowards(aim)
+
+        local velocity = self:GetVelocity()
+        local targetVelocity = direction * (speed or self.WalkSpeed)
+        local strength = self.BlockHopAirSteerStrength or 0.08
+
+        self.loco:SetVelocity(Vector(
+            velocity.x + (targetVelocity.x - velocity.x) * strength,
+            velocity.y + (targetVelocity.y - velocity.y) * strength,
+            velocity.z
+        ))
+    end
+
+    if progressWatch then
+        progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+    end
 end
 
 function ENT:MoveAlongPath(waypoints, speed, options)
@@ -542,7 +990,9 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
     -- 路径头部是出发格中心，可能落在身后：起步前先跳过脚下这一格，避免开局回头拐一下
     local startPos = self:GetPos()
-    while nodeIndex < #waypoints and flatDistance(startPos, waypoints[nodeIndex]) <= BMB.Config.BlockSize * 0.75 do
+    while nodeIndex < #waypoints
+        and not self:IsBMBPathVerticalAction(self:GetBMBWaypointAction(waypoints, nodeIndex))
+        and flatDistance(startPos, waypoints[nodeIndex]) <= BMB.Config.BlockSize * 0.75 do
         nodeIndex = nodeIndex + 1
     end
 
@@ -553,12 +1003,13 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
     local progressWatch = self:StartBMBMoveProgressWatch()
     local goalProgressWatch = self:StartBMBGoalProgressWatch(final)
+    local hopStartedAt = {}
 
     while CurTime() < timeout do
         if self.BMBMoveInterrupt then return false end
 
         local current = self:GetPos()
-        if flatDistance(current, final) <= goalTolerance then
+        if self:IsBMBPathFinalReached(final, goalTolerance) then
             self:SetBMBMoveMode("idle")
             self:UpdateBMBApproachDebug(nil, 0)
             return true
@@ -566,12 +1017,13 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
         while nodeIndex < #waypoints do
             local node = waypoints[nodeIndex]
+            local nodeAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
             local nodeDistance = flatDistance(current, node)
 
-            if nodeDistance <= nodeTolerance then
+            if self:ShouldAdvanceBMBPathNode(node, nodeAction, nodeDistance, nodeTolerance) then
                 nodeIndex = nodeIndex + 1
                 self:MarkBMBPathAdvanced(nodeIndex)
-            elseif nodeDistance <= BMB.Config.BlockSize * 1.5 then
+            elseif not self:IsBMBPathVerticalAction(nodeAction) and nodeDistance <= BMB.Config.BlockSize * 1.5 then
                 -- 切弯时会从节点旁边掠过（横向 > nodeTolerance），只按距离判定节点永远推进不了，
                 -- carrot 会折回身后的漏过节点导致原地转圈。已越过该节点朝下一节点的垂面就视为通过
                 local nextNode = waypoints[nodeIndex + 1]
@@ -589,26 +1041,70 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             end
         end
 
-        local carrot = self:GetPathCarrot(waypoints, nodeIndex, carrotDistance)
-        local safetyTarget = self:GetPathSafetyTarget(waypoints, nodeIndex)
-        if not carrot or not safetyTarget then return false end
+        local activeAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
+        local actionNode = waypoints[nodeIndex]
+        local verticalAction = self:IsBMBPathVerticalAction(activeAction)
+        local pathSpeed, pathCarrotDistance, cornering
+        local carrot
 
-        local safe, blockReason = self:IsMovementTargetSafe(safetyTarget)
-        if not safe then
-            self:FailBMBMove("path_blocked", blockReason == "wall")
-            return false
+        if verticalAction and actionNode then
+            pathSpeed = desiredSpeed
+            pathCarrotDistance = math.min(carrotDistance, self.PathCornerCarrotDistance or (BMB.Config.BlockSize or 36))
+            cornering = false
+            carrot = Vector(actionNode.x, actionNode.y, current.z)
+        else
+            pathSpeed, pathCarrotDistance, cornering = self:GetBMBPathCornerControl(waypoints, nodeIndex, current, desiredSpeed, carrotDistance)
+            carrot = self:GetPathCarrot(waypoints, nodeIndex, pathCarrotDistance)
         end
 
-        self:SetBMBMoveMode("path_carrot")
-        self:MaintainBMBMoveSpeed(desiredSpeed)
+        if not carrot then return false end
+
+        if not verticalAction then
+            local sourceSafe, sourceReason = self:IsPathSourceTargetSafe(carrot)
+            if not sourceSafe then
+                self:FailBMBMove(sourceReason == "cliff" and "path_cliff" or "path_wall", sourceReason == "wall")
+                return false
+            end
+        end
+
+        if activeAction == "hop" then
+            self:SetBMBMoveMode("path_hop")
+        elseif activeAction == "drop" then
+            self:SetBMBMoveMode("path_drop")
+        else
+            self:SetBMBMoveMode(cornering and "path_corner" or "path_carrot")
+        end
+
+        self.loco:SetDeceleration(cornering and math.max(self.Deceleration, self.PathCornerDeceleration or 720) or self.Deceleration)
+        self:MaintainBMBMoveSpeed(pathSpeed)
         self:UpdateBMBApproachDebug(carrot, nodeIndex)
-        self:SteerTowards(carrot, progressWatch)
+
+        if activeAction == "hop" then
+            local triggerDistance = self.BlockHopTriggerDistance or (BMB.Config.BlockSize or 36) * 1.15
+            local onGround = self:IsBMBOnGround()
+
+            if not hopStartedAt[nodeIndex] and onGround and flatDistance(current, actionNode) <= triggerDistance then
+                self:StartBMBBlockHop(actionNode)
+                hopStartedAt[nodeIndex] = CurTime()
+            end
+
+            if hopStartedAt[nodeIndex] or not onGround then
+                self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+            else
+                self:SteerTowards(carrot, progressWatch)
+            end
+        elseif activeAction == "drop" and not self:IsBMBOnGround() then
+            self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+        else
+            self:SteerTowards(carrot, progressWatch)
+        end
+
         self:BodyMoveXY()
         self:MaybePlayStep()
 
         if not self:CheckBMBMoveProgress(progressWatch) then
             -- 已经贴到终点附近的"无进度"按到达处理：到站减速被 watchdog 误杀会跳过行为层的停顿
-            if flatDistance(current, final) <= goalTolerance * 2 then
+            if self:IsBMBPathFinalReached(final, goalTolerance * 2) then
                 self:SetBMBMoveMode("idle")
                 self:UpdateBMBApproachDebug(nil, 0)
                 return true
@@ -619,7 +1115,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         end
 
         if not self:CheckBMBGoalProgress(goalProgressWatch, final) then
-            if flatDistance(current, final) <= goalTolerance * 2 then
+            if self:IsBMBPathFinalReached(final, goalTolerance * 2) then
                 self:SetBMBMoveMode("idle")
                 self:UpdateBMBApproachDebug(nil, 0)
                 return true
@@ -629,7 +1125,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             return false
         end
 
-        if self.loco:IsStuck() then
+        if not verticalAction and self.loco:IsStuck() then
             self:HandleStuck()
             self:FailBMBMove("path_stuck")
             return false

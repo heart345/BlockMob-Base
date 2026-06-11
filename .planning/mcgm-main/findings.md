@@ -1,5 +1,45 @@
 # Findings
 
+## 一格宽走廊"出得来、进不去"（第十一轮，2026-06-11）
+
+- **不对称现象本身就是诊断线索**：从走廊里能出来，说明 A* 和基本通行判定大概率没坏；从外面进不去，问题更像路径跟随层在入口处把一条已规划路径误判为不可走。
+- 根因 1：`MoveAlongPath` 对 A* 路径每 tick 又调用 `IsMovementTargetSafe(safetyTarget)`。一格宽走廊 = 36u，羊在中线时离两侧墙各约 18u；旧的 `WallStopDistance=20` 会把入口侧壁当"贴脸墙"拦住。**A* 验证过的路径不应再被 Source hull 安全探测二次否决**；这套探测只适合裸方向移动、debug direct、legacy fallback。
+- 根因 2：carrot 如果从当前位置直线追前方节点/终点外投，会在直角入口切角。正确做法是 **pure pursuit 沿路径折线取 carrot**：先把当前位置投影到路径折线，再沿折线量出前瞻距离；之后用廉价网格视线检查（逐格 `IsSolid`）判断 mob 到 carrot 的直线是否穿墙，穿墙就缩短到最后可见的折线点。
+- 本轮实现要点：
+  - `GetClosestPathCursor` 只在当前节点附近几段内找最近投影，避免 U 形路径误跳到后半段。
+  - `GetPathPointAhead` 沿折线前推，终点外投沿最后一段方向且最多一个 goalTolerance。
+  - `IsPathGridVisible` 逐半格采样 `IBlockWorld.WorldToBlock`，脚部格和头部格都非实心才算直视可达。
+  - `MoveAlongPath` 删除 Source 安全复查；真正撞墙/卡住仍由 `loco:IsStuck` 和 no-progress watchdog 失败重选兜底。
+- 风险/后续：当前 A* passable 只检查脚+头是否空，不检查脚下支撑；此前路径层 Source ground probe 会挡悬崖。退役路径安全探测后，目标选择层需要补"可站立格"枚举/过滤，尤其是 Flee 坑内采样和未来 3D A*。
+- 吃草粒子决策已定：走**原版手感版**，不把 `MC.SV.SetBlock` 的破坏 fx 当吃草效果；羊自己补低头吃草动画、咀嚼音效、草屑粒子。
+
+## 方块通行必须按 mob hull，不是中心点（第十二轮，2026-06-11）
+
+- 用户复测第十一轮后发现：Tool Gun 右键目标只闪一下 `debug_move` 就回 wander；Wander/Flee 仍会从一格高方块下面钻过去，且方块角落能擦穿。
+- 根因：
+  1. Debug Tool 右键仍走 `BMBDebugMoveTarget` 的直线 direct steering，不走 `MoveToWorldPosition` / A*，所以在复杂方块结构里会被 direct 安全层秒退。
+  2. `isPassable` / `IsPathGridVisible` 只查"中心点所在 foot cell + head cell"，没有考虑成年羊水平宽度；中心线可以贴着方块角过，但实体 hull 已经重叠方块。MC 成年羊宽 0.9 格（约 32.4u），不能像点一样从一格高洞和角落挤过去。
+- 修法：
+  - `bmb_base_mob` 新增 `IsBMBHullClearAtPosition`：用实体碰撞盒半径检查周围 solid block 的 XY AABB，Z 方向按实体高度覆盖的方块层检查。`IsBMBPathCellPassable` = 该 cell 中心位置 hull clear。
+  - `BMB.Pathfinder.FindPath(start, goal, { mob = self })`：A* 邻居和目标格都调用 mob 的 hull passable。
+  - mock/real `GetRandomWalkablePoint(origin, radius, mob)`：有 mob 时先用 hull clear 过滤候选，Wander/Flee 传入 mob。
+  - `IsPathGridVisible` 改为沿直线每 1/4 格采样 exact position 的 hull clear，防止 carrot 从角上切过去。
+  - Tool Gun 右键目标改为 path debug move：点击上表面时目标点上抬 4u，点击侧面时推出半格；`RunBMBDebugMove` 对 path target 调 `MoveToWorldPosition`。
+  - `bmb_sheep` 碰撞宽度 28u -> 32u，接近 MC 成年羊，同时仍小于 36u 一格走廊。
+- 风险/后续：hull clear 仍不判断脚下是否有 MC 支撑方块，保留 Source 地面可支撑的开发便利；可站立枚举/BlockHop/3D A* 时要明确支撑规则。
+
+## A* 只懂 MC 方块，Source 地图安全层不能全退役（第十四轮，2026-06-11）
+
+- 用户确认第十二轮三项通过后，发现两个回归：羊会沿 `path_carrot` 往 gm_flatgrass 地图砖墙走；平台边缘又会"跳崖"。截图 HUD 都是 `state=wander mode=path_carrot`，说明 A* 路径跟随正在正常执行，但没有 Source 地图安全兜底。
+- 根因：第十一轮为了不误伤一格方块走廊，把 `MoveAlongPath` 里的 `IsMovementTargetSafe` 完全删除。这样 MC 方块走廊没被 Source hull 误杀，但 A* 只看 `IBlockWorld`，它不知道 Source 地图墙、地图平台边缘、玩家 prop。
+- 正确边界：
+  - **MC 方块通行**：由 A* + mob hull 占格判断决定，Source hull 命中 MC chunk 碰撞不能二次否决。
+  - **Source 地图/prop/悬崖安全**：仍由移动层前向 trace/ground probe 兜底，因为这些不在 `IBlockWorld`。
+- 修法：新增 path 专用 `IsPathSourceTargetSafe`：
+  - 前向 hull 命中墙时，用 `IsSourceHitBMBBlock(hitPos, hitNormal)` 采样命中面两侧/半格内的 `IBlockWorld` cell；若命中来自 MC solid block，则忽略墙命中并只把地面 probe 截到墙前；若不是 MC solid，则返回 `false, "wall"`（HUD mode `path_wall`）。
+  - 地面 probe 没命中、坡太陡、落差 > `MaxStepDown` 一律返回 `false, "cliff"`（HUD mode `path_cliff`，`FailBMBMove` 急刹）。
+- 这比老的 `IsMovementTargetSafe` 更窄：不会用 `WallStopDistance` 否决 A* 方块路径，只负责 Source 世界没有被 A* 建模的危险。
+
 ## mock 切真环境炸出的对接坑（第十轮，2026-06-11）
 
 - **接口的"隐式约定"在 mock 里看不出来，切真环境才炸**，这批都是接 RealBlockWorld 时发现的：
@@ -247,3 +287,14 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
   - 羊吃草/蠹虫钻石头需要 mob 自主改方块，不能可靠传 `nil` 或 mob 当 `ply`。
   - 需要朋友提供类似 `MC.SV.SetBlock(bx, by, bz, id, orient)` 的服务端权威写入入口，走同步、碰撞 dirty、handler、save，但跳过玩家 reach/cooldown/admin 校验。
 - 在这个入口完成前，`BMB.RealBlockWorld.SetBlockAt` 保持 stub；mock 不受影响。
+
+## 2026-06-11: A* 3D 邻接 / BlockHop / drop
+
+- Fable 的关键提醒成立：hop/drop 不能复用普通 `path_wall` / `path_cliff` 判定。+1 hop 冲向台阶时，Source hull 会把前方方块看成墙；drop 主动走下台阶时，地面探测会把目标看成悬崖。因此垂直边必须由 A* 标 action，并在移动层显式进入 `path_hop` / `path_drop` 豁免普通 path safety。
+- waypoint table 采用兼容结构：`{ x, y, z, coord, action }`。旧 carrot/corner/flatDistance 继续读 `x/y/z`；只有新垂直逻辑读 `action/coord`。
+- mock 世界保留 `SupportsVerticalPath=false` 很重要。mock 的 `WorldToBlock` 固定返回 z=0，如果强行开 3D，会生成没有视觉支撑的垂直边，反而污染平面调试。
+- real `GetRandomWalkablePoint` 如果继续只抽当前 z，A* 虽然会跳台阶，但 Wander 很少自然选到上下层目标。现在 real 随机点会少量抽当前层附近；跨层候选必须有 MC solid 支撑，当前层仍允许 Source flatgrass 支撑。
+- 风险/待实测：
+  - `BlockHopTriggerDistance=42`、空中弱控 `0.08` 是首版手感值；如果台阶前跳早/跳晚，优先调这两个。
+  - `IsBMBPathActionAtTargetLevel` 依赖 `WorldToBlock(GetPos()).z` 判断落到目标层；如果 MCSWEP cell 边界和 NextBot 落地 z 有偏差，可能需要加小范围 z 容忍。
+  - hop/drop 豁免 Source safety 是必要的，但也意味着 malformed vertical path 不能靠 Source 墙/悬崖层兜底；后续若出现贴地图墙的垂直边，需要在 A* 候选或目标选择层过滤。

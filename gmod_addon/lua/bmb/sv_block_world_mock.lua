@@ -10,6 +10,7 @@ local world = BMB.MockBlockWorld
 world.Blocks = world.Blocks or {}
 world.Initialized = world.Initialized or false
 world.BaseZ = world.BaseZ or 0
+world.SupportsVerticalPath = false
 
 util.AddNetworkString("bmb_mock_blocks")
 
@@ -143,7 +144,7 @@ function world.Reset(origin)
     world.EnsureInitialized(origin or Vector(0, 0, 0))
 end
 
-function world.GetRandomWalkablePoint(origin, radius)
+function world.GetRandomWalkablePoint(origin, radius, mob)
     world.EnsureInitialized(origin)
 
     local center = world.WorldToBlock(origin)
@@ -156,8 +157,12 @@ function world.GetRandomWalkablePoint(origin, radius)
             0
         )
 
-        if not world.IsSolid(blockCoord) then
-            return world.BlockToWorld(blockCoord)
+        local candidate = world.BlockToWorld(blockCoord)
+
+        if IsValid(mob) and mob.IsBMBHullClearAtPosition then
+            if mob:IsBMBHullClearAtPosition(candidate) then return candidate end
+        elseif not world.IsSolid(blockCoord) then
+            return candidate
         end
     end
 

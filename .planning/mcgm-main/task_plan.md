@@ -59,8 +59,14 @@ Phase 2
 - [x] 复测第九轮 MC PanicGoal 式 Flee：受击随机近点 dash（不朝反方向）、平地跑 1-2 段就停、被围住冲几下放弃站住（用户已验证，Flee 整体 ✅）
 - [x] 复测 Flee 受击掉头先转身后跑、无倒退（用户已验证）
 - [x] 接通 `BMB.RealBlockWorld`：MC.SV.SetBlock 写入、id↔BMB.BlockTypes 映射、吃草改查脚下格、A* 头部格检查、MaxStepDown 40、mock/real 切换（bmb_use_real_world / bmb_world 命令）
+- [x] 修一格宽走廊"出得来、进不去"：A* 路径跟随退役 Source 安全二次否决，carrot 改 pure pursuit + 网格视线缩短（待用户复测）
+- [x] 修方块通行按中心点漏判：A*/随机候选/carrot 视线改用 mob hull 占格检查，sheep hull 调到 32u，Tool Gun 右键改走 A* debug path（待用户复测）
+- [x] 修 path 退役 Source safety 过头：MoveAlongPath 加回 path 专用地图墙/悬崖复查，MC 方块命中交给 hull 规则，Source 地图墙/平台边缘仍拦截（用户已验证）
 - [ ] 真方块世界全链路复测：游荡（含从一格地板走下来）→ 受击逃 → 吃草 grass_block→dirt（同步/音效/存档）；`bmb_world mock` 回退正常
-- [ ] 羊一格台阶自动跳（StepHeight 28 < 36 缺口）+ A* 3D 邻接
+- [ ] Flee 在坑/封闭结构中改为先枚举可站立格再随机抽样，减少"有出口但盲采失败直接放弃"
+- [ ] 吃草原版手感版：羊自己补低头动画、草屑粒子和咀嚼音效（不靠破坏 fx 冒充）
+- [x] 羊一格台阶自动跳（BlockHop，StepHeight 仍 <36）+ A* 3D 邻接 + ≤3 格 drop 边（待用户复测）
+- [ ] 复测 hop/drop：Tool Gun 点高一格平台显示 `path_hop` 并跳上去；点低 1-3 格落点显示 `path_drop` 并主动走下去；旧的走廊/墙角/地图墙/悬崖保护不回归
 - **Status:** in_progress
 
 ### Phase 3: Zombie 迁移回新架构
@@ -127,7 +133,7 @@ Phase 2
 
 - GMod addon 实装路径：`D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon`
 - 工作区源码路径：`C:\Users\ADMIN\Documents\MC MOB IN GMOD`
-- 本地 Minecraft 源码路径：`C:\Users\ADMIN\Downloads\Compressed\我的世界源码`
+- 本地 Minecraft 源码路径（最新版）：`C:\Users\ADMIN\Downloads\Compressed\mcswep-main\out`
 - planning-with-files-master 参考路径：`C:\Users\ADMIN\Documents\New project 2\planning-with-files-master`
 - Opus 规格文档路径：`H:\工作视频\20251115毕业\gmod_mc_mob_spec(2).md`
 - MCSWEP 接口文档：`H:\工作视频\20251115毕业\interface-usage.md`

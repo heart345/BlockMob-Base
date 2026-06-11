@@ -77,6 +77,7 @@ local function clearDebugMovement(mob)
         mob.BMBDebugMoveUntil = 0
         mob.BMBDebugMoveDirection = nil
         mob.BMBDebugMoveTarget = nil
+        mob.BMBDebugMoveUsePath = nil
     end
 
     mob.FleeUntil = 0
@@ -90,13 +91,26 @@ local function clearDebugMovement(mob)
     end
 end
 
+local function targetFromTrace(trace)
+    local target = trace.HitPos
+    if not target then return nil end
+
+    local normal = trace.HitNormal or Vector(0, 0, 1)
+    if normal.z > 0.4 then
+        return target + Vector(0, 0, 4)
+    end
+
+    return target + normal * ((BMB and BMB.Config and BMB.Config.BlockSize or 36) * 0.5)
+end
+
 local function startTargetMove(mob, target, speed, duration)
     mob.BMBDebugMoveTarget = target
     mob.BMBDebugMoveDirection = nil
+    mob.BMBDebugMoveUsePath = true
     mob.BMBDebugMoveSpeed = speed
     mob.BMBDebugMoveUntil = CurTime() + duration
     mob.BMBDebugMoveLookAhead = math.max(speed * 1.2, 160)
-    mob.BMBDebugMoveTolerance = 26
+    mob.BMBDebugMoveTolerance = BMB and BMB.Config and BMB.Config.DefaultGoalTolerance or 18
     mob.FleeUntil = 0
     mob.FleeThreat = nil
     mob.FleeThreatPosition = nil
@@ -145,9 +159,10 @@ function TOOL:RightClick(trace)
         if not selectMob(ply, mob) then return false end
     end
 
-    if not trace.HitPos then return false end
+    local target = targetFromTrace(trace)
+    if not target then return false end
 
-    startTargetMove(mob, trace.HitPos, self:GetClientNumber("move_speed", 120), self:GetClientNumber("move_duration", 8))
+    startTargetMove(mob, target, self:GetClientNumber("move_speed", 120), self:GetClientNumber("move_duration", 8))
 
     return true
 end

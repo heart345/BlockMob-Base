@@ -16,7 +16,7 @@ function BMB.Behaviors.Wander.Run(mob)
     for _ = 1, 8 do
         if mob.BMBMoveInterrupt then return end
 
-        local destination = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), maxDistance)
+        local destination = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), maxDistance, mob)
         local direction = destination - mob:GetPos()
         direction.z = 0
 
@@ -50,7 +50,7 @@ local function pickPanicDestination(mob)
     local minDistance = mob.FleePanicMinDistance or BMB.Config.BlockSize
 
     for _ = 1, 10 do
-        local candidate = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), radius)
+        local candidate = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), radius, mob)
         local offset = candidate - mob:GetPos()
         offset.z = 0
 

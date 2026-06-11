@@ -26,8 +26,8 @@ ENT.FleeDurationMax = 2.5
 ENT.FleePanicRadius = 180        -- 恐慌单段目标 ±5 格（MC DefaultRandomPos.getPos(mob, 5, 4)）
 ENT.FleePanicMinDistance = 36
 ENT.FleeGiveUpFailures = 4       -- 连续 4 次选不出点/起步即被挡 → 认定无路可逃，放弃恐慌
-ENT.CollisionMins = Vector(-14, -14, 0)
-ENT.CollisionMaxs = Vector(14, 14, 44)
+ENT.CollisionMins = Vector(-16, -16, 0) -- MC 成年羊宽 0.9 格 ~= 32.4u；保持略小于 36u 一格走廊
+ENT.CollisionMaxs = Vector(16, 16, 44)
 
 function ENT:Initialize()
     if CLIENT then return end

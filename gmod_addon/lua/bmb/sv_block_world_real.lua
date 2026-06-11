@@ -7,6 +7,7 @@ BMB.RealBlockWorld = BMB.RealBlockWorld or {}
 
 local real = BMB.RealBlockWorld
 real.BlockIds = real.BlockIds or {}
+real.SupportsVerticalPath = true
 
 local function coord(x, y, z)
     return { x = x, y = y, z = z or 0 }
@@ -125,22 +126,34 @@ function real.GetBlocksInRadius(pos, radius)
     return found
 end
 
-function real.GetRandomWalkablePoint(origin, radius)
+function real.GetRandomWalkablePoint(origin, radius, mob)
     if not real.Available() then return origin end
 
     local center = real.WorldToBlock(origin)
     local blockSize = MC.BS or BMB.Config.BlockSize
     local blockRadius = math.max(1, math.floor(radius / blockSize))
+    local maxDropCells = (IsValid(mob) and mob.MaxPathDropCells) or BMB.Config.MaxPathDropCells or 3
 
     for _ = 1, 24 do
         local bx = center.x + math.random(-blockRadius, blockRadius)
         local by = center.y + math.random(-blockRadius, blockRadius)
+        local bz = center.z
+
+        if math.random() < 0.45 then
+            bz = center.z + math.random(-maxDropCells, 1)
+        end
 
         -- 候选点取 mob 脚部所在层：脚部格和头部格都要是空的（mob 高 44 < 2 格）。
-        -- 不要求脚下有 MC 方块——flatgrass 上大部分地面是 Source 地皮；
-        -- 悬崖/落差由移动层的安全探测挡，这里只做方块占位筛选
-        if not real.IsSolid(coord(bx, by, center.z)) and not real.IsSolid(coord(bx, by, center.z + 1)) then
-            return MC.CellWorldCenter(bx, by, center.z)
+        -- 当前层不要求脚下有 MC 方块（flatgrass 地皮可支撑）；跨层候选必须有 MC 支撑。
+        local hasSupport = real.IsSolid(coord(bx, by, bz - 1))
+        if bz == center.z or hasSupport then
+            local candidate = MC.CellWorldCenter(bx, by, bz)
+
+            if IsValid(mob) and mob.IsBMBHullClearAtPosition then
+                if mob:IsBMBHullClearAtPosition(candidate) then return candidate end
+            elseif not real.IsSolid(coord(bx, by, bz)) and not real.IsSolid(coord(bx, by, bz + 1)) then
+                return candidate
+            end
         end
     end
 

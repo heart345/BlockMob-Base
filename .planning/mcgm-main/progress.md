@@ -352,3 +352,108 @@
   - `gmod_addon/lua/bmb/sv_behaviors.lua`
   - `gmod_addon/lua/entities/bmb_base_mob.lua`
   - `CLAUDE.md`
+
+### 第十一轮：一格宽走廊"出得来、进不去"（2026-06-11，待复测）
+
+- 用户复测真方块世界后发现：羊在一格宽方块走廊里能自己走出来；但从外面不会主动进去。若把羊放在坑/走廊内触发 Flee，会很快放弃 Flee 切回 Wander。吃草功能只剩粒子缺失，草->土、脚下格、mock/real 分离都正常。
+- Fable 诊断采纳：这个不对称现象说明 A* 大概率能给出路径，问题在路径跟随层"二次质疑"路径：
+  1. `MoveAlongPath` 每 tick 对 `safetyTarget` 调 `IsMovementTargetSafe`。36u 走廊中线离两侧墙各 18u，小于旧逻辑 `WallStopDistance=20`，入口附近容易被 Source hull 探测误判成墙，导致外面进不去；从里面沿走廊出去时前方无遮挡，所以能出来。
+  2. carrot 若从当前位置直线瞄向前方节点/终点外投，会在直角入口抄近路撞走廊外壁，触发 blocked/watchdog 放弃路径。
+- 代码改动（`bmb_base_mob.lua`）：
+  1. `MoveAlongPath` 删除 `IsMovementTargetSafe(safetyTarget)` 路径二次否决。A* 路径跟随只负责跟路径；Source 安全探测仍保留给 debug direct / `MoveDirectFallback` / `MoveAlongDirection` / legacy waypoint 这些裸方向移动。
+  2. `GetPathCarrot` 改成 pure pursuit：先把当前位置投影到当前路径折线附近（限制只看当前段后几段，避免 U 形路径跳到后半段），再沿折线前推 carrotDistance。
+  3. 增加 `IsPathGridVisible`：mob 到 carrot 的直线逐半格采样 `IBlockWorld.WorldToBlock` + `IsSolid`（脚部格+头部格）。若直线穿方块，二分缩短前瞻距离到最后一个可见的折线点，避免直角入口切角。
+  4. 终点外投仍保留，但方向改为沿最后一段路径，且最多外投一个 goalTolerance；若网格视线被挡会被上面的二分缩回。
+- 吃草粒子决策：选择原版手感版，不把 MCSWEP 破坏 fx 当吃草效果；后续由羊自己补低头吃草动画、咀嚼音效、草屑粒子。CLAUDE.md 已改成这条规则。
+- 本轮未做：坑/封闭结构 Flee 采样仍是旧的"随机世界点再验证"。下一步应按 CLAUDE.md 改为先枚举半径内可站立格，再随机抽样，最后 A* 验证；否则坑里有出口但盲采命中率低，仍可能放弃 Flee。
+- glualint 通过；待同步到 D 盘 GMod addons 目录后用户复测。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/task_plan.md`
+  - `.planning/mcgm-main/progress.md`
+  - `.planning/mcgm-main/findings.md`
+  - `.planning/mcgm-main/status_summary_2026-06-10.md`
+
+### 第十二轮：方块通行按 mob hull，占格不再按中心点（2026-06-11，待复测）
+
+- 用户复测第十一轮：Tool Gun 右键目标只闪一下 `debug_move` 就回 wander；Wander/Flee 仍会从一格高方块下面钻过去，方块角落也能擦穿。截图显示 sheep 在 `path_carrot` 下贴着/穿过 stone 角。
+- 诊断：上一轮退役路径 Source 安全探测后，真正暴露出方块 passable 的语义太弱：A* / carrot 视线只查中心点所在格和头顶格，相当于把羊当一根竖线；成年羊应按 0.9 格宽、44u 高的实体 hull 判断占格。
+- 代码改动：
+  1. `bmb_base_mob.lua`
+     - 新增 `GetBMBPathHullRadius` / `GetBMBPathHeightCells` / `DoesBMBHullOverlapBlock` / `IsBMBHullClearAtPosition` / `IsBMBPathCellPassable`。
+     - `IsBMBHullClearAtPosition(pos)` 对 mob 当前/候选位置周围实心方块做 XY AABB vs 圆形 hull 检查，Z 方向检查实体高度覆盖到的方块层。这样 1 格高天花板会挡成年羊，角落切线也会被挡。
+     - `IsPathGridVisible` 改为沿直线每 1/4 格采样 exact position 的 hull clear，不再只按采样点 cell 中心判断。
+     - Debug target move 改为 path 模式：`BMBDebugMoveUsePath` 时直接调用 `MoveToWorldPosition(..., skipSourcePath=true)`，不再走 direct steering。
+  2. `sv_pathfinder.lua`
+     - `FindPath(start, goal, { mob = self })`，A* 邻居和目标格用 `mob:IsBMBPathCellPassable(cell)`。
+  3. `sv_block_world_mock.lua` / `sv_block_world_real.lua` / `sv_behaviors.lua`
+     - `GetRandomWalkablePoint(origin, radius, mob)` 支持 mob hull 过滤；Wander/Flee 传入 mob。
+  4. `bmb_debug.lua`
+     - Tool Gun 右键点击上表面时目标点上抬 4u，点击侧面时沿法线推出半格；启动 `BMBDebugMoveUsePath=true`。
+  5. `bmb_sheep.lua`
+     - hull 宽度 28u -> 32u，接近 MC 成年羊 0.9 格（约 32.4u），仍小于 36u 一格走廊。
+- 已知保留：hull clear 只判断身体是否和实心方块重叠，不判断脚下是否有 MC 支撑方块（flatgrass/Source 地面仍可支撑）。Flee 坑内采样、BlockHop、3D A* 时补支撑规则。
+- glualint 通过；待同步到 D 盘 GMod addons 目录后用户复测。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/bmb/sv_pathfinder.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_mock.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - `gmod_addon/lua/entities/bmb_sheep.lua`
+  - `gmod_addon/lua/weapons/gmod_tool/stools/bmb_debug.lua`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第十三/十四轮：拐弯漂移 + Source 地图墙/跳崖回归（2026-06-11，待复测）
+
+- 用户确认第十二轮三项通过：Tool Gun 右键能进走廊；成年羊不再从一格高洞下面钻；贴石头/木头角不会擦穿。
+- 新手感问题：走廊拐弯时像漂移，带惯性滑出去一点，再不断转向矫正。
+  - 修法：`MoveAlongPath` 新增 `path_corner`。`GetBMBPathCornerControl` 提前约 2 格检查折线转角（默认角度 >=35°），靠近转角时动态降低目标速度、缩短 carrot 到约 32u，并临时提高 `loco` deceleration 到 720；直线段恢复 `path_carrot`。
+- 用户随后发现两个回归：羊会往 gm_flatgrass 的地图砖墙走；平台边缘又会跳崖。截图 HUD 为 `mode=path_carrot`。
+  - 根因：第十一轮完全删除 path 中的 Source 安全复查后，A* 只懂 MC 方块，不知道 Source 地图墙/悬崖。
+  - 修法：新增 path 专用 `IsPathSourceTargetSafe`，在 `MoveAlongPath` 每 tick 对 carrot 做前向 Source hull/ground probe：
+    1. 前方 wall hit 若能映射到 `IBlockWorld` solid block（`IsSourceHitBMBBlock`）则忽略墙命中，不误伤 MC 一格走廊；
+    2. 前方 wall hit 若不是 MC solid（地图墙/prop）则 `path_wall`，返回失败让行为重选；
+    3. ground probe 没地/坡太陡/落差 > `MaxStepDown` 则 `path_cliff` 并急刹。
+- CLAUDE.md 更新：A* 路径不能被 Source 射线否决 MC 方块通行，但必须保留 path 专用 Source 地图/悬崖安全层。
+- glualint 通过；待同步到 D 盘 GMod addons 目录后用户复测。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第十五轮：A* 3D 邻接 + BlockHop/drop（2026-06-11，待复测）
+
+- 用户反馈第十四轮已无问题，采纳 Fable 建议：先继续做移动层上下台阶能力，粒子后置。
+- `sv_pathfinder.lua`
+  - A* waypoint 从纯 Vector 升级为兼容旧字段的 table：保留 `x/y/z`，新增 `coord` 和进入该点的 `action`。
+  - real 方块世界启用 3D 4 邻接：同层 `walk`、+1 格 `hop`、向下 ≤3 格 `drop`。
+  - `hop` 目标必须可通行且脚下有 MC solid 支撑；`drop` 会在相邻列向下找 1-3 格内的可站立落点。
+  - mock world 标记 `SupportsVerticalPath=false`，仍保持 z=0 平面，避免旧 mock 测试被垂直语义影响。
+- `bmb_base_mob.lua`
+  - 新增 `path_hop` / `path_drop` 消费逻辑。
+  - `path_hop` 在接近 hop 节点且落地时触发一次 BlockHop：45u 顶点，`loco:SetVelocity` 加竖直速度并保留水平速度；空中用弱水平速度 Lerp 朝目标修正。
+  - `path_drop` 不跳，直接沿路径走出边缘并让重力落下；空中同样弱控水平速度。
+  - hop/drop 期间跳过 `IsPathSourceTargetSafe`，避免 hop 被 `path_wall` 点刹、drop 被 `path_cliff` 取消；普通 walk 边仍保留地图墙/悬崖安全层。
+  - 终点到达判定补上垂直条件：如果 final 是 hop/drop，必须落地且 `WorldToBlock(GetPos()).z` 到目标层。
+- `sv_block_world_real.lua`
+  - `GetRandomWalkablePoint` 在 real 世界会抽当前层附近（向下 ≤3、向上 +1）的候选；当前层允许 Source flatgrass 支撑，跨层候选必须有 MC solid 支撑。
+- `CLAUDE.md` / `docs/STATE.md` / task plan 已同步：hop/drop 边是 A* 明确授权的垂直动作，跟随层必须豁免 path wall/cliff safety。
+- glualint 通过。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sh_config.lua`
+  - `gmod_addon/lua/bmb/sv_pathfinder.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_mock.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`

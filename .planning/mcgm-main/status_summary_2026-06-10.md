@@ -15,7 +15,11 @@
 - 第六轮（实测仍冻）-> **第七轮真根因（用户已验证 ✅ 贴脸 prop 不再冻住）**：`getSafeDirection` 的 `direction:LengthSqr() > 1` 把归一化单位向量全部跳过，**十方向选择从第一天起从未运行、恒返回 nil**，Flee 一直只走"朝 away 直线兜底"（侧跑没事、面朝 prop/边缘就冻的原因）；`MoveAlongDirection` 的 `<= 1` 同款拒收。两处阈值改 0.01。另：受击掉头先转身后跑 ✅（用户已验证）。
 - **第八轮（用户已验证 ✅）：墙/悬崖分治**——边缘不再急停、撞 prop 会换方向。`IsMovementTargetSafe` 区分 `wall`/`cliff` 失败，墙只在贴脸 `WallStopDistance`(20u) 内算挡路；wall 失败不杀动量；每 tick 复查距离改 `min(选向档位, max(48, vel×0.45))`（`GetBMBTickSafetyProbe`）。
 - **第九轮（用户已验证 ✅）：Flee 重写为 MC PanicGoal 式**（对照用户本地 MC 源码）：随机近点 dash、没路放弃、平地不跑远，全部通过。
-- **第十轮（最新，待复测）：RealBlockWorld 接通 MCSWEP**（addon 在 `D:\...\addons\mcswep-main`，`MC.SV.SetBlock` 已就位）。修掉五个对接隐藏 bug：BlockWorld 无切换机制（新增 `BMB.SelectBlockWorld` + `bmb_use_real_world` + `bmb_world` 命令）、GetBlockAt 数字 id 对不上 BMB.BlockTypes 枚举（adapter 双向映射）、吃草查成脚部空气格（改查脚下支撑格 + actor 透传）、A* 不查头部格（isPassable）、MaxStepDown 34<36 下不来一格地板（改 40）。已知缺口：一格台阶自动跳未实现。详见 findings.md 与 docs/STATE.md。
+- **第十轮（待复测）：RealBlockWorld 接通 MCSWEP**（addon 在 `D:\...\addons\mcswep-main`，`MC.SV.SetBlock` 已就位）。修掉五个对接隐藏 bug：BlockWorld 无切换机制（新增 `BMB.SelectBlockWorld` + `bmb_use_real_world` + `bmb_world` 命令）、GetBlockAt 数字 id 对不上 BMB.BlockTypes 枚举（adapter 双向映射）、吃草查成脚部空气格（改查脚下支撑格 + actor 透传）、A* 不查头部格（isPassable）、MaxStepDown 34<36 下不来一格地板（改 40）。已知缺口：一格台阶自动跳未实现。详见 findings.md 与 docs/STATE.md。
+- **第十一轮（最新，待复测）：修一格宽走廊"出得来、进不去"**。Fable 诊断成立：A* 路径被跟随层二次否决，`IsMovementTargetSafe` 的 `WallStopDistance=20` 会误伤 36u 走廊入口；carrot 也会在直角入口切角。本轮 `MoveAlongPath` 删除 Source 安全复查，carrot 改 pure pursuit（投影到路径折线后沿折线前推），再用网格视线检查把不可直视的 carrot 缩回最后可见点。裸方向移动仍保留安全探测。坑里 Flee 盲采放弃是下一步独立问题。
+- **第十二轮（最新，待复测）：方块通行按 mob hull**。第十一轮后仍会从一格高洞/方块角穿过，且 Tool Gun 右键只闪一下 `debug_move`。本轮把 `isPassable` / 随机候选 / carrot 视线从"中心点 foot+head cell"升级为实体 hull 占格：`IsBMBHullClearAtPosition` 按水平半径和身高检查周围 solid cell；A* 调 `FindPath(..., {mob=self})`；`GetRandomWalkablePoint` 接收 mob；`IsPathGridVisible` 每 1/4 格采样 hull clear；`bmb_sheep` hull 宽 28u->32u；Tool Gun 右键目标改走 A* path debug，点击面上抬/推出到空气格。
+- **第十三/十四轮（最新，待复测）：过弯和 Source 安全回补**。第十二轮三项通过后，走廊拐弯有漂移 -> 新增 `path_corner`，提前约 2 格检测转角，缩短 carrot、降速、提高 deceleration。随后发现地图墙/跳崖回归 -> `MoveAlongPath` 加回 path 专用 `IsPathSourceTargetSafe`：Source wall hit 若对应 MC solid block 则忽略（不误伤方块走廊），若不是 MC block 则 `path_wall`；地面 probe 没地/坡陡/落差大则 `path_cliff` 急刹。
+- 吃草粒子决策：选择原版手感版，不靠 MCSWEP 破坏 fx；羊后续自己补低头动画、咀嚼音效、草屑粒子。当前只修路径，不实现粒子。
 - `bmb_use_source_path` 默认改 0（不用 navmesh）；`UseWanderPathFallback` 已删除。
 - 下方"New Fix For Standing Twist"一节描述的直线游走方案已被上述方案**取代**，仅作历史参考。
 
@@ -246,16 +250,17 @@
 ## Next Checklist
 
 1. 重启 GMod，生成 `bmb_sheep`，开 `bmb_debug_hud 1`。
-2. 观察原地扭身是否消失。
-3. 如果还出现，记录 HUD：
+2. 优先复测一格宽走廊、低顶、方块角、Tool Gun 右键 path debug、拐弯 `path_corner`、地图墙/平台边缘 `path_wall`/`path_cliff`。失败时记录 HUD：
    - `mode`
    - `vel actual/desired`
    - `dist`
+   - `node` / `adv`
    - 是否显示 `*_blocked` / `*_stuck`
-4. 复测 Flee：
+3. 复测 Flee：
    - 枪击触发
    - prop 砸中触发/死亡
    - 逃跑期间不再躲玩家正面绕位
+4. 下一步优先：Flee 在坑/封闭结构中从"盲采世界点"改成"枚举可站立格 -> 随机抽 -> A* 验证"。
 5. 下一步工具建议：
    - BMB movement inspector：显示 path nodes、carrot、safety trace hit
    - life/speed editor：当前 Tool 已有初版，后续可做得更像 VJ Base 面板
@@ -268,3 +273,23 @@
    - 把 Zombie 迁移到 BMB base
    - 建 hostile behavior 分支
    - 开始模型/动画管线验证
+
+## 2026-06-11 Latest Status
+
+- 第十一到十四轮移动问题已由用户确认通过：一格宽走廊进/出、低顶、方块角、拐弯漂移、地图墙和平台边缘保护都不再复现。
+- 第十五轮已实现，待 GMod 实机复测：
+  - A* real 方块世界 3D 邻接：`walk` / `hop` / `drop`。
+  - `hop` = +1 格台阶，BlockHop 顶点 45u，`loco:SetVelocity` 加竖直速度，空中弱水平控。
+  - `drop` = 主动走下 ≤3 格落差，不跳，重力落地。
+  - `path_hop` / `path_drop` 期间豁免 `path_wall` / `path_cliff`，普通 `walk` 仍保留地图墙/悬崖 Source safety。
+  - final 如果是垂直边，必须落地且 `WorldToBlock(GetPos()).z` 到目标层才算到达。
+  - mock world 保持平面；real random walk target 会抽当前层附近，跨层候选要求 MC 支撑。
+- 本轮 lint 已通过。
+
+## Current Next Checklist
+
+1. 开 `bmb_debug_hud 1`，Tool Gun 右键点高一格平台，观察 HUD `mode=path_hop`，羊应跳上去，不应在台阶前 `path_wall`。
+2. 右键点低 1-3 格落点，观察 `mode=path_drop`，羊应主动走下去，不应 `path_cliff`。
+3. 回归旧移动场景：一格宽走廊、低顶、方块角、90 度拐弯、gm_flatgrass 地图墙、平台边缘。
+4. 下一步仍是 Flee 坑/封闭结构采样：枚举可站立格 -> 随机抽 -> A* 验证。
+5. 粒子/吃草动画/音效放在 A* 3D 和 BlockHop 稳定之后做。
