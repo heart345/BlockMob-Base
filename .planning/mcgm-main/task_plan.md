@@ -80,8 +80,8 @@ Phase 2
 - [x] 复测第二十一轮：wander 主动从 3 格内高处下落已实现 ✅；hop 仍全失败，manual `vz≈339` 已写入但 apex 多为 0、少数约 12 → 第二十二轮
 - [x] 第二十二轮：BlockHop 改两段式 manual lift（下一 tick 先竖直抬升，仍 onGround 时短窗口重复 `Jump()`；抬到约 `0.8*BlockSize` 或 lift 超时后再加水平速度落点），避免 hull 过早顶住方块侧面吞掉上抛
 - [x] 复测第二十二轮：NPC 已能跳上一格台阶 ✅；drop 主动下 3 格内 ✅；发现待调优：apex 偏高、偶发误上两格（A* 不主动规划两格）、debug move 长路径超时偏短、跳后动作保持偏久
-- [ ] 调优 BlockHop apex/lift，避免误上两格且保持一格可靠；检查跳后动作 reset
-- [ ] 调整 debug move 长路径 timeout，避免还在路上就放弃目标
+- [x] 第二十三轮：hop 期间临时 `StepHeight=18`、结束/失败/中断恢复 28，避免 apex + 自动登阶误上两格；debug path timeout 改为路径长度/速度预算；Think/落地按 locomotion 状态重选 activity，收跳后动作残留（待用户复测）
+- [x] 复测第二十三轮：用户确认当前未发现 bug ✅；一格 hop、误上两格、debug 远点早停、跳后动作残留暂未复现
 - [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
 - **Status:** in_progress
 

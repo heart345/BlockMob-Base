@@ -605,3 +605,31 @@
   - `CLAUDE.md`
   - `docs/STATE.md`
   - `.planning/mcgm-main/*`
+
+### 第二十三轮：StepHeight / debug timeout / activity 收口（2026-06-12，待复测）
+
+- 采用 Fable 诊断：误上两格来自 `apex≈54~65` 与 `StepHeight=28` 的空中 step 助攻。只降低 apex 会和一格可靠性冲突，因此改为 hop 期间临时压低 `loco:SetStepHeight(18)`，结束/失败/中断恢复默认 28。
+- `bmb_base_mob.lua`
+  - 新增 `BlockHopStepHeight=18`、`BeginBMBHopStepHeight`、`RestoreBMBStepHeight`；`StartBMBBlockHop` 进入 hop 时压低，`FinishBMBHopDebug` / `FailBMBMove` / `InterruptBMBMovement` / path timeout 等出口恢复。
+  - 新增路径 timeout 预算：`pathFlatLength` + `GetBMBMoveTimeoutForDistance` + `GetBMBPathTimeout`，默认按路径长度 / 速度 × scale + base；仍保留 no-progress watchdog 判真卡死。
+  - debug path move 不再把右键面板 duration 当硬 timeout，而是作为 minTimeout，debug 专用 scale/base/max 更宽。
+  - activity 改为状态驱动兜底：`StartBMBActivity`、`UpdateBMBActivityFromLocomotion`；Think/落地时根据 held/airborne/ground speed 切 idle/walk/run/jump，落地重置 `CurrentMoveActivity` 防跳姿残留。
+- `weapons/gmod_tool/stools/bmb_debug.lua`
+  - 右键目标 move 的 `BMBDebugMoveUntil` 按直线距离估一个较长接收窗口，真正路径预算由 base mob 按 A* 路径长度再算。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/weapons/gmod_tool/stools/bmb_debug.lua`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十三轮复测通过（2026-06-12）
+
+- 用户复测反馈：当前未发现 bug；第二十三轮目标项通过。
+- 覆盖项：
+  - 一格 BlockHop 仍可用。
+  - 临时 `StepHeight=18` 后未再观察到误上两格。
+  - debug 远点早停问题未再暴露。
+  - 跳后动作残留未再暴露。
+- 本轮按用户要求提交并 push；未跟踪截图 `hop1.png`~`hop4.png` 不纳入提交。

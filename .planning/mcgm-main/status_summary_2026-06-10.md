@@ -307,13 +307,15 @@
 - **第二十一轮用户复测**：wander 主动下 3 格内已实现 ✅；hop 仍未成功，日志显示 manual `vz≈339` 已写入但 `apex=0~12`，说明速度被碰撞/地面解算吃掉 → **第二十二轮（已复测，一格成功）**：
   - BlockHop 改两段式 manual lift：下一 tick 先只给竖直速度，短 lift 窗口内仍判 onGround 就重复 `Jump()`；抬到约 `0.8*BlockSize` 或 lift 超时后再加水平速度落到上层。
   - 保留水平速度 flight-time clamp 和 debug HUD；成功/失败/中断清理 active/pending hop 状态。
-- **第二十二轮用户复测**：NPC 已能跳上一格台阶 ✅；成功样本 apex 约 54~65。保留待调优：弧线偏高、偶发误上两格（A* 不主动规划两格）、debug move 长路径超时偏短、跳后动作保持偏久。
+- **第二十二轮用户复测**：NPC 已能跳上一格台阶 ✅；成功样本 apex 约 54~65。保留待调优：弧线偏高、偶发误上两格（A* 不主动规划两格）、debug move 长路径超时偏短、跳后动作保持偏久 → **第二十三轮（已复测通过）**：
+  - hop 期间临时 `StepHeight=18`，结束/失败/中断恢复默认 28，切断 apex + 自动登阶误上两格的组合；不削一格可靠性需要的 apex。
+  - path timeout 改为路径长度 / speed × scale + base；debug 右键 path move 不再把面板 duration 当硬截断，卡死仍由 no-progress watchdog 判断。
+  - activity 改为 Think/落地状态驱动：held/airborne/ground speed 选择 idle/walk/run/jump，落地重置 `CurrentMoveActivity`，防跳姿残留。
+- **第二十三轮用户复测**：当前未发现 bug ✅；一格 hop、误上两格、debug 远点早停、跳后动作残留均暂未复现。
 
 ## Current Next Checklist
 
-1. **hop 调优**：降低 apex/lift 余量，避免偶发误上两格；检查跳后动作保持。
-2. **debug move timeout**：远目标还在路上不应提前放弃，按路径长度放宽 timeout/watchdog。
-3. **drop**：已通过，轻量回归：wander 在 2~3 格高平台上能主动选台下目标并走 `path_drop` 下去；>3 格仍拒绝。
-4. **物理枪**：已通过，轻量回归即可。
-5. 下一步仍是 Flee 坑/封闭结构采样：枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
-6. 粒子/吃草动画/音效、半砖 `MC.BlockBoxes` 细化放在移动层稳定之后。
+1. **继续回归观察**：hop/StepHeight、debug timeout、activity reset 在更多地形和套皮后继续留意。
+2. **下一功能短板**：Flee 坑/封闭结构采样，改为枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
+3. **表现收尾**：吃草原版粒子/动画/音效。
+4. **后续地形细化**：半砖/栅栏 `MC.BlockBoxes`，以及 Zombie 迁移验证 base 抽象。

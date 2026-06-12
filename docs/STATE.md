@@ -28,6 +28,7 @@
 - **第二十轮（用户已实测：debug 有助跑能上；wander 靠近常上不去；native 近距离多次 `apex=0`，偶发成功 `apex=36` → 第二十一轮）：BlockHop 起跳准入 + 落点/高度余量 + 分类 HUD**。用户截图显示失败处已进入 `path_hop`，且成功需要反复 debug 点击、弧线很低并会擦进模型，说明主要问题在跟随层触发点/速度/落点，不是 A* 完全没标 hop。修法：① `JumpHeight` 写成 `1.6 * BlockSize`（约 58u）；② `JumpAcrossGap` 落点改为上层格中心、z = 台面 +2u；③ 起跳准入窗口：2D 距离约 `0.85~1.4` 格，朝目标速度 ≥ `0.6 * pathSpeed`，太近/太慢先退到约 `1.15` 格的 backoff/助跑点再跳；④ Debug HUD 增加 `hop# native/manual d face v apex result`，并提供 `bmb_debug_hop_log 1` 控制台日志，把"概率"拆成起跳距离、速度、实际顶点和成败。
 - **第二十一轮（用户已实测：drop 主动下 3 格内 ✅；hop 仍全部失败 → 第二十二轮）：BlockHop 改错帧手写弹道 + Wander 主动下层采样**。第二十轮 HUD/日志结论：`JumpAcrossGap` 在 `dist≈36/face≈18/speed≈50` 的近距离爬台多次 `apex=0`，只有 `dist≈47/face≈29/speed≈73` 的助跑样本成功且 `apex≈36`，所以 native jump 对一格爬升不可靠。修法：默认不再调用 `JumpAcrossGap`；先 `loco:Jump()` 打开跳跃态，下一 tick 按弹道公式 `SetVelocity`（竖直顶点 `1.6*BlockSize`，水平速度 = 距离/飞行时间并 clamp 到 `32..1.1*pathSpeed`），速度写入后给一个极短空中控制窗口，避免同一轮 path loop 又把它交回 `Approach` 压掉上抛；同时取消“必须已有 0.6×pathSpeed”的起跳硬门槛，wander 慢速靠近也能跳。实测日志显示 `hop velocity ... vz≈339` 已写入，但 `apex=0~12`，说明问题不是速度数值，而是水平过早顶住方块侧面/地面解算把上抛磨掉。另查 MC 源码：`Entity#getMaxFallDistance()` 默认 3，`LivingEntity#getComfortableFallDistance(0)=3`，`Mob` 无目标时用 3，羊未覆写；BMB 的 `MaxPathDropCells=3` 保持不变，real `GetRandomWalkablePoint` 下层偏置已让 Wander 主动下落生效。
 - **第二十二轮（用户已实测：一格高 BlockHop 成功 ✅）：BlockHop 两段式 manual hop**。`ApplyBMBPendingBlockHop` 不再立刻给水平速度，而是建立 `BMBActiveBlockHop`：第一段 lift 只给竖直速度，短窗口内如果仍在地面就重复 `loco:Jump()`；达到约 `0.8*BlockSize` 抬升或超过 lift 时间后，第二段再加水平速度/弱转向落到上层格。实测日志 `apex≈54~65`，NPC 已能跳上一格台阶。保留问题：弧线偏高，偶发能误上两格（A* 不会主动规划两格 hop）；跳完动作会多保持一段时间，套皮后要复查观感。
+- **第二十三轮（用户已实测：当前未发现 bug ✅）：StepHeight / timeout / activity 收口**。按 Fable 诊断，误上两格是 apex≈55 与空中 `StepHeight=28` 叠加：脚部高度超过 `72-28=44` 后落地解算会 step 上两格台沿。因此不削掉一格 hop 需要的 apex，而是在 hop 状态临时把 `loco:SetStepHeight(18)`，成功/失败/中断/路径结束恢复默认 28。debug 右键长路径不再把面板 duration 当硬截断：路径 timeout 改为路径长度 / 速度 × 系数 + base，仍由 no-progress watchdog 判断真卡住。跳后动作残留改为 Think/落地的状态驱动 activity 选择，落地后按速度回 idle/walk/run。用户复测：一格 hop、误上两格、debug 长路径、跳后动作均未再暴露问题。
 - 本轮修掉的对接隐藏 bug（接 real 之前就存在）：
   1. **mock 占死 `BMB.BlockWorld` 名字、无切换机制** → mock 改名 `BMB.MockBlockWorld`；新增 `BMB.SelectBlockWorld()` + convar `bmb_use_real_world`（默认 1，MCSWEP 不在场回退 mock）+ 控制台 `bmb_world mock|real`。MCSWEP 比 BMB 后加载（addons 字母序），所以 `BaseInitialize` 生成 mob 时会再选一次（幂等）。
   2. **类型枚举对不上**：real `GetBlockAt` 原来返回数字 id，行为层比较的是 `BMB.BlockTypes.Grass` 字符串，永远不相等 → adapter 现在做 id↔枚举双向映射（`blockTypeToId`/`idToBlockType`），未建模的 id 原样透传。
@@ -43,18 +44,14 @@
 2. **同步整个 `gmod_addon/` 到 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon\`**（用户在游戏里直接测）。
 3. **更新本文件 + `.planning/mcgm-main/` 四个文件**（task_plan / progress / findings / status_summary，codex 接手要看）。
 
-## 复测清单（当前：第二十二轮已通过，待调优）
+## 复测清单（当前：第二十三轮通过）
 
-1. **BlockHop（已通过，待调优）**：一格台阶可上；后续把 apex/lift 调低一些，避免偶发误上两格，同时保持一格可靠。
-2. **Drop（已通过，回归）**：站在 2~3 格高平台上，wander 能主动选台下目标并走 `path_drop` 下去；>3 格仍按 MC 默认拒绝。
-3. **物理枪（已通过，回归）**：随便抓哪只羊（走路中/发呆中）都不应上下抽搐、陷地或像弹簧一样轻微抖动，HUD state=held 且 desired speed=0；松手正常下落并恢复游荡；hop 重跳中被抓走、松手后不应立刻误报路径失败。
-4. 回归：绕路不误杀、窄沿可走、不卡顿、不跳楼、正常下落、一格走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、`bmb_world mock` 回退。
+1. **已通过**：一格 hop 稳定，未再发现误上两格；debug 远点未再早停；跳后动作能复位。
+2. **回归仍需留意**：drop、物理枪、绕路、窄沿、不卡顿、不跳楼、走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、`bmb_world mock`。
 
 ## 未解 bug / 风险
 
-- **BlockHop 弧线偏高**：第二十二轮成功后 apex 约 54~65，可靠性达标但偶发能误上两格。下一轮优先小幅降低 `BlockHopManualForwardStartHeightScale` / jump height 或 lift 窗口，目标是仍稳定上一格但不误跨两格。
-- **debug 移动超时偏短**：用户反馈 debug 右键远点时，mob 明明还在路上但过一段时间会放弃目标。下一轮检查 `PathTimeoutPerNode`、debug move timeout、partial/path goal progress watchdog，debug 指令应按长路径长度给更宽松 timeout。
-- **跳后动作保持偏久**：BlockHop 成功后跳跃/动作姿态会持续一段时间。套皮后可能影响观感，后续检查 `IsClimbingOrJumping`/activity reset/gesture 清理。
+- **第二十三轮剩余风险**：用户当前未发现 bug，但 StepHeight 临时切换、状态驱动 activity、debug 长路径 timeout 仍需要后续场景持续回归，尤其是套皮后动作映射。
 - **hop 候选分诊**：若失败处 HUD 根本不进 `path_hop`，不要按弹道修；要开 A* hop 候选日志看是上方净空/支撑正确拒绝，还是邻接标记漏判。
 - **PhysgunPickup 钩子语义**：它在"尝试抓取"时触发，若有第三方 addon 拒绝了这次拾取，BMBHeld 可能误置（下次松手钩子不来）；目前单机沙盒无此问题，联机装权限 addon 时留意。
 - **半砖对 A* 不可见**（`BlockIsFullCube`=false → BMB 当空气）：混半砖地形会选择跳整格而不是走半砖台阶，且半砖不能作为 MC 支撑（目前靠 Source 不了 trace——MCSWEP 方块碰撞不是刷子，`MASK_SOLID_BRUSHONLY` 探不到）。观感问题，需要时用 `MC.BlockBoxes` 细化 IsSolid/支撑语义。
@@ -70,8 +67,6 @@
 
 ## 下一步
 
-1. 调优 BlockHop：降低过高弧线/误上两格风险，并检查跳后动作保持。
-2. 调整 debug move 长路径 timeout，避免还在路上就放弃目标。
-3. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
-4. 吃草原版粒子/动画/音效。
-5. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。
+1. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
+2. 吃草原版粒子/动画/音效。
+3. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。

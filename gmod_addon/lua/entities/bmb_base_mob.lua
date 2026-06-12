@@ -56,6 +56,7 @@ ENT.BlockHopManualControlTime = 0.7
 ENT.BlockHopManualLiftTime = 0.16
 ENT.BlockHopManualForwardStartHeightScale = 0.8
 ENT.BlockHopManualPostLiftMinVzScale = 0.35
+ENT.BlockHopStepHeight = 18
 ENT.BlockHopAirSteerStrength = 0.08
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
 -- 重跳要赶在它把路径判死之前
@@ -81,6 +82,12 @@ ENT.PathCornerMinSpeed = 32
 ENT.PathCornerCarrotDistance = 32
 ENT.PathCornerDeceleration = 720
 ENT.PathTimeoutPerNode = 0.8
+ENT.PathTimeoutSpeedScale = 2.6
+ENT.PathTimeoutBase = 2.0
+ENT.PathTimeoutMax = 45
+ENT.DebugPathTimeoutScale = 3.0
+ENT.DebugPathTimeoutBase = 4.0
+ENT.DebugPathTimeoutMax = 90
 ENT.MoveNoProgressGrace = 0.35
 ENT.MoveNoProgressTimeout = 0.25
 ENT.MoveNoProgressDistance = 8
@@ -114,6 +121,19 @@ local function copyVector(vec)
     return Vector(vec.x, vec.y, vec.z)
 end
 
+local function pathFlatLength(waypoints, startIndex)
+    if not waypoints or #waypoints <= 1 then return 0 end
+
+    local length = 0
+    local fromIndex = math.max(1, startIndex or 1)
+
+    for i = fromIndex, #waypoints - 1 do
+        length = length + flatDistance(waypoints[i], waypoints[i + 1])
+    end
+
+    return length
+end
+
 function ENT:Initialize()
     if CLIENT then return end
     self:BaseInitialize()
@@ -127,6 +147,7 @@ function ENT:BaseInitialize()
     self:SetCollisionGroup(COLLISION_GROUP_NPC)
 
     self.loco:SetStepHeight(self.StepHeight)
+    self.BMBCurrentStepHeight = self.StepHeight
     self.loco:SetJumpHeight(58)
     self.loco:SetMaxYawRate(self.TurnRate or 400)
     self.loco:SetAcceleration(self.Acceleration)
@@ -170,15 +191,46 @@ function ENT:BaseInitialize()
     self:SetNWFloat("BMBHopDebugUntil", 0)
 end
 
-function ENT:UpdateMoveActivity(speed)
-    local runThreshold = (self.WalkSpeed + self.RunSpeed) * 0.5
-    local activity = (speed or self.WalkSpeed) >= runThreshold and ACT_RUN or ACT_WALK
-
+function ENT:StartBMBActivity(activity)
+    if not activity then return end
     if self.CurrentMoveActivity == activity then return end
 
     self:StartActivity(activity)
     self.CurrentMoveActivity = activity
+end
+
+function ENT:UpdateMoveActivity(speed)
+    local runThreshold = (self.WalkSpeed + self.RunSpeed) * 0.5
+    local activity = (speed or self.WalkSpeed) >= runThreshold and ACT_RUN or ACT_WALK
+
+    self:StartBMBActivity(activity)
     self:SetNWFloat("BMBDesiredSpeed", speed or self.WalkSpeed)
+end
+
+function ENT:SetBMBLocoStepHeight(height)
+    height = height or self.StepHeight
+
+    if self.loco and self.loco.SetStepHeight then
+        self.loco:SetStepHeight(height)
+    end
+
+    self.BMBCurrentStepHeight = height
+end
+
+function ENT:BeginBMBHopStepHeight()
+    if self.BMBHopStepHeightActive then return end
+
+    self.BMBHopSavedStepHeight = self.BMBCurrentStepHeight or self.StepHeight
+    self.BMBHopStepHeightActive = true
+    self:SetBMBLocoStepHeight(self.BlockHopStepHeight or 18)
+end
+
+function ENT:RestoreBMBStepHeight()
+    if not self.BMBHopStepHeightActive then return end
+
+    self:SetBMBLocoStepHeight(self.BMBHopSavedStepHeight or self.StepHeight)
+    self.BMBHopSavedStepHeight = nil
+    self.BMBHopStepHeightActive = false
 end
 
 function ENT:ShouldUseSourcePath()
@@ -191,6 +243,7 @@ function ENT:InterruptBMBMovement()
     self.BMBPendingBlockHop = nil
     self.BMBActiveBlockHop = nil
     self.BMBBlockHopAirControlUntil = 0
+    self:RestoreBMBStepHeight()
 end
 
 function ENT:ClearBMBMovementInterrupt()
@@ -238,10 +291,41 @@ function ENT:MarkBMBPathAdvanced(nodeIndex)
 end
 
 function ENT:StartBMBIdleActivity()
-    if self.CurrentMoveActivity == ACT_IDLE then return end
+    self:StartBMBActivity(ACT_IDLE)
+end
 
-    self:StartActivity(ACT_IDLE)
-    self.CurrentMoveActivity = ACT_IDLE
+function ENT:UpdateBMBActivityFromLocomotion()
+    if self.BMBHeld then
+        self:StartBMBIdleActivity()
+        return
+    end
+
+    local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
+    local onGround = self:IsBMBOnGround()
+
+    if jumping or not onGround then
+        self:StartBMBActivity(ACT_JUMP)
+        return
+    end
+
+    local speed2D = self:GetVelocity():Length2D()
+    local desiredSpeed = self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
+    local mode = self:GetNWString("BMBMoveMode", "idle")
+
+    if mode == "idle" and speed2D < 8 then
+        self:StartBMBIdleActivity()
+        return
+    end
+
+    if desiredSpeed <= 1 and speed2D < 8 then
+        self:StartBMBIdleActivity()
+        return
+    end
+
+    local runThreshold = (self.WalkSpeed + self.RunSpeed) * 0.5
+    local activity = math.max(desiredSpeed, speed2D) >= runThreshold and ACT_RUN or ACT_WALK
+
+    self:StartBMBActivity(activity)
 end
 
 function ENT:StartBMBMoveProgressWatch()
@@ -273,6 +357,38 @@ function ENT:StartBMBGoalProgressWatch(goal)
     }
 end
 
+function ENT:GetBMBMoveTimeoutForDistance(distance, speed, options)
+    options = options or {}
+    if options.timeout then return options.timeout end
+
+    local desiredSpeed = math.max(1, speed or self.WalkSpeed)
+    local scale = options.timeoutScale or self.PathTimeoutSpeedScale or 2.6
+    local base = options.timeoutBase or self.PathTimeoutBase or 2.0
+    local timeout = base + (math.max(0, distance or 0) / desiredSpeed) * scale
+
+    if options.minTimeout then
+        timeout = math.max(timeout, options.minTimeout)
+    end
+
+    local maxTimeout = options.timeoutMax or self.PathTimeoutMax
+    if maxTimeout then
+        timeout = math.min(timeout, maxTimeout)
+    end
+
+    return math.max(self.WaypointTimeout or 0, timeout)
+end
+
+function ENT:GetBMBPathTimeout(waypoints, speed, options, startIndex)
+    options = options or {}
+    if options.timeout then return options.timeout end
+
+    local length = pathFlatLength(waypoints, startIndex)
+    local distanceBudget = self:GetBMBMoveTimeoutForDistance(length, speed, options)
+    local nodeBudget = #waypoints * (self.PathTimeoutPerNode or 0.8) + 1.0
+
+    return math.max(distanceBudget, nodeBudget)
+end
+
 function ENT:CheckBMBGoalProgress(watch, goal)
     if not watch or not goal then return true end
 
@@ -291,6 +407,8 @@ function ENT:CheckBMBGoalProgress(watch, goal)
 end
 
 function ENT:FailBMBMove(mode, keepMomentum)
+    self:RestoreBMBStepHeight()
+
     -- 安全层拦下移动时主动杀掉水平动量：高速冲向平台边缘时仅靠自然减速刹不住，
     -- 惯性会把 mob 顺势带下悬崖。撞墙类失败（keepMomentum）不急刹：墙本身挡得住，
     -- 急刹反而造成"离 prop 还有段距离就掉速、一点一点给油转向"的犹豫观感
@@ -346,6 +464,8 @@ function ENT:Think()
             self:CheckPhysicsImpacts()
         end
 
+        self:UpdateBMBActivityFromLocomotion()
+
         self:NextThink(CurTime())
         return true
     end
@@ -359,6 +479,8 @@ end
 -- （轮询间隔里"已落地又起跳"会抖动）
 function ENT:OnLandOnGround(_)
     self.BMBLastLandTime = CurTime()
+    self.CurrentMoveActivity = nil
+    self:UpdateBMBActivityFromLocomotion()
 end
 
 function ENT:OnBMBPhysgunPickup(_)
@@ -428,7 +550,7 @@ function ENT:RunBMBDebugMove()
     local desiredSpeed = self.BMBDebugMoveSpeed or self.RunSpeed
 
     if self.BMBDebugMoveTarget and self.BMBDebugMoveUsePath then
-        local timeout = math.max(0.1, (self.BMBDebugMoveUntil or CurTime()) - CurTime())
+        local minTimeout = math.max(0.1, (self.BMBDebugMoveUntil or CurTime()) - CurTime())
 
         self:SetBMBState("debug_move")
         self:SetBMBMoveMode("debug_path")
@@ -437,7 +559,10 @@ function ENT:RunBMBDebugMove()
 
         self:MoveToWorldPosition(self.BMBDebugMoveTarget, desiredSpeed, {
             skipSourcePath = true,
-            timeout = timeout,
+            minTimeout = minTimeout,
+            timeoutScale = self.DebugPathTimeoutScale or 3.0,
+            timeoutBase = self.DebugPathTimeoutBase or 4.0,
+            timeoutMax = self.DebugPathTimeoutMax or 90,
             goalTolerance = self.BMBDebugMoveTolerance or BMB.Config.DefaultGoalTolerance
         })
 
@@ -575,7 +700,8 @@ function ENT:MoveWithSourcePath(destination, speed, options)
 
     if not path:IsValid() then return false end
 
-    local timeout = CurTime() + (options.timeout or options.duration or self.WaypointTimeout)
+    local distance = flatDistance(self:GetPos(), destination)
+    local timeout = CurTime() + (options.duration or self:GetBMBMoveTimeoutForDistance(distance, speed or self.WalkSpeed, options))
 
     self:ClearBMBMovementInterrupt()
     self.loco:SetDesiredSpeed(speed or self.WalkSpeed)
@@ -1169,6 +1295,7 @@ function ENT:FinishBMBHopDebug(result)
     self.BMBPendingBlockHop = nil
     self.BMBActiveBlockHop = nil
     self.BMBBlockHopAirControlUntil = 0
+    self:RestoreBMBStepHeight()
 
     local resultCode = 2
     if result == "success" then
@@ -1339,6 +1466,7 @@ function ENT:StartBMBBlockHop(target, speed, launch)
 
     -- JumpAcrossGap 在一格爬升时会出现 apex=0 的低弧/不起弧；这里改成先用
     -- Jump 打开跳跃态，再下一 tick 覆盖手写弹道，避开同 tick 地面解算抢速度。
+    self:BeginBMBHopStepHeight()
     self.loco:Jump()
     self:QueueBMBManualBlockHop(target, speed, launch, gravity, jumpHeight)
     self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
@@ -1399,10 +1527,6 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         self.PathCarrotMinDistance or 72,
         self.PathCarrotMaxDistance or 150
     )
-    local timeout = CurTime() + (options.timeout or math.max(
-        self.WaypointTimeout,
-        #waypoints * (self.PathTimeoutPerNode or 0.8) + 1.0
-    ))
     local nodeIndex = 1
     local final = waypoints[#waypoints]
 
@@ -1413,6 +1537,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         and flatDistance(startPos, waypoints[nodeIndex]) <= BMB.Config.BlockSize * 0.75 do
         nodeIndex = nodeIndex + 1
     end
+
+    local timeout = CurTime() + self:GetBMBPathTimeout(waypoints, desiredSpeed, options, nodeIndex)
 
     self:ClearBMBMovementInterrupt()
     self:MaintainBMBMoveSpeed(desiredSpeed)
@@ -1426,7 +1552,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local hopNative = {}
 
     while CurTime() < timeout do
-        if self.BMBMoveInterrupt then return false end
+        if self.BMBMoveInterrupt then
+            self:RestoreBMBStepHeight()
+            return false
+        end
 
         local current = self:GetPos()
         self:ApplyBMBPendingBlockHop()
@@ -1498,7 +1627,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             carrot = self:GetPathCarrot(waypoints, nodeIndex, pathCarrotDistance)
         end
 
-        if not carrot then return false end
+        if not carrot then
+            self:RestoreBMBStepHeight()
+            return false
+        end
 
         if not verticalAction then
             local sourceSafe, sourceReason = self:IsPathSourceTargetSafe(carrot)
@@ -1622,6 +1754,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
         coroutine.yield()
     end
+
+    self:RestoreBMBStepHeight()
 
     if options.acceptPartial then return true end
 

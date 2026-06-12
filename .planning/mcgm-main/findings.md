@@ -350,3 +350,9 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **短窗口内重复 `Jump()` 是针对落地解算的局部补丁**：只在 lift 阶段仍判 onGround 时踢，不恢复旧版无限保护窗；落地未到目标层仍按 `OnLandOnGround` + retry/fail 交还行为层。
 - **第二十二轮实测成功但弧线偏高**：一格台阶已能上，成功样本 apex 约 54~65；但偶发能误上两格。下一步是调低 lift/jump 余量，而不是撤掉两段式。A* 仍只规划 +1 hop，不主动跳两格。
 - **debug move timeout 是独立可用性问题**：长路径明明在路上却被 debug 指令放弃，后续按路径长度放宽 debug timeout / goal-progress watchdog；不要和 hop 成败混在一起。
+
+## 2026-06-12: StepHeight / timeout / activity 收口（第二十三轮）
+
+- **误上两格是 hop apex 与 StepHeight 合成，不是 A* 允许两格**：两格高差 72u，apex 54~65 本身够不到；但空中脚部高度超过 `72 - StepHeight(28) = 44` 后，Source 落地/step 解算可能把实体抬上两格。正确修法是 hop 期间临时压 `StepHeight=18`，不是把 apex 削到 <44（那会破坏一格可靠性）。MC 里跳跃和自动登阶不叠加。
+- **debug path timeout 必须按路径预算**：右键远点的固定 duration 只适合裸方向 debug，不适合 A* path target。路径模式应按路径长度 / speed × scale + base 算总预算；还在移动/推进节点不因时间放弃，真卡住交给 no-progress watchdog。
+- **跳后动作残留要靠状态驱动收口**：落地回调里重置 `CurrentMoveActivity` 并根据 locomotion 状态重选 idle/walk/run；Think 每帧也兜底选择 held/airborne/ground activity。以后套 MC 模型时只替换状态到动作的映射。
