@@ -315,7 +315,9 @@
 
 ## Current Next Checklist
 
-1. **继续回归观察**：hop/StepHeight、debug timeout、activity reset 在更多地形和套皮后继续留意。
-2. **下一功能短板**：Flee 坑/封闭结构采样，改为枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
-3. **表现收尾**：吃草原版粒子/动画/音效。
-4. **后续地形细化**：半砖/栅栏 `MC.BlockBoxes`，以及 Zombie 迁移验证 base 抽象。
+1. **第二十四轮代码已完成，待用户游戏回归**：MCSWEP 已切 `MC.BS=36.5`，BMB 改为 `BMB.GetBlockSize()` / `BMB.BS` 单一尺寸入口，mock fallback 36.5。先在控制台确认 `MC.BS` 与 `BMB.BS` 都为 36.5。
+2. **36.5 必测**：hop 一格稳定、两格不上；半砖/楼梯靠普通 `StepHeight=28` 走上去；36.5 走廊 hull 32 双向通行；drop 3 格（109.5u）主动下、4 格拒绝；吃草链路和坐标往返正常；`bmb_world mock` 尺度一致。
+3. **继续回归观察**：hop/StepHeight、debug timeout、activity reset 在更多地形和套皮后继续留意。
+4. **下一功能短板**：Flee 坑/封闭结构采样，改为枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
+5. **表现收尾**：吃草原版粒子/动画/音效。
+6. **后续地形细化**：半砖/栅栏 `MC.BlockBoxes`，以及 Zombie 迁移验证 base 抽象。

@@ -22,8 +22,12 @@ local function coord(x, y, z)
     return { x = x, y = y, z = z or 0 }
 end
 
+local function blockSize()
+    return BMB.GetBlockSize and BMB.GetBlockSize() or (BMB.BS or 36.5)
+end
+
 function world.WorldToBlock(pos)
-    local size = BMB.Config.BlockSize
+    local size = blockSize()
 
     return coord(
         math.floor(pos.x / size),
@@ -33,7 +37,7 @@ function world.WorldToBlock(pos)
 end
 
 function world.BlockToWorld(blockCoord)
-    local size = BMB.Config.BlockSize
+    local size = blockSize()
 
     return Vector(
         (blockCoord.x + 0.5) * size,
@@ -76,7 +80,7 @@ end
 
 function world.GetBlocksInRadius(pos, radius)
     local center = world.WorldToBlock(pos)
-    local blockRadius = math.ceil(radius / BMB.Config.BlockSize)
+    local blockRadius = math.ceil(radius / blockSize())
     local found = {}
 
     for x = center.x - blockRadius, center.x + blockRadius do
@@ -148,7 +152,7 @@ function world.GetRandomWalkablePoint(origin, radius, mob)
     world.EnsureInitialized(origin)
 
     local center = world.WorldToBlock(origin)
-    local blockRadius = math.max(1, math.floor(radius / BMB.Config.BlockSize))
+    local blockRadius = math.max(1, math.floor(radius / blockSize()))
 
     for _ = 1, 24 do
         local blockCoord = coord(

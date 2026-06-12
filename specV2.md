@@ -1,6 +1,6 @@
 项目：GMod (Lua) 双人协作，把 Minecraft 搬进 GMod。
 两个系统（不同命名空间，各自独立 addon）：
-朋友的 MCSWEP（命名空间 MC）：方块/世界系统，已基本完成。自定义 IMesh 渲染 + greedy 碰撞，290 万方块不卡，方块是数据不是 entity，支持运行时增删。方块大小 36 Source units。已提供 MC.* 接口文档。
+朋友的 MCSWEP（命名空间 MC）：方块/世界系统，已基本完成。自定义 IMesh 渲染 + greedy 碰撞，290 万方块不卡，方块是数据不是 entity，支持运行时增删。方块大小当前为 36.5 Source units（`MC.BS`，BMB 通过 `BMB.GetBlockSize()` 跟随）。已提供 MC.* 接口文档。
 我的 BMB / BlockMob Base（命名空间 BMB）：mob 系统，刚起步。目标做 MC 全部 mob（计划到 26.1 全 roster），自己写 base，不依赖 VJ/DrGBase 那些现成的（动作僵硬、行为对不上原版）。
 架构决策（已定）：
 薄 BaseMob（Nextbot 实体）+ 可组合行为模块（Wander/Flee/SeekTarget/Chase/各种 Attack）+ 每类怪一个状态机。不是敌对/中立/友好三条平行继承链。中立 = 友好打底 + 受激惹切敌对。贴 MC 的 Goal 系统思路。
@@ -10,7 +10,7 @@
 当前进度：
 agent 写了 zombie 基础（攻击/寻路/血量），但没架构，待重构进上面那套结构。
 我写了羊的吃草逻辑（草→土），没测试。
-朋友刚把真接口（interface-usage.md）和维护文档发我，确认命名空间 MC、方块 36 单位。
+朋友刚把真接口（interface-usage.md）和维护文档发我，确认命名空间 MC；方块尺寸后来已切到 36.5 单位。
 已产出两份文档（我手上有）：
 gmod_mc_mob_spec.md (v2)：架构 + 任务 + 第一个里程碑。
 bmb_mcswep_对接补充.md：把 mock 接口映射到真 MC.*，含 adapter 方式和下面那个缺口。

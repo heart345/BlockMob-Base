@@ -5,13 +5,18 @@ BMB.Behaviors.Wander = BMB.Behaviors.Wander or {}
 BMB.Behaviors.Flee = BMB.Behaviors.Flee or {}
 BMB.Behaviors.EatGrass = BMB.Behaviors.EatGrass or {}
 
+local function blockSize()
+    return BMB.GetBlockSize and BMB.GetBlockSize() or (BMB.BS or 36.5)
+end
+
 -- 游荡 = 选一个随机可走点，沿 A* 路径完整走到，到达后按 MC 节奏停顿一下再选下一个。
 -- 不要在途中按固定时长切段：那会变成"走一会-刹停-换向"的节奏（已踩过坑）。
 -- 途中的转向全部由 MoveAlongPath 的 carrot point 平滑完成。
 function BMB.Behaviors.Wander.Run(mob)
     -- 单段行程的距离范围：MC 式短途散步（2~5 格），不跨半张地图
-    local minDistance = mob.WanderDistanceMin or BMB.Config.BlockSize * 2
-    local maxDistance = mob.WanderDistanceMax or mob.WanderRadius or BMB.Config.BlockSize * 5
+    local size = blockSize()
+    local minDistance = mob.WanderDistanceMin or size * (mob.WanderDistanceMinCells or 2)
+    local maxDistance = mob.WanderDistanceMax or mob.WanderRadius or size * (mob.WanderDistanceMaxCells or 5)
 
     for _ = 1, 8 do
         if mob.BMBMoveInterrupt then return end
@@ -46,8 +51,9 @@ end
 
 local function pickPanicDestination(mob)
     -- MC DefaultRandomPos.getPos(mob, 5, 4)：水平 ±5 格随机；RANDOM_POS_ATTEMPTS = 10
-    local radius = mob.FleePanicRadius or BMB.Config.BlockSize * 5
-    local minDistance = mob.FleePanicMinDistance or BMB.Config.BlockSize
+    local size = blockSize()
+    local radius = mob.FleePanicRadius or size * (mob.FleePanicRadiusCells or 5)
+    local minDistance = mob.FleePanicMinDistance or size * (mob.FleePanicMinDistanceCells or 1)
 
     for _ = 1, 10 do
         local candidate = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), radius, mob)

@@ -356,3 +356,12 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **误上两格是 hop apex 与 StepHeight 合成，不是 A* 允许两格**：两格高差 72u，apex 54~65 本身够不到；但空中脚部高度超过 `72 - StepHeight(28) = 44` 后，Source 落地/step 解算可能把实体抬上两格。正确修法是 hop 期间临时压 `StepHeight=18`，不是把 apex 削到 <44（那会破坏一格可靠性）。MC 里跳跃和自动登阶不叠加。
 - **debug path timeout 必须按路径预算**：右键远点的固定 duration 只适合裸方向 debug，不适合 A* path target。路径模式应按路径长度 / speed × scale + base 算总预算；还在移动/推进节点不因时间放弃，真卡住交给 no-progress watchdog。
 - **跳后动作残留要靠状态驱动收口**：落地回调里重置 `CurrentMoveActivity` 并根据 locomotion 状态重选 idle/walk/run；Think 每帧也兜底选择 held/airborne/ground activity。以后套 MC 模型时只替换状态到动作的映射。
+
+## 2026-06-12: 36.5 / BS 参数化（第二十四轮）
+
+- **方块尺寸必须是运行时数据，不是常量**：BMB 的唯一入口是 `BMB.GetBlockSize()` / `BMB.BS`，规则为 `(MC and MC.BS) or 36.5`。`BMB.Config.BlockSize` 只保留兼容别名，新业务代码不直接读。MCSWEP 比 BMB 后加载时，每次取 size 都会刷新，避免文件加载阶段把 fallback 永久烙进参数。
+- **mock 和 real 必须同尺寸**：mock 的 `WorldToBlock/BlockToWorld` 如果还用旧 36，而 real 走 36.5，所有 hop/走廊/drop 调参都会失真。第二十四轮已把 mock fallback 改 36.5，并让 mock/real/debug 全走同一尺寸入口。
+- **尺寸派生值用 scale 或 cell 数表达**：goal/node tolerance = `0.5*BS`，carrot/corner/drop/hop 等用 scale；sheep wander/flee 用 cell 数（3~8 格、panic 5 格、min 1 格）。这样以后 MC.BS 再变，只改 `MC.BS` 或 fallback。
+- **StepHeight 拆成两个语义**：普通 `StepHeight=28` 是 Source locomotion 绝对值，不是 `BS` 派生；它必须保持 > 半砖（36.5 半砖 18.25）且 < 整格。hop 期间临时 StepHeight 才是方块尺寸派生，必须是 `< 0.5*BS`，当前 `0.49*BS`，防止 apex + auto-step 误上两格。
+- **apex 目标随 BS 而不是固定 54/65**：一格 hop 的默认 jumpheight/apex 目标改为约 `1.5*BS`，36.5 下约 54.75，留足 Source hull 余量；两格不上靠 hop 期间低 StepHeight 保证，不靠把 apex 削到危险低值。
+- **裸数字复查清单**：grep `36 / 45 / 18 / 40 / 72 / 108 / 28 / 54 / 65` 时，尺寸派生必须参数化；保留项要能解释为非尺寸（声音 pitch、时间、调试 HUD z 偏移、旧 zombie 样机、Source locomotion 绝对值等）。新增 `scripts/check_block_size_parameterization.ps1` 专查高风险回归点。

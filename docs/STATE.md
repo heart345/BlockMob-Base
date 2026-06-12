@@ -2,7 +2,7 @@
 
 > 每次开工先读这份（CLAUDE.md 指定入口）。历史流水/早期调试记录归档在 `.planning/mcgm-main/`（status_summary、findings、progress），只读参考，不再更新。
 
-## 当前进度（2026-06-11）
+## 当前进度（2026-06-12）
 
 - `bmb_sheep` 切片（mock 世界）：生成 ✅、Flee ✅（**第九轮 MC PanicGoal 式重写，用户已实测通过**：随机近点 dash、没路放弃、平地不跑远）、prop 物理伤害 ✅、速度锯齿 ✅、倒退 ✅、吃草频率 ✅、MC 游荡节奏 ✅、转圈 ✅、跳崖 ✅、贴 prop 冻住 ✅、障碍犹豫掉速 ✅。
 - **第十轮（待复测）：RealBlockWorld 接通 MCSWEP，mock 首次切真环境**。朋友的 `MC.SV.SetBlock` 已就位（addon 在 `D:\...\addons\mcswep-main`，接口文档在其 `docs/interface-usage.md`，签名已对照源码 `mc/sv_world.lua:392` 验证）。目标：羊在真方块世界跑通"游荡 → 受击逃 → 吃草 grass_block→dirt"全链路。
@@ -29,12 +29,13 @@
 - **第二十一轮（用户已实测：drop 主动下 3 格内 ✅；hop 仍全部失败 → 第二十二轮）：BlockHop 改错帧手写弹道 + Wander 主动下层采样**。第二十轮 HUD/日志结论：`JumpAcrossGap` 在 `dist≈36/face≈18/speed≈50` 的近距离爬台多次 `apex=0`，只有 `dist≈47/face≈29/speed≈73` 的助跑样本成功且 `apex≈36`，所以 native jump 对一格爬升不可靠。修法：默认不再调用 `JumpAcrossGap`；先 `loco:Jump()` 打开跳跃态，下一 tick 按弹道公式 `SetVelocity`（竖直顶点 `1.6*BlockSize`，水平速度 = 距离/飞行时间并 clamp 到 `32..1.1*pathSpeed`），速度写入后给一个极短空中控制窗口，避免同一轮 path loop 又把它交回 `Approach` 压掉上抛；同时取消“必须已有 0.6×pathSpeed”的起跳硬门槛，wander 慢速靠近也能跳。实测日志显示 `hop velocity ... vz≈339` 已写入，但 `apex=0~12`，说明问题不是速度数值，而是水平过早顶住方块侧面/地面解算把上抛磨掉。另查 MC 源码：`Entity#getMaxFallDistance()` 默认 3，`LivingEntity#getComfortableFallDistance(0)=3`，`Mob` 无目标时用 3，羊未覆写；BMB 的 `MaxPathDropCells=3` 保持不变，real `GetRandomWalkablePoint` 下层偏置已让 Wander 主动下落生效。
 - **第二十二轮（用户已实测：一格高 BlockHop 成功 ✅）：BlockHop 两段式 manual hop**。`ApplyBMBPendingBlockHop` 不再立刻给水平速度，而是建立 `BMBActiveBlockHop`：第一段 lift 只给竖直速度，短窗口内如果仍在地面就重复 `loco:Jump()`；达到约 `0.8*BlockSize` 抬升或超过 lift 时间后，第二段再加水平速度/弱转向落到上层格。实测日志 `apex≈54~65`，NPC 已能跳上一格台阶。保留问题：弧线偏高，偶发能误上两格（A* 不会主动规划两格 hop）；跳完动作会多保持一段时间，套皮后要复查观感。
 - **第二十三轮（用户已实测：当前未发现 bug ✅）：StepHeight / timeout / activity 收口**。按 Fable 诊断，误上两格是 apex≈55 与空中 `StepHeight=28` 叠加：脚部高度超过 `72-28=44` 后落地解算会 step 上两格台沿。因此不削掉一格 hop 需要的 apex，而是在 hop 状态临时把 `loco:SetStepHeight(18)`，成功/失败/中断/路径结束恢复默认 28。debug 右键长路径不再把面板 duration 当硬截断：路径 timeout 改为路径长度 / 速度 × 系数 + base，仍由 no-progress watchdog 判断真卡住。跳后动作残留改为 Think/落地的状态驱动 activity 选择，落地后按速度回 idle/walk/run。用户复测：一格 hop、误上两格、debug 长路径、跳后动作均未再暴露问题。
+- **第二十四轮（代码已切：36.5 / BS 参数化，待用户游戏回归）：MCSWEP 已把 `MC.Config.BlockSize` 切到 36.5，BMB 同步收口到单一尺寸入口**。`BMB.GetBlockSize()` 每次优先读 `(MC and MC.BS)`，mock fallback 改 36.5，并同步 `BMB.BS` / 兼容字段 `BMB.Config.BlockSize`；业务代码不再直接读 `BMB.Config.BlockSize`。BaseMob 的尺寸派生默认改为 scale/cell：goal/node tolerance = `0.5*BS`，carrot min/max = `2*BS` / `25/6*BS`，corner slow = `2*BS`，hop apex/jumpheight = `1.5*BS`，manual lift = `0.8*BS`，hop 临时 StepHeight = `0.49*BS`（36.5 时约 17.9 < 半砖 18.25），`MaxStepDown = 1.1*BS`；默认 StepHeight=28 保留为 Source locomotion 绝对值（仍 > 半砖、< 整格）。Sheep 的 wander/flee 半径改用 cell 数（3~8 格、panic 5 格、min 1 格）。Real/Mock block world、debug HUD/tool、HasSupport 轴向偏移也改为跟随 BS。新增 `scripts/check_block_size_parameterization.ps1` 防止旧尺寸 fallback 回归。已从朋友源码确认 `D:\...\mcswep-main\lua\mc\sh_config.lua` 中 `MC.Config.BlockSize = 36.5`。
 - 本轮修掉的对接隐藏 bug（接 real 之前就存在）：
   1. **mock 占死 `BMB.BlockWorld` 名字、无切换机制** → mock 改名 `BMB.MockBlockWorld`；新增 `BMB.SelectBlockWorld()` + convar `bmb_use_real_world`（默认 1，MCSWEP 不在场回退 mock）+ 控制台 `bmb_world mock|real`。MCSWEP 比 BMB 后加载（addons 字母序），所以 `BaseInitialize` 生成 mob 时会再选一次（幂等）。
   2. **类型枚举对不上**：real `GetBlockAt` 原来返回数字 id，行为层比较的是 `BMB.BlockTypes.Grass` 字符串，永远不相等 → adapter 现在做 id↔枚举双向映射（`blockTypeToId`/`idToBlockType`），未建模的 id 原样透传。
   3. **吃草坐标差一格**：real 世界里 `WorldToBlock(GetPos())` 是脚部所在的**空气格**，不是脚下的草方块 → EatGrass 改为 `GetPos() - Vector(0,0,4)` 再换算（mock 忽略 z，行为不变）；并把 mob 作为 actor 传入 `SetBlockAt`（real 转成 MCSWEP 的 `{actor=ent}`，带进 OnPlace/OnBreak 和声音粒子）。
   4. **寻路没查头部格**：A* 新增 `isPassable` = 脚部格 + 头部格都非实心（mock z=1 恒空，行为不变）。
-  5. **`MaxStepDown` 34 < 36**：站在一格高方块地板上会把"走下来"判成悬崖永远不下来 → 改 **40**（>1 格，<2 格仍算悬崖）。
+  5. **`MaxStepDown` 34 < 36**：站在一格高方块地板上会把"走下来"判成悬崖永远不下来 → 先改 40；第二十四轮参数化为 `1.1 * BMB.BS`（36.5 时 40.15，>1 格且 <2 格）。
 - real adapter 其余实现：`EnsureInitialized` no-op；`GetRandomWalkablePoint` 在脚部层随机选"脚+头双空"的格子（不要求脚下有 MC 方块，flatgrass 地皮也算地）；`IsSolid` = `GetBlock`→`GetBlockOrient`→`BlockIsFullCube` 粗略版（半砖/楼梯/栅栏当可通过，实际碰撞由移动层 Source 探测兜住，细化入口 `MC.BlockBoxes`）；写入 `MC.SV.SetBlock`，失败打日志（`unchanged` 不算错）。
 - CLAUDE.md 已同步更新（接口文档指向 mcswep-main/docs；"已知缺口"段落改为"仍然禁止"两条：Place/Break 玩家专用、SetBlockRaw 禁用）。
 
@@ -44,13 +45,15 @@
 2. **同步整个 `gmod_addon/` 到 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon\`**（用户在游戏里直接测）。
 3. **更新本文件 + `.planning/mcgm-main/` 四个文件**（task_plan / progress / findings / status_summary，codex 接手要看）。
 
-## 复测清单（当前：第二十三轮通过）
+## 复测清单（当前：第二十四轮 36.5 待游戏回归）
 
-1. **已通过**：一格 hop 稳定，未再发现误上两格；debug 远点未再早停；跳后动作能复位。
-2. **回归仍需留意**：drop、物理枪、绕路、窄沿、不卡顿、不跳楼、走廊/拐弯/地图墙、Flee 围住放弃、吃草链路、`bmb_world mock`。
+1. **上一轮已通过**：一格 hop 稳定，未再发现误上两格；debug 远点未再早停；跳后动作能复位。
+2. **36.5 必测**：`lua_run print(MC and MC.BS, BMB and BMB.BS)` 应输出 36.5/36.5；一格 hop apex 约 `1.4~1.5*BS` 且稳定上台；两格必须上不去；半砖/楼梯应靠 StepHeight=28 走上去而不是 hop；36.5 宽走廊 hull 32 双向通行；drop 主动下 3 格（109.5u），4 格拒绝且不卡顿；吃草链路正常；`WorldToBlock/BlockToWorld` 新尺寸下往返一致；`bmb_world mock` 与 real 行为尺度一致。
+3. **回归仍需留意**：物理枪、绕路、窄沿、不卡顿、不跳楼、地图墙/拐弯、Flee 围住放弃、套皮后 activity。
 
 ## 未解 bug / 风险
 
+- **第二十四轮剩余风险**：代码层已按 36.5 参数化并通过静态检查/lint，但实际 GMod 场景还要按复测清单确认，尤其 hop apex、两格边界、半砖/楼梯和 36.5 走廊。
 - **第二十三轮剩余风险**：用户当前未发现 bug，但 StepHeight 临时切换、状态驱动 activity、debug 长路径 timeout 仍需要后续场景持续回归，尤其是套皮后动作映射。
 - **hop 候选分诊**：若失败处 HUD 根本不进 `path_hop`，不要按弹道修；要开 A* hop 候选日志看是上方净空/支撑正确拒绝，还是邻接标记漏判。
 - **PhysgunPickup 钩子语义**：它在"尝试抓取"时触发，若有第三方 addon 拒绝了这次拾取，BMBHeld 可能误置（下次松手钩子不来）；目前单机沙盒无此问题，联机装权限 addon 时留意。

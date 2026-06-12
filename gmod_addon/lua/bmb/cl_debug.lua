@@ -36,7 +36,7 @@ hook.Add("PostDrawTranslucentRenderables", "BMB_DrawMockBlocks", function()
         return
     end
 
-    local size = BMB.Config and BMB.Config.BlockSize or 36
+    local size = BMB.GetBlockSize and BMB.GetBlockSize() or BMB.BS or 36.5
     local mins = Vector(-size * 0.5, -size * 0.5, 0)
     local maxs = Vector(size * 0.5, size * 0.5, size)
 

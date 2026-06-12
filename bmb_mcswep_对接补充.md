@@ -3,7 +3,7 @@
 > 真接口到了。方块系统命名空间是 `MC`（addon 叫 MCSWEP），不是之前占位用的 `MinecraftBase`。spec v2 第 4 节那套占位接口（`IBlockWorld.*`）现在落地成下面这样。先把朋友的 `interface-usage.md` 当权威读完，这份只讲怎么接到 BMB 上。
 
 ## 1. 确定的常量
-- **方块大小 = 36 Source units**（`MC.BS`）。spec 里 `BLOCK_SIZE` 的 TODO 用这个值。
+- **方块大小当前 = 36.5 Source units**（`MC.BS`）。BMB 代码只走 `BMB.GetBlockSize()` / `BMB.BS`，mock fallback 也对齐 36.5。
 - chunk：水平 16×16，section 高 32。chunk 是他内部的事，BMB 只按 cell 坐标 `bx, by, bz` 操作。
 - 坐标三层：world `Vector` ↔ cell `bx,by,bz` ↔ chunk。BMB 只跟前两层打交道。
 

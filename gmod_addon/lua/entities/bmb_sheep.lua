@@ -15,16 +15,16 @@ ENT.WalkSpeed = 70
 ENT.RunSpeed = 90
 ENT.Acceleration = 240
 ENT.Deceleration = 260
-ENT.WanderDistanceMin = 108  -- 单段游荡 3~8 格
-ENT.WanderDistanceMax = 288
+ENT.WanderDistanceMinCells = 3  -- 单段游荡 3~8 格
+ENT.WanderDistanceMaxCells = 8
 ENT.WanderPauseMin = 6.0     -- 到站站立 6~14s，站立是常态
 ENT.WanderPauseMax = 14.0
 -- MC 恐慌窗口 = lastDamageSource 有效期 40 tick（2s），每次受击刷新；窗口内一段接一段跑，
 -- 窗口过了跑完当前段就停，所以原版友好生物受击后跑不远
 ENT.FleeDurationMin = 2.0
 ENT.FleeDurationMax = 2.5
-ENT.FleePanicRadius = 180        -- 恐慌单段目标 ±5 格（MC DefaultRandomPos.getPos(mob, 5, 4)）
-ENT.FleePanicMinDistance = 36
+ENT.FleePanicRadiusCells = 5    -- 恐慌单段目标 ±5 格（MC DefaultRandomPos.getPos(mob, 5, 4)）
+ENT.FleePanicMinDistanceCells = 1
 ENT.FleeGiveUpFailures = 4       -- 连续 4 次选不出点/起步即被挡 → 认定无路可逃，放弃恐慌
 ENT.CollisionMins = Vector(-16, -16, 0) -- MC 成年羊宽 0.9 格 ~= 32.4u；保持略小于 36u 一格走廊
 ENT.CollisionMaxs = Vector(16, 16, 44)

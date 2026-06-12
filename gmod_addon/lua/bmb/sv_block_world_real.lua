@@ -13,6 +13,10 @@ local function coord(x, y, z)
     return { x = x, y = y, z = z or 0 }
 end
 
+local function blockSize()
+    return BMB.GetBlockSize and BMB.GetBlockSize() or (BMB.BS or 36.5)
+end
+
 local function hasMC()
     return istable(MC)
         and isfunction(MC.WorldToCell)
@@ -102,12 +106,12 @@ function real.IsSolid(blockCoord)
 end
 
 -- 窄 Source 几何比 36u 格子窄时，MC 网格中心可能悬在沿外侧：中心采样没命中
--- 再用这四个轴向偏移兜一次（HasSupport 用）
-local supportSampleOffsets = {
-    { x = 12, y = 0 },
-    { x = -12, y = 0 },
-    { x = 0, y = 12 },
-    { x = 0, y = -12 }
+-- 再用这四个轴向偏移兜一次（HasSupport 用），偏移量约 1/3 格。
+local supportSampleOffsetFractions = {
+    { x = 1 / 3, y = 0 },
+    { x = -1 / 3, y = 0 },
+    { x = 0, y = 1 / 3 },
+    { x = 0, y = -1 / 3 }
 }
 
 -- 寻路"支撑"语义：脚下有 MC 实心方块，或这一格内有 Source 刷子地面（flatgrass 地皮、
@@ -121,7 +125,7 @@ function real.HasSupport(blockCoord)
     if real.IsSolid(below) then return true end
 
     local center = real.BlockToWorld(blockCoord)
-    local half = (MC.BS or BMB.Config.BlockSize) * 0.5
+    local half = blockSize() * 0.5
     local top = center.z + half - 1
     local bottom = center.z - half - 6
 
@@ -139,10 +143,13 @@ function real.HasSupport(blockCoord)
     -- 窄 Source 几何（围墙窗台、薄沿）比 36u 格子窄，MC 网格中心可能正好悬在沿外侧、
     -- 但格子大半压在沿上：偏移采样任一命中就算支撑。StartSolid 的样本（戳进旁边墙体）
     -- 跳过，不代表这格不可站
-    for _, offset in ipairs(supportSampleOffsets) do
+    local sampleScale = blockSize()
+    for _, offset in ipairs(supportSampleOffsetFractions) do
+        local offsetX = offset.x * sampleScale
+        local offsetY = offset.y * sampleScale
         local trace = util.TraceLine({
-            start = Vector(center.x + offset.x, center.y + offset.y, top),
-            endpos = Vector(center.x + offset.x, center.y + offset.y, bottom),
+            start = Vector(center.x + offsetX, center.y + offsetY, top),
+            endpos = Vector(center.x + offsetX, center.y + offsetY, bottom),
             mask = MASK_SOLID_BRUSHONLY
         })
 
@@ -156,8 +163,8 @@ function real.GetBlocksInRadius(pos, radius)
     if not real.Available() then return {} end
 
     local center = real.WorldToBlock(pos)
-    local blockSize = MC.BS or BMB.Config.BlockSize
-    local blockRadius = math.ceil(radius / blockSize)
+    local size = blockSize()
+    local blockRadius = math.ceil(radius / size)
     local found = {}
 
     for bx = center.x - blockRadius, center.x + blockRadius do
@@ -181,8 +188,8 @@ function real.GetRandomWalkablePoint(origin, radius, mob)
     if not real.Available() then return origin end
 
     local center = real.WorldToBlock(origin)
-    local blockSize = MC.BS or BMB.Config.BlockSize
-    local blockRadius = math.max(1, math.floor(radius / blockSize))
+    local size = blockSize()
+    local blockRadius = math.max(1, math.floor(radius / size))
     local maxDropCells = (IsValid(mob) and mob.MaxPathDropCells) or BMB.Config.MaxPathDropCells or 3
 
     for attempt = 1, 36 do
@@ -202,7 +209,7 @@ function real.GetRandomWalkablePoint(origin, radius, mob)
         -- 支撑判断统一走 HasSupport（MC 实心或 Source 地皮都算），同层悬空候选
         -- （站在高台上抽到平台外的空中格）在这里就被挡掉，不再依赖 A* 失败兜底
         if real.HasSupport(coord(bx, by, bz)) then
-            local candidate = MC.CellWorldCenter(bx, by, bz)
+            local candidate = real.BlockToWorld(coord(bx, by, bz))
 
             if IsValid(mob) and mob.IsBMBHullClearAtPosition then
                 if mob:IsBMBHullClearAtPosition(candidate) then return candidate end

@@ -41,9 +41,11 @@ ENT.ForwardSafetyDistance = 48
 ENT.SafetyProbeSpeedScale = 0.45
 ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
+-- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)
+-- while remaining below a full MC block.
 ENT.StepHeight = 28
-ENT.BlockHopApex = 45
-ENT.BlockHopJumpHeightScale = 1.6
+ENT.BlockHopApexScale = 1.5
+ENT.BlockHopJumpHeightScale = 1.5
 ENT.BlockHopLandingLift = 2
 ENT.BlockHopLaunchMinDistanceScale = 0.85
 ENT.BlockHopLaunchIdealDistanceScale = 1.15
@@ -56,30 +58,29 @@ ENT.BlockHopManualControlTime = 0.7
 ENT.BlockHopManualLiftTime = 0.16
 ENT.BlockHopManualForwardStartHeightScale = 0.8
 ENT.BlockHopManualPostLiftMinVzScale = 0.35
-ENT.BlockHopStepHeight = 18
+ENT.BlockHopStepHeightScale = 0.49
 ENT.BlockHopAirSteerStrength = 0.08
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
 -- 重跳要赶在它把路径判死之前
 ENT.BlockHopRetryDelay = 0.25
 ENT.BlockHopMaxAttempts = 3
 ENT.MaxPathDropCells = 3
--- 必须 > 一格（36）：MC 生物下一格台阶是日常移动，34 会把"从方块地板走下来"判成悬崖；
--- 两格（72）仍然算悬崖
-ENT.MaxStepDown = 40
+-- 必须 > 一格，且 < 两格：MC 生物下一格台阶是日常移动，太小会把"从方块地板走下来"判成悬崖。
+ENT.MaxStepDownScale = 1.1
 ENT.TurnRate = 400
 ENT.TurnInPlaceAngle = 110
 ENT.UseSourcePathFollower = true
 ENT.SourcePathLookAhead = 120
-ENT.SourcePathGoalTolerance = 18
-ENT.PathNodeTolerance = 18
-ENT.PathCarrotMinDistance = 72
-ENT.PathCarrotMaxDistance = 150
+ENT.SourcePathGoalToleranceScale = 0.5
+ENT.PathNodeToleranceScale = 0.5
+ENT.PathCarrotMinDistanceScale = 2
+ENT.PathCarrotMaxDistanceScale = 25 / 6
 ENT.PathCarrotSpeedScale = 1.1
 ENT.PathCornerMinAngle = 35
-ENT.PathCornerSlowDistance = 72
+ENT.PathCornerSlowDistanceScale = 2
 ENT.PathCornerSpeedScale = 0.55
 ENT.PathCornerMinSpeed = 32
-ENT.PathCornerCarrotDistance = 32
+ENT.PathCornerCarrotDistanceScale = 8 / 9
 ENT.PathCornerDeceleration = 720
 ENT.PathTimeoutPerNode = 0.8
 ENT.PathTimeoutSpeedScale = 2.6
@@ -121,6 +122,16 @@ local function copyVector(vec)
     return Vector(vec.x, vec.y, vec.z)
 end
 
+local function getBlockSizeValue()
+    if BMB and BMB.GetBlockSize then return BMB.GetBlockSize() end
+    return (BMB and BMB.BS) or 36.5
+end
+
+local function scaledBlockDistance(value, scale, fallbackScale)
+    if value then return value end
+    return getBlockSizeValue() * (scale or fallbackScale or 1)
+end
+
 local function pathFlatLength(waypoints, startIndex)
     if not waypoints or #waypoints <= 1 then return 0 end
 
@@ -148,7 +159,7 @@ function ENT:BaseInitialize()
 
     self.loco:SetStepHeight(self.StepHeight)
     self.BMBCurrentStepHeight = self.StepHeight
-    self.loco:SetJumpHeight(58)
+    self.loco:SetJumpHeight(self:GetBMBBlockSize() * (self.BlockHopJumpHeightScale or 1.5))
     self.loco:SetMaxYawRate(self.TurnRate or 400)
     self.loco:SetAcceleration(self.Acceleration)
     self.loco:SetDeceleration(self.Deceleration)
@@ -207,6 +218,58 @@ function ENT:UpdateMoveActivity(speed)
     self:SetNWFloat("BMBDesiredSpeed", speed or self.WalkSpeed)
 end
 
+function ENT:GetBMBBlockSize()
+    return getBlockSizeValue()
+end
+
+function ENT:GetBMBScaledDistance(value, scale, fallbackScale)
+    return scaledBlockDistance(value, scale, fallbackScale)
+end
+
+function ENT:GetBMBDefaultGoalTolerance()
+    if BMB and BMB.GetBlockSize then
+        BMB.GetBlockSize()
+    end
+
+    if BMB and BMB.Config and BMB.Config.DefaultGoalTolerance then
+        return BMB.Config.DefaultGoalTolerance
+    end
+
+    return self:GetBMBBlockSize() * 0.5
+end
+
+function ENT:GetBMBSourcePathGoalTolerance()
+    return self:GetBMBScaledDistance(self.SourcePathGoalTolerance, self.SourcePathGoalToleranceScale, 0.5)
+end
+
+function ENT:GetBMBPathNodeTolerance()
+    return self:GetBMBScaledDistance(self.PathNodeTolerance, self.PathNodeToleranceScale, 0.5)
+end
+
+function ENT:GetBMBPathCarrotMinDistance()
+    return self:GetBMBScaledDistance(self.PathCarrotMinDistance, self.PathCarrotMinDistanceScale, 2)
+end
+
+function ENT:GetBMBPathCarrotMaxDistance()
+    return self:GetBMBScaledDistance(self.PathCarrotMaxDistance, self.PathCarrotMaxDistanceScale, 25 / 6)
+end
+
+function ENT:GetBMBPathCornerSlowDistance()
+    return self:GetBMBScaledDistance(self.PathCornerSlowDistance, self.PathCornerSlowDistanceScale, 2)
+end
+
+function ENT:GetBMBPathCornerCarrotDistance()
+    return self:GetBMBScaledDistance(self.PathCornerCarrotDistance, self.PathCornerCarrotDistanceScale, 8 / 9)
+end
+
+function ENT:GetBMBHopStepHeight()
+    return self:GetBMBScaledDistance(self.BlockHopStepHeight, self.BlockHopStepHeightScale, 0.49)
+end
+
+function ENT:GetBMBMaxStepDown()
+    return self:GetBMBScaledDistance(self.MaxStepDown, self.MaxStepDownScale, 1.1)
+end
+
 function ENT:SetBMBLocoStepHeight(height)
     height = height or self.StepHeight
 
@@ -222,7 +285,7 @@ function ENT:BeginBMBHopStepHeight()
 
     self.BMBHopSavedStepHeight = self.BMBCurrentStepHeight or self.StepHeight
     self.BMBHopStepHeightActive = true
-    self:SetBMBLocoStepHeight(self.BlockHopStepHeight or 18)
+    self:SetBMBLocoStepHeight(self:GetBMBHopStepHeight())
 end
 
 function ENT:RestoreBMBStepHeight()
@@ -692,7 +755,7 @@ function ENT:MoveWithSourcePath(destination, speed, options)
     if not Path then return false end
 
     local path = Path("Follow")
-    local goalTolerance = options.goalTolerance or self.SourcePathGoalTolerance
+    local goalTolerance = options.goalTolerance or self:GetBMBSourcePathGoalTolerance()
 
     path:SetMinLookAheadDistance(options.lookAhead or self.SourcePathLookAhead)
     path:SetGoalTolerance(goalTolerance)
@@ -823,7 +886,7 @@ function ENT:GetPathPointAhead(waypoints, cursor, segmentIndex, distance)
 
             if overshoot:LengthSqr() > 1 then
                 overshoot:Normalize()
-                point = point + overshoot * math.min(remaining, BMB.Config.DefaultGoalTolerance or 18)
+                point = point + overshoot * math.min(remaining, self:GetBMBDefaultGoalTolerance())
                 point.z = current.z
                 return point
             end
@@ -843,7 +906,7 @@ function ENT:GetBMBPathHullRadius()
 end
 
 function ENT:GetBMBPathHeightCells()
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local height = math.max(1, self.CollisionMaxs.z - self.CollisionMins.z)
 
     return math.max(0, math.floor((height - 1) / blockSize))
@@ -851,7 +914,7 @@ end
 
 function ENT:DoesBMBHullOverlapBlock(pos, blockCoord, radius)
     local blockCenter = BMB.BlockWorld.BlockToWorld(blockCoord)
-    local half = (BMB.Config.BlockSize or 36) * 0.5
+    local half = self:GetBMBBlockSize() * 0.5
     local closestX = math.Clamp(pos.x, blockCenter.x - half, blockCenter.x + half)
     local closestY = math.Clamp(pos.y, blockCenter.y - half, blockCenter.y + half)
     local dx = pos.x - closestX
@@ -866,7 +929,7 @@ function ENT:IsBMBHullClearAtPosition(pos)
 
     local centerCell = BMB.BlockWorld.WorldToBlock(pos)
     local radius = self:GetBMBPathHullRadius()
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local range = math.ceil((radius + blockSize * 0.5) / blockSize)
     local maxZOffset = self:GetBMBPathHeightCells()
 
@@ -909,7 +972,7 @@ function ENT:IsPathGridVisible(target)
 
     delta:Normalize()
 
-    local step = math.max((BMB.Config.BlockSize or 36) * 0.25, 6)
+    local step = math.max(self:GetBMBBlockSize() * 0.25, 6)
     local samples = math.max(1, math.ceil(distance / step))
     for i = 1, samples do
         local sampleDistance = math.min(distance, i * step)
@@ -1001,7 +1064,7 @@ function ENT:GetBMBPathCornerControl(waypoints, nodeIndex, current, desiredSpeed
 
     if not bestDistance then return desiredSpeed, defaultCarrotDistance, false end
 
-    local slowDistance = self.PathCornerSlowDistance or (BMB.Config.BlockSize or 36) * 2
+    local slowDistance = self:GetBMBPathCornerSlowDistance()
     local proximity = 1 - math.Clamp(bestDistance / slowDistance, 0, 1)
     local angleFactor = math.Clamp((bestAngle - minAngle) / math.max(1, 90 - minAngle), 0, 1)
     local slowAmount = proximity * angleFactor
@@ -1009,7 +1072,7 @@ function ENT:GetBMBPathCornerControl(waypoints, nodeIndex, current, desiredSpeed
     if slowAmount <= 0 then return desiredSpeed, defaultCarrotDistance, false end
 
     local cornerSpeed = math.max(self.PathCornerMinSpeed or 32, desiredSpeed * (self.PathCornerSpeedScale or 0.55))
-    local cornerCarrot = self.PathCornerCarrotDistance or (BMB.Config.BlockSize or 36) * 0.9
+    local cornerCarrot = self:GetBMBPathCornerCarrotDistance()
     local speed = desiredSpeed - (desiredSpeed - cornerSpeed) * slowAmount
     local carrotDistance = defaultCarrotDistance - (defaultCarrotDistance - cornerCarrot) * slowAmount
 
@@ -1025,7 +1088,7 @@ function ENT:IsSourceHitBMBBlock(hitPos, hitNormal)
     if hitNormal then
         samples[#samples + 1] = hitPos - hitNormal * 4
         samples[#samples + 1] = hitPos + hitNormal * 4
-        samples[#samples + 1] = hitPos - hitNormal * ((BMB.Config.BlockSize or 36) * 0.5)
+        samples[#samples + 1] = hitPos - hitNormal * (self:GetBMBBlockSize() * 0.5)
     end
 
     for _, sample in ipairs(samples) do
@@ -1092,7 +1155,7 @@ function ENT:IsPathSourceTargetSafe(target, probeDistance)
 
     if not groundTrace.Hit then return false, "cliff" end
     if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
-    if current.z - groundTrace.HitPos.z > self.MaxStepDown then return false, "cliff" end
+    if current.z - groundTrace.HitPos.z > self:GetBMBMaxStepDown() then return false, "cliff" end
 
     return true
 end
@@ -1170,7 +1233,7 @@ function ENT:GetBMBBlockHopJumpHeight(blockSize, apex)
         return math.max(apex or 0, configured)
     end
 
-    return math.max(apex or 0, (blockSize or BMB.Config.BlockSize or 36) * (self.BlockHopJumpHeightScale or 1.6))
+    return math.max(apex or 0, (blockSize or self:GetBMBBlockSize()) * (self.BlockHopJumpHeightScale or 1.5))
 end
 
 function ENT:GetBMBHopForward(current, target, previousNode)
@@ -1201,7 +1264,7 @@ function ENT:GetBMBHopForward(current, target, previousNode)
 end
 
 function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local distance = flatDistance(current, target)
     local faceDistance = math.max(0, distance - blockSize * 0.5)
     local forward = self:GetBMBHopForward(current, target, previousNode)
@@ -1318,7 +1381,7 @@ function ENT:FinishBMBHopDebug(result)
 end
 
 function ENT:GetBMBManualHopVelocity(target, speed, launch, gravity, apex)
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local current = self:GetPos()
     local landingZ = target.z - blockSize * 0.5 + (self.BlockHopLandingLift or 2)
     local dz = landingZ - current.z
@@ -1357,7 +1420,7 @@ function ENT:ApplyBMBPendingBlockHop()
     if CurTime() <= (pending.createdAt or 0) then return end
 
     local now = CurTime()
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local controlTime = math.max(
         self.BlockHopManualControlTime or 0.7,
         (pending.flightTime or 0.55) + 0.12
@@ -1449,7 +1512,7 @@ function ENT:MaintainBMBManualBlockHop(carrot, speed, progressWatch)
 end
 
 function ENT:StartBMBBlockHop(target, speed, launch)
-    local blockSize = BMB.Config.BlockSize or 36
+    local blockSize = self:GetBMBBlockSize()
     local gravity = 600
     if self.loco and self.loco.GetGravity then
         gravity = math.abs(self.loco:GetGravity() or gravity)
@@ -1457,7 +1520,7 @@ function ENT:StartBMBBlockHop(target, speed, launch)
 
     if gravity <= 0 then gravity = 600 end
 
-    local apex = self.BlockHopApex or 45
+    local apex = self.BlockHopApex or blockSize * (self.BlockHopApexScale or 1.5)
     local jumpHeight = self:GetBMBBlockHopJumpHeight(blockSize, apex)
 
     if self.loco.SetJumpHeight then
@@ -1520,12 +1583,13 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     if not waypoints or #waypoints == 0 then return false end
 
     local desiredSpeed = speed or self.WalkSpeed
-    local goalTolerance = options.goalTolerance or BMB.Config.DefaultGoalTolerance
-    local nodeTolerance = options.nodeTolerance or self.PathNodeTolerance
+    local blockSize = self:GetBMBBlockSize()
+    local goalTolerance = options.goalTolerance or self:GetBMBDefaultGoalTolerance()
+    local nodeTolerance = options.nodeTolerance or self:GetBMBPathNodeTolerance()
     local carrotDistance = options.carrotDistance or math.Clamp(
         desiredSpeed * (self.PathCarrotSpeedScale or 1.1),
-        self.PathCarrotMinDistance or 72,
-        self.PathCarrotMaxDistance or 150
+        self:GetBMBPathCarrotMinDistance(),
+        self:GetBMBPathCarrotMaxDistance()
     )
     local nodeIndex = 1
     local final = waypoints[#waypoints]
@@ -1534,7 +1598,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local startPos = self:GetPos()
     while nodeIndex < #waypoints
         and not self:IsBMBPathVerticalAction(self:GetBMBWaypointAction(waypoints, nodeIndex))
-        and flatDistance(startPos, waypoints[nodeIndex]) <= BMB.Config.BlockSize * 0.75 do
+        and flatDistance(startPos, waypoints[nodeIndex]) <= blockSize * 0.75 do
         nodeIndex = nodeIndex + 1
     end
 
@@ -1585,7 +1649,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
                 nodeIndex = nodeIndex + 1
                 self:MarkBMBPathAdvanced(nodeIndex)
-            elseif not self:IsBMBPathVerticalAction(nodeAction) and nodeDistance <= BMB.Config.BlockSize * 1.5 then
+            elseif not self:IsBMBPathVerticalAction(nodeAction) and nodeDistance <= blockSize * 1.5 then
                 -- 切弯时会从节点旁边掠过（横向 > nodeTolerance），只按距离判定节点永远推进不了，
                 -- carrot 会折回身后的漏过节点导致原地转圈。已越过该节点朝下一节点的垂面就视为通过
                 local nextNode = waypoints[nodeIndex + 1]
@@ -1619,7 +1683,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
         if verticalAction and actionNode then
             pathSpeed = desiredSpeed
-            pathCarrotDistance = math.min(carrotDistance, self.PathCornerCarrotDistance or (BMB.Config.BlockSize or 36))
+            pathCarrotDistance = math.min(carrotDistance, self:GetBMBPathCornerCarrotDistance())
             cornering = false
             carrot = Vector(actionNode.x, actionNode.y, current.z)
         else
@@ -1653,7 +1717,6 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         self:UpdateBMBApproachDebug(carrot, nodeIndex)
 
         if activeAction == "hop" then
-            local blockSize = BMB.Config.BlockSize or 36
             local triggerDistance = self.BlockHopTriggerDistance or blockSize * (self.BlockHopLaunchMaxDistanceScale or 1.4)
             local onGround = self:IsBMBOnGround()
             -- loco:Jump() 会同步置跳跃态，用它代替时间猜的"起跳保护窗"：
@@ -1827,7 +1890,7 @@ function ENT:MoveAlongDirection(direction, speed, options)
         if self:MoveWithSourcePath(pathDestination, speed or self.WalkSpeed, {
             duration = duration,
             lookAhead = options.pathLookAhead or self.SourcePathLookAhead,
-            goalTolerance = options.goalTolerance or self.SourcePathGoalTolerance,
+            goalTolerance = options.goalTolerance or self:GetBMBSourcePathGoalTolerance(),
             acceptPartial = true,
             skipSourcePath = true
         }) then
@@ -1993,7 +2056,7 @@ function ENT:IsMovementTargetSafe(target, probeDistance)
 
     if not groundTrace.Hit then return false, "cliff" end
     if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
-    if current.z - groundTrace.HitPos.z > self.MaxStepDown then return false, "cliff" end
+    if current.z - groundTrace.HitPos.z > self:GetBMBMaxStepDown() then return false, "cliff" end
 
     return true
 end
@@ -2033,7 +2096,7 @@ function ENT:CanStepPastTrace(wallTrace, forwardTarget, traceFilter)
     if not landingTrace.Hit then return false end
     if landingTrace.HitNormal.z < 0.65 then return false end
     if landingTrace.HitPos.z - current.z > stepHeight + 4 then return false end
-    if current.z - landingTrace.HitPos.z > self.MaxStepDown then return false end
+    if current.z - landingTrace.HitPos.z > self:GetBMBMaxStepDown() then return false end
 
     return true
 end

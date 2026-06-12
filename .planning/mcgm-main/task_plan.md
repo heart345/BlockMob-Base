@@ -31,7 +31,7 @@ Phase 2
 - [x] 建立第一批行为模块：Wander / Flee / EatGrass
 - [x] 建立 mock `IBlockWorld`
 - [x] 接收 MCSWEP 真实接口文档
-- [x] 将 BMB 方块大小改为 36 Source units
+- [x] 将 BMB 方块大小接到 `BMB.BS` / `BMB.GetBlockSize()`（当前跟随 MCSWEP `MC.BS=36.5`，mock fallback 36.5）
 - [x] 建立 `BMB.RealBlockWorld` adapter 草案
 - [x] 建立方块网格 A* 寻路
 - [x] 做 Sheep 最小切片代码：Wander、受击 Flee、吃草改方块
@@ -51,21 +51,21 @@ Phase 2
 - [x] 修面朝前方倒退：SteerTowards 先原地转身再走（用户已验证）
 - [x] 吃草频率调低：吃完冷却 25-45s（用户已验证）
 - [x] 复测 MC 式游荡节奏：到站停顿 4-10s 生效，无 `path_blocked`/`path_no_goal_progress`（用户已验证）
-- [x] 复测游荡微调：停顿 6-14s OK；单段距离用户要求上调，2-5 格 -> 3-8 格（WanderDistanceMin/Max 108/288，待复测）
+- [x] 复测游荡微调：停顿 6-14s OK；单段距离用户要求上调，2-5 格 -> 3-8 格（第二十四轮改为 WanderDistanceMin/Max cell 数，随 BS 缩放）
 - [x] 复测行进中"莫名转圈"修复：垂面跳点判定生效（用户已验证）
 - [x] 复测跳崖修复：速度缩放安全探测 + FailBMBMove 急刹生效（用户已验证）
 - [x] 复测 Flee 冻住第七轮真根因修复：getSafeDirection / MoveAlongDirection 的单位向量 LengthSqr 阈值 bug（1 -> 0.01）——用户已验证贴脸 prop 不再冻住
 - [x] 复测第八轮墙/悬崖分治：离 prop/边缘不再远距离犹豫掉速——用户已验证边缘不急停、撞 prop 换方向
 - [x] 复测第九轮 MC PanicGoal 式 Flee：受击随机近点 dash（不朝反方向）、平地跑 1-2 段就停、被围住冲几下放弃站住（用户已验证，Flee 整体 ✅）
 - [x] 复测 Flee 受击掉头先转身后跑、无倒退（用户已验证）
-- [x] 接通 `BMB.RealBlockWorld`：MC.SV.SetBlock 写入、id↔BMB.BlockTypes 映射、吃草改查脚下格、A* 头部格检查、MaxStepDown 40、mock/real 切换（bmb_use_real_world / bmb_world 命令）
+- [x] 接通 `BMB.RealBlockWorld`：MC.SV.SetBlock 写入、id↔BMB.BlockTypes 映射、吃草改查脚下格、A* 头部格检查、MaxStepDown（第二十四轮为 `1.1*BMB.BS`）、mock/real 切换（bmb_use_real_world / bmb_world 命令）
 - [x] 修一格宽走廊"出得来、进不去"：A* 路径跟随退役 Source 安全二次否决，carrot 改 pure pursuit + 网格视线缩短（待用户复测）
 - [x] 修方块通行按中心点漏判：A*/随机候选/carrot 视线改用 mob hull 占格检查，sheep hull 调到 32u，Tool Gun 右键改走 A* debug path（待用户复测）
 - [x] 修 path 退役 Source safety 过头：MoveAlongPath 加回 path 专用地图墙/悬崖复查，MC 方块命中交给 hull 规则，Source 地图墙/平台边缘仍拦截（用户已验证）
 - [x] 真方块世界全链路复测：游荡（含从一格地板走下来）→ 受击逃 → 吃草 grass_block→dirt（同步/音效/存档）；`bmb_world mock` 回退正常（用户已验证 ✅）
 - [ ] Flee 在坑/封闭结构中改为先枚举可站立格再随机抽样，减少"有出口但盲采失败直接放弃"
 - [ ] 吃草原版手感版：羊自己补低头动画、草屑粒子和咀嚼音效（不靠破坏 fx 冒充）
-- [x] 羊一格台阶自动跳（BlockHop，StepHeight 仍 <36）+ A* 3D 邻接 + ≤3 格 drop 边（待用户复测）
+- [x] 羊一格台阶自动跳（BlockHop；hop 期间 StepHeight = `0.49*BMB.BS`，普通 StepHeight 28）+ A* 3D 邻接 + ≤3 格 drop 边（待用户复测）
 - [x] 第十六轮：修用户实测三 bug——hop 贴墙不跳（落地重跳 ≤3 次 + 起跳水平速度朝目标补足 + 空中转向只在离地时接管）；A* 不可达泛洪卡帧（walk 边要求可站立、`IBlockWorld.HasSupport` 认 Source 刷子地面、目标悬空下吸、per-call 缓存、f 预算 + yield 切片）；部分路径（走到崖边停住；Flee 关闭）（待用户复测）
 - [x] 复测第十六轮：hop 贴墙重跳；>3 格高差右键不卡顿、有梯逐级下/纯崖走到边停；非 MC 地面右键可达；Flee 被围住仍会放弃；旧走廊/墙角/地图墙/悬崖保护不回归（用户已验证：不卡 ✅ 不跳楼 ✅ 下落正常 ✅；发现三个新问题 → 第十七轮）
 - [x] 第十七轮：修绕路被 `path_no_goal_progress` 误杀（节点推进刷新 goal watchdog + timeout 0.9→1.2）；修窄 Source 沿走不了（HasSupport 中心悬空时补 ±12u 轴向偏移采样）；修 `path_hop` 不起跳（起跳保护窗 0.15s 内禁 Approach，防 SetVelocity 竖直速度被冲掉）（待用户复测）
@@ -82,6 +82,8 @@ Phase 2
 - [x] 复测第二十二轮：NPC 已能跳上一格台阶 ✅；drop 主动下 3 格内 ✅；发现待调优：apex 偏高、偶发误上两格（A* 不主动规划两格）、debug move 长路径超时偏短、跳后动作保持偏久
 - [x] 第二十三轮：hop 期间临时 `StepHeight=18`、结束/失败/中断恢复 28，避免 apex + 自动登阶误上两格；debug path timeout 改为路径长度/速度预算；Think/落地按 locomotion 状态重选 activity，收跳后动作残留（待用户复测）
 - [x] 复测第二十三轮：用户确认当前未发现 bug ✅；一格 hop、误上两格、debug 远点早停、跳后动作残留暂未复现
+- [x] 第二十四轮：MCSWEP 已切 `MC.BS=36.5`，BMB 改为单一尺寸入口 `BMB.GetBlockSize()` / `BMB.BS`；mock fallback 36.5；BaseMob 尺寸默认改 scale/cell（goal/node tolerance、carrot、corner、hop apex/lift/StepHeight、MaxStepDown），Sheep wander/flee 改 cell 数，mock/real/debug 跟随 BS；新增 `scripts/check_block_size_parameterization.ps1`
+- [ ] 复测第二十四轮：控制台确认 `MC.BS` 与 `BMB.BS` 都为 36.5；hop 一格稳定、两格不上；半砖/楼梯走上去；36.5 走廊双向通行；drop 3 格主动下、4 格拒绝；吃草链路和坐标往返正常；mock/real 尺度一致
 - [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
 - **Status:** in_progress
 

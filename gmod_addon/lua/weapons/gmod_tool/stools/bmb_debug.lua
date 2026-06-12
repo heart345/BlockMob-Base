@@ -70,6 +70,10 @@ local function selectedMob(ply)
     return nil
 end
 
+local function blockSize()
+    return BMB and BMB.GetBlockSize and BMB.GetBlockSize() or (BMB and BMB.BS) or 36.5
+end
+
 local function clearDebugMovement(mob)
     if mob.ClearBMBDebugMove then
         mob:ClearBMBDebugMove()
@@ -100,7 +104,7 @@ local function targetFromTrace(trace)
         return target + Vector(0, 0, 4)
     end
 
-    return target + normal * ((BMB and BMB.Config and BMB.Config.BlockSize or 36) * 0.5)
+    return target + normal * (blockSize() * 0.5)
 end
 
 local function startTargetMove(mob, target, speed, duration)
@@ -118,7 +122,7 @@ local function startTargetMove(mob, target, speed, duration)
     -- 按路径长度再算一次。这里的 Until 只保证行为循环有足够时间接到 debug 请求。
     mob.BMBDebugMoveUntil = CurTime() + math.max(duration or 0, pathBudget, 12)
     mob.BMBDebugMoveLookAhead = math.max(speed * 1.2, 160)
-    mob.BMBDebugMoveTolerance = BMB and BMB.Config and BMB.Config.DefaultGoalTolerance or 18
+    mob.BMBDebugMoveTolerance = BMB and BMB.Config and BMB.Config.DefaultGoalTolerance or (blockSize() * 0.5)
     mob.FleeUntil = 0
     mob.FleeThreat = nil
     mob.FleeThreatPosition = nil

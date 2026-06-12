@@ -633,3 +633,39 @@
   - debug 远点早停问题未再暴露。
   - 跳后动作残留未再暴露。
 - 本轮按用户要求提交并 push；未跟踪截图 `hop1.png`~`hop4.png` 不纳入提交。
+
+### 第二十四轮：36.5 切换与 BS 参数化（2026-06-12，待游戏回归）
+
+- 背景：朋友的 MCSWEP 已把 `MC.Config.BlockSize` / `MC.BS` 切到 36.5（已读取 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\mcswep-main\lua\mc\sh_config.lua` 确认）。BMB 不能再把 36、18、40、72、108 等尺寸派生值写死。
+- 新增 `scripts/check_block_size_parameterization.ps1`，先红灯抓到旧 fallback / size-derived defaults，再改到绿灯；以后改尺寸相关代码先跑它。
+- `bmb/sh_config.lua`
+  - 新增 `BMB.DefaultBlockSize = 36.5`、`BMB.GetBlockSize()`；每次优先读 `(MC and MC.BS)`，同步 `BMB.BS` 与兼容字段 `BMB.Config.BlockSize`。
+  - `DefaultGoalTolerance` 改为 `0.5*BS`。
+- `bmb_base_mob.lua`
+  - 所有尺寸派生默认改为 scale：goal/node tolerance `0.5*BS`，carrot min/max `2*BS` / `25/6*BS`，corner slow `2*BS`，hop apex/jumpheight `1.5*BS`，manual forward start `0.8*BS`，hop 临时 StepHeight `0.49*BS`，MaxStepDown `1.1*BS`。
+  - 普通 `StepHeight=28` 保留为 Source locomotion 绝对值（36.5 半砖 18.25，28 仍能走半砖但不能走整格），并加注释说明不是方块尺寸派生。
+- `bmb_sheep.lua` / `sv_behaviors.lua`
+  - sheep wander/flee 参数改为 cell 数：游荡 3~8 格；panic 半径 5 格、最小 1 格。
+- `sv_block_world_mock.lua` / `sv_block_world_real.lua` / debug HUD/tool
+  - mock 坐标换算、real 支撑 trace 半格/偏移、debug 方块渲染和右键目标推出都跟随 `BMB.GetBlockSize()`。
+  - real `HasSupport` 的窄沿偏移由固定 12u 改为约 `1/3*BS`。
+- 待用户游戏回归清单：
+  - 控制台确认 `MC.BS` 与 `BMB.BS` 均为 36.5。
+  - hop 一格稳定；两格必须上不去；半砖/楼梯平时靠 StepHeight 走上去。
+  - 36.5 走廊 hull 32 双向通过。
+  - drop 主动下 3 格（109.5u），4 格拒绝且不卡顿。
+  - 吃草链路和 `WorldToBlock/BlockToWorld` 坐标往返正常；mock/real 尺度一致。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sh_config.lua`
+  - `gmod_addon/lua/bmb/cl_debug.lua`
+  - `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_mock.lua`
+  - `gmod_addon/lua/bmb/sv_block_world_real.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/entities/bmb_sheep.lua`
+  - `gmod_addon/lua/weapons/gmod_tool/stools/bmb_debug.lua`
+  - `scripts/check_block_size_parameterization.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
