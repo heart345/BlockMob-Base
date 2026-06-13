@@ -105,7 +105,7 @@ Phase 2
 - [x] 第三十四轮：修第三十三轮实测回归——受击红闪正常但 HUD `vel` 第二项变 0、NPC 停住且无击退。根因是 `RunBMBKnockback()` 用 `MaintainBMBMoveSpeed(0)` 把 `BMBDesiredSpeed` 发布成 0，同时可能吞掉 `loco:SetVelocity` 击退。改为保存 `BMBKnockbackDesiredSpeed` / `BMBKnockbackActivitySpeed`，公开速度意图保持非 0；内部单独给 loco 击退速度预算并启动当帧写入水平击退；检查脚本禁止红闪碰 movement/loco、禁止 knockback 写 `DesiredSpeed=0`
 - [ ] 复测第三十四轮：受击红闪时 HUD 不再 `70/0`，普通移动/flee 能继续接管；非无敌帧命中能看见水平击退；无敌帧连击仍不扣血/不击退；prop 物理伤害、物理枪、debug gap 不回归
 - [x] 第三十五轮：MC 击退手感收口——`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 缩到 0.12，避免长时间压住 flee；地面受击 `loco:Jump()` 后给竖直上抬（`KnockbackVerticalSpeedScale=6`，clamp 170~240u/s），第一下也立即写水平+竖直冲量；Flee 在空中恢复时传 `allowStrandedStart=airborneStart` 继续尝试逃跑
-- [ ] 复测第三十五轮：第一下生成后受击也有击退；受击有一点离地上抬；击退后不再长时间停住，空中/落地都会继续 flee；冷却约 0.5s；旧红闪、prop 伤害、物理枪、debug gap 不回归
+- [x] 复测第三十五轮：第一下生成后受击也有击退；受击有一点离地上抬；击退后不再长时间停住，空中/落地都会继续 flee；冷却约 0.5s；旧红闪、prop 伤害、物理枪、debug gap 不回归
 - [ ] Fall damage / 摔伤：后续单独实现掉血来源，不和受击击退共用状态；摔伤不应触发击退
 - [ ] 半砖/楼梯/MC 台阶表面高度寻路：等待 MCSWEP shape/floor height 接口（`MC.BlockBoxes` 或等价 API）；A* 从二值 solid/air 升级为 surface-height walk/hop/drop
 - [ ] 玻璃板/栅栏 shape 接口接入后：PARTIAL/窄顶碰撞按"有碰撞但不可站立"，普通 A* 不规划其顶面；StrandedRecovery 负责已站上去的逃生
@@ -113,12 +113,19 @@ Phase 2
 
 ### Phase 3: Zombie 迁移回新架构
 
-- [ ] 将当前 Zombie 参数迁移到 BaseMob + 敌对状态机
-- [ ] 参考本地 Minecraft 源码中的 Zombie AI
-- [ ] 建立 Zombie 行为参数表
-- [ ] 调整移动速度、攻击距离、攻击 tick、索敌范围
+- [x] 第三十六轮：新增 `bmb_zombie.lua`，继承 `bmb_base_mob`；旧 `mcgm_zombie.lua` 保留为 legacy 对照，不再作为新架构实现参考
+- [x] 第三十六轮：新增共享 hostile 行为模块 `SeekTarget` / `Chase` / `MeleeAttack`，Zombie 状态机只负责参数、声音、目标和优先级调度
+- [x] 第三十六轮：迁移当前 Zombie 手感参数第一版（20 HP、追击速度 115、索敌 900、攻击距离 38、伤害 10、cooldown 1.05、hit delay 0.38）
+- [x] 第三十六轮：Spawn menu 注册 `BMB Prototype Zombie`，保留 `MCGM Prototype Zombie` 旧样机
+- [x] 第三十六轮：新增 `scripts/check_zombie_phase1.ps1`，防止新 Zombie 回退到 navmesh/legacy 架构
+- [x] 第三十七轮：修 Zombie 首轮实测问题——Base 红闪改为固定红 0.5s；Base activity 增加 per-mob 映射；Zombie `RunActivity=ACT_WALK` 防 Classic 模型追击腿不动；`MeleeAttack` 增加独立垂直范围，Zombie 攻击距离 52u、垂直范围 28u；`ChaseSegmentTimeout=1.0` 避免远处 chase 还没推进就重置
+- [x] 第三十八轮：修 Zombie 二轮实测问题——近战不再 `BMBMeleeLockUntil`/速度 0，攻击期间保留 `AttackMoveSpeed=92` 前压；攻击 cooldown/hit delay 调快到 0.8/0.28；追击失败但目标有效时保持 target 进入 `chase_repath`；Base hop/drop final 和节点推进改用 `IsBMBVerticalPathNodeReached`，防止 final hop 2D 贴近但没跳就 idle
+- [x] 第三十九轮：修 Zombie 三轮实测问题——`ChaseSegmentTimeout=2.0`、`ChaseFailureRepathDelay=0.05`、`TurnInPlaceAngle=170` 降低远距离追击停顿；`chase_repath` 期间继续 `SteerTowards`/`BodyMoveXY`；Base 增加 `BlockHopAllowCloseLaunch`，Zombie 开启贴脸 `close_lift` hop 兜底
+- [x] 第四十轮：修 Zombie 追击策略——看得到目标且前方安全时优先 `chase_direct` 直盯玩家推进；墙/悬崖/迷宫/视线断开时回到 BMB A*；A* 失败且玩家近处高处不可达时进入 `chase_stalk` 贴底等待，保持 target 不清空、不对零向量 chase_repath
+- [ ] 复测第四十轮：开阔地 HUD 主要显示 `chase_direct` 且不再远距离走走停停/平地乱拐；迷宫/绕墙仍能 `path_carrot/path_hop/path_drop` 绕路；高两格近处不可达显示 `chase_stalk`，不清目标长 idle
+- [ ] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准
 - [ ] 加入日光燃烧、门/障碍交互策略
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 4: 共享 MCGM Base 固化
 

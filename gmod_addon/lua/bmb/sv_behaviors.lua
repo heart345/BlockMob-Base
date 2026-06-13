@@ -4,6 +4,9 @@ BMB.Behaviors = BMB.Behaviors or {}
 BMB.Behaviors.Wander = BMB.Behaviors.Wander or {}
 BMB.Behaviors.Flee = BMB.Behaviors.Flee or {}
 BMB.Behaviors.EatGrass = BMB.Behaviors.EatGrass or {}
+BMB.Behaviors.SeekTarget = BMB.Behaviors.SeekTarget or {}
+BMB.Behaviors.Chase = BMB.Behaviors.Chase or {}
+BMB.Behaviors.MeleeAttack = BMB.Behaviors.MeleeAttack or {}
 
 local function blockSize()
     return BMB.GetBlockSize and BMB.GetBlockSize() or (BMB.BS or 36.5)
@@ -176,4 +179,324 @@ function BMB.Behaviors.EatGrass.Try(mob)
     end
 
     return true
+end
+
+local function isAliveTarget(target)
+    if not IsValid(target) then return false end
+
+    if target:IsPlayer() then
+        return target:Alive()
+    end
+
+    local isNextBot = target.IsNextBot and target:IsNextBot()
+    if target:IsNPC() or isNextBot then
+        return (not target.Health or target:Health() > 0)
+    end
+
+    return false
+end
+
+local function targetFlatDistanceSqr(a, b)
+    local dx = a.x - b.x
+    local dy = a.y - b.y
+
+    return dx * dx + dy * dy
+end
+
+local function targetVerticalDistance(a, b)
+    return math.abs((a.z or 0) - (b.z or 0))
+end
+
+local function targetFlatDelta(mob, target)
+    local delta = target:GetPos() - mob:GetPos()
+    delta.z = 0
+
+    return delta
+end
+
+function BMB.Behaviors.SeekTarget.IsValid(mob, target, range)
+    if not IsValid(mob) or not isAliveTarget(target) or target == mob then return false end
+
+    if mob.CanBMBTarget and not mob:CanBMBTarget(target) then return false end
+
+    local maxRange = range or mob.TargetLoseRange or mob.TargetRange
+    if maxRange and mob:GetPos():DistToSqr(target:GetPos()) > maxRange * maxRange then
+        return false
+    end
+
+    if mob.TargetRequireLineOfSight and mob.Visible and not mob:Visible(target) then
+        return false
+    end
+
+    return true
+end
+
+function BMB.Behaviors.SeekTarget.Find(mob, currentTarget)
+    if not IsValid(mob) then return nil end
+
+    local loseRange = mob.TargetLoseRange or (mob.TargetRange or 900) * 1.25
+    if BMB.Behaviors.SeekTarget.IsValid(mob, currentTarget, loseRange) then
+        return currentTarget
+    end
+
+    local now = CurTime()
+    if mob.NextTargetScanTime and now < mob.NextTargetScanTime then return nil end
+
+    mob.NextTargetScanTime = now + (mob.TargetScanInterval or 0.35)
+
+    local targetRange = mob.TargetRange or 900
+    local bestTarget
+    local bestDistance = targetRange * targetRange
+
+    for _, ply in ipairs(player.GetAll()) do
+        if BMB.Behaviors.SeekTarget.IsValid(mob, ply, targetRange) then
+            local distance = mob:GetPos():DistToSqr(ply:GetPos())
+            if distance < bestDistance then
+                bestTarget = ply
+                bestDistance = distance
+            end
+        end
+    end
+
+    return bestTarget
+end
+
+function BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target)
+    if not IsValid(mob) or not IsValid(target) then return false end
+
+    local size = blockSize()
+    local current = mob:GetPos()
+    local targetPos = target:GetPos()
+    local vertical = targetPos.z - current.z
+    local minVertical = mob.ChaseHighTargetMinVertical or math.max(mob.AttackVerticalRange or 0, size * 0.85)
+
+    if vertical <= minVertical then return false end
+
+    local holdRange = mob.ChaseHighTargetHoldRange or size * (mob.ChaseHighTargetHoldCells or 1.65)
+
+    return targetFlatDistanceSqr(current, targetPos) <= holdRange * holdRange
+end
+
+function BMB.Behaviors.Chase.CanDirect(mob, target)
+    if not IsValid(mob) or not IsValid(target) then return false end
+    if mob.ChasePreferDirect == false then return false end
+    if BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target) then return false end
+
+    if mob.ChaseDirectRequireLineOfSight ~= false and mob.Visible and not mob:Visible(target) then
+        return false
+    end
+
+    local size = blockSize()
+    local flat = targetFlatDelta(mob, target)
+    local distance = flat:Length2D()
+    local attackRange = mob.AttackRange or mob.MeleeRange or size
+    local minDistance = mob.ChaseDirectMinDistance or math.max(attackRange * 0.9, size * 0.75)
+
+    if distance <= minDistance then return false end
+
+    flat:Normalize()
+
+    if mob.IsMovementTargetSafe then
+        local probe = math.min(distance, mob.ChaseDirectProbeDistance or size * (mob.ChaseDirectProbeCells or 4))
+        local probeTarget = mob:GetPos() + flat * probe
+        probeTarget.z = mob:GetPos().z
+
+        if not mob:IsMovementTargetSafe(probeTarget, probe) then return false end
+    end
+
+    return true
+end
+
+function BMB.Behaviors.Chase.RunDirect(mob, target, speed)
+    local duration = mob.ChaseDirectDuration or 0.28
+    local timeout = CurTime() + duration
+    local progressWatch = mob.StartBMBMoveProgressWatch and mob:StartBMBMoveProgressWatch() or nil
+
+    if mob.ClearBMBMovementInterrupt then mob:ClearBMBMovementInterrupt() end
+
+    while CurTime() < timeout do
+        if mob.BMBMoveInterrupt then return false end
+        if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then return false end
+        if BMB.Behaviors.MeleeAttack.IsInRange(mob, target) then return true end
+        if not BMB.Behaviors.Chase.CanDirect(mob, target) then return false end
+
+        local targetPos = target:GetPos()
+        local steerTarget = Vector(targetPos.x, targetPos.y, mob:GetPos().z)
+
+        if mob.SetBMBState then mob:SetBMBState("chase") end
+        if mob.SetBMBMoveMode then mob:SetBMBMoveMode("chase_direct") end
+        if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(speed, speed) end
+        if mob.UpdateMoveActivity then mob:UpdateMoveActivity(speed, speed) end
+        if mob.UpdateBMBApproachDebug then mob:UpdateBMBApproachDebug(steerTarget, 0) end
+        if mob.FaceTarget then mob:FaceTarget(targetPos) end
+        if mob.SteerTowards then mob:SteerTowards(steerTarget, progressWatch) end
+        if mob.BodyMoveXY then mob:BodyMoveXY() end
+        if mob.MaybePlayStep then mob:MaybePlayStep() end
+
+        if mob.CheckBMBMoveProgress and not mob:CheckBMBMoveProgress(progressWatch) then
+            if mob.FailBMBMove then mob:FailBMBMove("chase_direct_blocked") end
+            return false
+        end
+
+        coroutine.yield()
+    end
+
+    return true
+end
+
+function BMB.Behaviors.Chase.StalkHighTarget(mob, target)
+    if not BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target) then return false end
+
+    local targetPos = target:GetPos()
+
+    if mob.SetBMBState then mob:SetBMBState("chase") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("chase_stalk") end
+    if mob.UpdateBMBApproachDebug then mob:UpdateBMBApproachDebug(targetPos, 0) end
+    if mob.FaceTarget then mob:FaceTarget(targetPos) end
+
+    coroutine.wait(mob.ChaseHighTargetStalkDelay or 0.12)
+    return true
+end
+
+function BMB.Behaviors.MeleeAttack.IsInRange(mob, target, rangeOverride, verticalRangeOverride)
+    if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return false
+    end
+
+    local range = rangeOverride or mob.AttackRange or mob.MeleeRange or blockSize()
+    local verticalRange = verticalRangeOverride or mob.AttackVerticalRange or mob.MeleeVerticalRange or range * 0.65
+
+    if targetVerticalDistance(mob:GetPos(), target:GetPos()) > verticalRange then return false end
+
+    return targetFlatDistanceSqr(mob:GetPos(), target:GetPos()) <= range * range
+end
+
+function BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target)
+    if not IsValid(target) then return end
+
+    local horizontal = mob.AttackKnockback or mob.MeleeKnockback or 0
+    local vertical = mob.AttackVerticalKnockback or mob.MeleeVerticalKnockback or 0
+    if horizontal <= 0 and vertical <= 0 then return end
+
+    local direction = target:GetPos() - mob:GetPos()
+    direction.z = 0
+
+    if direction:LengthSqr() <= 1 then return end
+
+    direction:Normalize()
+    target:SetVelocity(direction * horizontal + Vector(0, 0, vertical))
+end
+
+function BMB.Behaviors.MeleeAttack.Try(mob, target)
+    if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target) then return false end
+
+    local now = CurTime()
+    if now < (mob.NextMeleeAttackTime or 0) then return false end
+
+    local cooldown = mob.AttackCooldown or mob.MeleeCooldown or 1.0
+    local hitDelay = mob.AttackHitDelay or mob.MeleeHitDelay or 0.25
+    local range = mob.AttackRange or mob.MeleeRange or blockSize()
+    local hitSlop = mob.AttackHitSlop or mob.MeleeHitSlop or blockSize() * 0.35
+    local attackMoveSpeed = mob.AttackMoveSpeed or mob.MeleeMoveSpeed or mob.RunSpeed or mob.WalkSpeed
+
+    mob.NextMeleeAttackTime = now + cooldown
+    mob.BMBMeleeAttackSerial = (mob.BMBMeleeAttackSerial or 0) + 1
+
+    if mob.SetBMBState then mob:SetBMBState("attack") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("attack") end
+    if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(attackMoveSpeed, mob.RunSpeed or attackMoveSpeed) end
+    if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+
+    if mob.PlayBMBMeleeGesture then
+        mob:PlayBMBMeleeGesture(target)
+    elseif mob.RestartGesture then
+        mob:RestartGesture(ACT_MELEE_ATTACK1)
+    end
+
+    local serial = mob.BMBMeleeAttackSerial
+
+    timer.Simple(hitDelay, function()
+        if not IsValid(mob) or mob.BMBDead then return end
+        if mob.BMBMeleeAttackSerial ~= serial then return end
+        if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target, range + hitSlop) then return end
+
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+
+        local damageInfo = DamageInfo()
+        damageInfo:SetAttacker(mob)
+        damageInfo:SetInflictor(mob)
+        damageInfo:SetDamage(mob.AttackDamage or mob.MeleeDamage or 2)
+        damageInfo:SetDamageType(mob.AttackDamageType or mob.MeleeDamageType or DMG_SLASH)
+
+        local force = target:GetPos() - mob:GetPos()
+        force.z = 0
+        if force:LengthSqr() > 1 then
+            force:Normalize()
+            damageInfo:SetDamageForce(force * (mob.AttackDamageForce or mob.MeleeDamageForce or 180))
+        end
+
+        target:TakeDamageInfo(damageInfo)
+        BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target)
+
+        if mob.OnBMBMeleeHit then
+            mob:OnBMBMeleeHit(target, damageInfo)
+        end
+    end)
+
+    return true
+end
+
+function BMB.Behaviors.Chase.Run(mob, target)
+    if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return false
+    end
+
+    local attackRange = mob.AttackRange or mob.MeleeRange or blockSize()
+    local speed = mob.RunSpeed or mob.WalkSpeed
+
+    if BMB.Behaviors.MeleeAttack.IsInRange(mob, target) then
+        local attackMoveSpeed = mob.AttackMoveSpeed or mob.MeleeMoveSpeed or speed
+
+        if mob.SetBMBState then mob:SetBMBState("attack_ready") end
+        if mob.SetBMBMoveMode then mob:SetBMBMoveMode("attack_ready") end
+        if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(attackMoveSpeed, speed) end
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+        if mob.SteerTowards then mob:SteerTowards(target:GetPos()) end
+        if mob.BodyMoveXY then mob:BodyMoveXY() end
+        if mob.MaybePlayStep then mob:MaybePlayStep() end
+
+        coroutine.wait(0.05)
+        return true
+    end
+
+    if BMB.Behaviors.Chase.CanDirect(mob, target) then
+        local directResult = BMB.Behaviors.Chase.RunDirect(mob, target, speed)
+        if directResult then return true end
+        if mob.BMBMoveInterrupt then return false end
+    end
+
+    local segmentTime = mob.ChaseSegmentTimeout or mob.ChaseRepathInterval or 0.75
+    local minPathSpeed
+
+    if mob.GetBMBRunActivityThreshold then
+        minPathSpeed = mob:GetBMBRunActivityThreshold() + (mob.ChaseMinPathSpeedPadding or 1)
+        minPathSpeed = math.min(speed, minPathSpeed)
+    end
+
+    if mob.SetBMBState then mob:SetBMBState("chase") end
+
+    local pathResult = mob:MoveToWorldPosition(target:GetPos(), speed, {
+        skipSourcePath = true,
+        allowPartial = true,
+        acceptPartial = true,
+        timeout = segmentTime,
+        goalTolerance = math.max(attackRange * 0.65, blockSize() * 0.5),
+        moveIntentSpeed = speed,
+        minPathSpeed = minPathSpeed
+    })
+
+    if pathResult then return true end
+    if BMB.Behaviors.Chase.StalkHighTarget(mob, target) then return true end
+
+    return false
 end

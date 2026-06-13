@@ -40,7 +40,12 @@
 - **第三十二轮（代码已切，待用户游戏回归）：Flee 速度/动作意图稳定化**。用户反馈 flee 状态速度不稳定，后续套皮会导致羊动作异常，也会污染 Base。根因是 Flee 虽然以 `RunSpeed` 调 `MoveToWorldPosition`，但通用 `path_corner` 会把瞬时 path speed 降到 `RunSpeed*0.55`（sheep 约 49.5），低于 walk/run 阈值（约 80），导致 HUD 目标速度和 activity 在跑/走之间波动。现 Base 新增 `BMBActivitySpeed`：`BMBDesiredSpeed` 继续表示 loco 当前命令速度，`BMBActivitySpeed` 表示行为/动画意图速度；activity 选择改用意图速度。Flee 传 `moveIntentSpeed=RunSpeed`，并用 `minPathSpeed` 把过弯临时降速夹到 run 阈值以上，既保留 corner 控制，又不让 panic/run 动画抖。新增 `scripts/check_flee_speed_stability.ps1`。
 - **第三十三轮（代码已切，待用户游戏回归）：受击红闪 / 伤害冷却 / 水平击退 + Flee 连击不重选方向**。MC 源码确认 `hurtTime = 10 ticks`；`invulnerableTime` 字段会设为 20，但 `LivingEntity` 只有 `invulnerableTime > 10` 时挡同等/更低伤害，所以 BMB 对应红闪 0.5s、有效伤害冷却 0.5s。`OnTakeDamage` 只有在非冷却窗口内才扣血、开启客户端红色调制、触发 flee 和击退；冷却内重复命中 `return 0`，不刷新 flee。击退是一等状态：sheep 调度顺序为 held → knockback → debug/stranded/flee，击退窗口内普通 path/steering 拒绝新移动，水平速度按来源方向重置并 capped，不和旧速度累加；`DMG_CRUSH` 物理砸击保留原 GMod/prop 伤害链路，不叠 BMB 击退。Flee 中受击会刷新恐慌窗口/威胁来源，但不再额外 `InterruptBMBMovement` 当前 flee 段，避免连续受击时反复重选目标方向导致原地犹豫。新增 `scripts/check_damage_iframes_knockback.ps1`。摔伤仍是待办，本轮不实现。
 - **第三十四轮（代码已切，待用户游戏回归）：修受击后 `vel:70/0` 和击退不生效**。用户实测红闪/无敌帧正常，但每次闪红都会让羊静止，HUD 显示当前速度/目标速度如 `70/0`，且看不到击退。根因不是红闪渲染越界：`StartBMBHurtFlash()` 只写红闪 NWFloat；真正把第二个数写 0 的是 `RunBMBKnockback()` 中的 `MaintainBMBMoveSpeed(0)`。这既把 HUD/行为意图速度变成 0，也可能让 `loco:SetVelocity` 的水平击退被 desired speed 0 吞掉。修法：击退状态不再发布 `BMBDesiredSpeed=0`，而是保存受击前的 `BMBKnockbackDesiredSpeed` / `BMBKnockbackActivitySpeed` 供 HUD/动画继续显示原意图；内部单独给 loco 一个 `BMBKnockbackLocoSpeed` 预算以允许水平 `SetVelocity` 生效，并在击退启动当帧立即写一次水平速度。新增检查确保红闪函数不碰 movement/loco，且 knockback runner 不再写 `MaintainBMBMoveSpeed(0)` / `SetDesiredSpeed(0)`。
-- **第三十五轮（代码已切，待用户游戏回归）：击退手感对齐 MC：0.5s 冷却、短窗口、竖直上抬、空中继续 flee**。用户复测确认 `vel` 不再变 0，但受击后仍有停顿；MC 26.1.2 实测/源码显示有效无敌约 0.5s，受击会有上抬离地，且空中仍尝试逃跑。修法：`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 从 0.35 缩到 0.12，只保留防 steering 吞冲量的短仲裁窗口；新增 `GetBMBKnockbackVerticalVelocity()`，地面受击用 `loco:Jump()` 开跳跃态后给约 `6*BS`、clamp 到 170~240u/s 的竖直速度，空中受击保留当前 z；Flee 在 knockback 结束后若仍在空中，传 `allowStrandedStart = airborneStart`，让 A* 从 unsupported/airborne 起点继续尝试逃跑，而不是原地等落地。
+- **第三十五轮（用户已验证）：击退手感对齐 MC：0.5s 冷却、短窗口、竖直上抬、空中继续 flee**。用户复测确认 `vel` 不再变 0，但受击后仍有停顿；MC 26.1.2 实测/源码显示有效无敌约 0.5s，受击会有上抬离地，且空中仍尝试逃跑。修法：`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 从 0.35 缩到 0.12，只保留防 steering 吞冲量的短仲裁窗口；新增 `GetBMBKnockbackVerticalVelocity()`，地面受击用 `loco:Jump()` 开跳跃态后给约 `6*BS`、clamp 到 170~240u/s 的竖直速度，空中受击保留当前 z；Flee 在 knockback 结束后若仍在空中，传 `allowStrandedStart = airborneStart`，让 A* 从 unsupported/airborne 起点继续尝试逃跑，而不是原地等落地。
+- **第三十六轮（代码已切，待用户游戏回归）：Zombie Phase 1 迁移到 BMB Base**。新增 `bmb_zombie.lua`，继承 `bmb_base_mob`，保留旧 `mcgm_zombie.lua` 为 legacy 样机；`sv_behaviors.lua` 新增可复用 `SeekTarget` / `Chase` / `MeleeAttack`，Zombie 状态机只负责参数、声音、目标状态和调度优先级。调度顺序与 Sheep 一致：held → knockback → debug → stranded → hostile AI；追击每约 0.35s 用 BMB 方块 A* 追玩家当前位置（`skipSourcePath=true`），近战用 `DamageInfo` + windup/cooldown。Spawn menu 新增 `BMB Prototype Zombie`。
+- **第三十七轮（代码已切，待用户游戏回归）：Zombie 首轮实测修正**。用户发现：远处能进 `chase` 但不明显追击；追击时 Zombie 脚不动；高低落差时卡在 `attack_ready` 往上看；攻击距离太贴脸；红闪有渐变而 MC 是命中后直接红。修法：`ChaseSegmentTimeout=1.0`，避免 0.35s 段太短还没推进就重置；`MeleeAttack.IsInRange` 增加独立 `AttackVerticalRange`，Zombie 攻击距离改 52u、垂直攻击范围 28u，高一整格时继续寻路而不是 `attack_ready`；Classic zombie `RunActivity=ACT_WALK`，追击用模型可靠走路序列；Base 红闪改为整个 `HurtFlashTime=0.5s` 内固定红，不再按剩余时间渐变。
+- **第三十八轮（代码已切，待用户游戏回归）：Zombie 攻击/追击连续性 + final hop 误完成**。用户继续实测：站高两格时 Zombie 会停；远处追击会走几步停一下；攻击速度偏慢且挥击时 HUD 速度变 0；复杂台阶显示 `path_hop` 但没触发跳跃，随后 `idle dist:0`。修法：近战不再设置 `BMBMeleeLockUntil`，也不再 `MaintainBMBMoveSpeed(0)`；Zombie `AttackCooldown=0.8`、`AttackHitDelay=0.28`、`AttackMoveSpeed=92`，攻击/attack_ready 期间继续朝目标前压；追击失败但目标仍有效时保持 target，进入 `chase_repath` 短暂停顿重算，不清空目标回 wander；Base 新增 `IsBMBVerticalPathNodeReached`，hop/drop final 和节点推进必须验证实际脚底高度，避免 2D 贴近但没跳上去就把 final hop 当成功。
+- **第三十九轮（代码已切，待用户游戏回归）：Zombie chase 停顿 + 贴脸 hop 兜底**。用户复测确认攻击速度/攻击时 HUD 速度已正常，但远处仍会走一会停一下；台阶前会在 `path_hop` / `chase_repath` 间切换，贴近一格台阶不跳；高两格贴脸仍不移动。修法：Zombie `ChaseSegmentTimeout` 1.0→2.0，`ChaseFailureRepathDelay=0.05`，`TurnInPlaceAngle=170`，减少重规划/转身造成的肉眼停顿；`chase_repath` 等待期间继续 `SteerTowards` 目标并 `BodyMoveXY`，不纯站住；Base hop launch 增加可选 `BlockHopAllowCloseLaunch`，Zombie 开启后在狭槽/贴脸无 backoff 空间时允许 `close_lift` 起跳，仍走两段式“先竖直抬升、再水平前压”的弹道，不回到旧贴脸硬冲。
+- **第四十轮（代码已切，待用户游戏回归）：Zombie MC-style 视线直追 + 高处不可达贴底等待**。用户继续反馈：远距离仍会走走停停，且平地追击不像原版 MC 那样盯着玩家直压；玩家站高处且没路时，Zombie 应在下面贴着/徘徊等待，而不是假装 `chase_repath` 往零向量移动。修法：共享 `Chase` 增加三层策略：① `chase_direct`，目标可见且前方短探测安全时，每 tick 直接 `FaceTarget + SteerTowards(player)`，开阔地不走 A* carrot；② 视线断开、前方墙/悬崖、迷宫/绕路时回落到原 BMB 方块 A*，保留 hop/drop/partial path 能力；③ A* 失败且目标在近处高处时进入 `chase_stalk`，保持 target、面向玩家、短周期重查，不再清目标 idle，也不再对零水平向量 `SteerTowards`。Zombie 开启 `ChasePreferDirect`，并用 `ChaseDirectProbeCells=4` 保留前方墙/悬崖安全检查。
 - 本轮修掉的对接隐藏 bug（接 real 之前就存在）：
   1. **mock 占死 `BMB.BlockWorld` 名字、无切换机制** → mock 改名 `BMB.MockBlockWorld`；新增 `BMB.SelectBlockWorld()` + convar `bmb_use_real_world`（默认 1，MCSWEP 不在场回退 mock）+ 控制台 `bmb_world mock|real`。MCSWEP 比 BMB 后加载（addons 字母序），所以 `BaseInitialize` 生成 mob 时会再选一次（幂等）。
   2. **类型枚举对不上**：real `GetBlockAt` 原来返回数字 id，行为层比较的是 `BMB.BlockTypes.Grass` 字符串，永远不相等 → adapter 现在做 id↔枚举双向映射（`blockTypeToId`/`idToBlockType`），未建模的 id 原样透传。
@@ -56,7 +61,7 @@
 2. **同步整个 `gmod_addon/` 到 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon\`**（用户在游戏里直接测）。
 3. **更新本文件 + `.planning/mcgm-main/` 四个文件**（task_plan / progress / findings / status_summary，codex 接手要看）。
 
-## 复测清单（当前：第三十五轮 MC 击退手感）
+## 复测清单（当前：第四十轮 Zombie direct chase / high-target stalk）
 
 1. **上一轮已通过**：一格 hop 稳定，未再发现误上两格；debug 远点未再早停；跳后动作能复位。
 2. **36.5 必测**：`lua_run print(MC and MC.BS, BMB and BMB.BS)` 应输出 36.5/36.5；一格 hop apex 约 `1.4~1.5*BS` 且稳定上台；两格必须上不去；半砖/楼梯应靠 StepHeight=28 走上去而不是 hop；36.5 宽走廊 hull 32 双向通行；drop 主动下 3 格（109.5u），4 格拒绝且不卡顿；吃草链路正常；`WorldToBlock/BlockToWorld` 新尺寸下往返一致；`bmb_world mock` 与 real 行为尺度一致。
@@ -65,7 +70,11 @@
 5. **第三十轮已验证**：debug 右键目标若被一格空洞/死路隔开，已确认不再假死 ✅；这一修复必须保留。
 6. **第三十一轮回滚必测**：物理枪应恢复可抓取；子弹/枪击应恢复掉血和受击反应；prop 物理伤害链路不受碰撞试验影响；玩家能踩/挤到 mob 按 GMod 手感接受；debug gap 不回归。
 7. **第三十二轮必测**：受击进入 Flee 后 HUD `vel:实际/目标` 的目标速度不应在 run/walk 阈值上下大幅跳变；过弯 `path_corner` 可以略降速但不应降到走路动作；ACT_RUN 应在整个 panic 段保持稳定，直到 Flee 结束回 idle/wander。确认围住放弃、撞墙/悬崖保护、hop/drop、debug gap 不回归。
-8. **第三十五轮必测**：非冷却窗口枪击/近战命中应扣血、红闪约 0.5s，并在约 0.5s 内忽略同等重复伤害；HUD 不应再出现受击后目标速度永久 `0`。普通攻击应能看见水平击退 + 一点离地上抬，第一下生成后也要有击退；击退后不应原地等很久，空中/落地都应继续进入 flee。爆炸应从爆心径向散开；冷却窗口内连击不应继续扣血、击退或刷新 flee 方向。prop `DMG_CRUSH` 仍按原物理伤害链路，不额外 BMB 击退。被击退落到非法格后应能进入 StrandedRecovery。
+8. **第三十五轮已通过**：非冷却窗口枪击/近战命中扣血、红闪约 0.5s、冷却约 0.5s、水平击退 + 轻微上抬、击退后继续行为；HUD 不再出现目标速度永久 `0`。
+9. **第三十七轮 Zombie 必测**：远距离识别到玩家后应持续推进追击，不应只显示 `chase` 但原地看；追击时 Classic zombie 腿部应播放走路序列；玩家在高一格平台上时，Zombie 不应因水平距离近进入 `attack_ready` 卡住，应继续找路/hop 到可达位置；同层攻击距离应比 38u 旧值宽松一些，约 52u 内能进入 windup，0.38s 后造成 10 HP；红闪应命中后立刻固定红约 0.5s，然后直接恢复，不再浅到深/深到浅渐变。
+10. **第三十八轮 Zombie 必测**：攻击 windup/cooldown 期间 HUD 目标速度不应变 0，Zombie 应继续贴近目标；攻击频率应比 1.05s 原型快（当前 cooldown 0.8s、hit delay 0.28s）；玩家站高两格或当前无完整路径时，Zombie 可以到最近可达处/短暂 `chase_repath`，但不应清空目标长时间 idle/wander；复杂台阶 `path_hop` 必须真正触发跳跃或重试/失败，不应只显示 `path_hop` 后直接 `idle dist:0`。
+11. **第三十九轮 Zombie 必测**：远距离追击应少出现“走几步停一下”，HUD 可短暂 `path_carrot`/`chase_repath` 但实体应继续给速度/朝目标推进；贴脸一格台阶/狭槽里 `path_hop` 应触发 `close_lift` 起跳或进入正常 retry/fail，不应长期 path_hop/chase_repath 来回切；高两格贴脸若确实没有路径可以停在最近可达处，但不应清空目标进入长 idle。
+12. **第四十轮 Zombie 必测**：开阔地/看得到玩家时 HUD 应主要显示 `chase_direct`，Zombie 身体持续面向并直压玩家，不再平地到处拐弯；中间有墙、拐弯、迷宫或安全探测发现悬崖时应切回 BMB A*（`path_carrot/path_hop/path_drop`）绕路；玩家站高处且近距离不可达时应显示 `chase_stalk`，保持盯人/短周期重查，不清目标、不长时间 idle，也不再 `chase_repath` 零向量假动。
 9. **回归仍需留意**：物理枪、子弹伤害、prop 伤害、绕路、窄沿、不卡顿、不跳楼、地图墙/拐弯、Flee 围住放弃、套皮后 activity。
 
 ## 未解 bug / 风险
@@ -76,6 +85,11 @@
 - **第二十九轮剩余风险**：carrot 沿线 standable 检查每 tick 多做若干支撑查询，已在单次检查内共享 cache；若复杂路径性能变差，再考虑把 standable line check 降采样或缓存到当前 segment。
 - **第三十一轮结论**：MC 式实体穿插/软推挤暂不做。`COLLISION_GROUP_PLAYER`、`ShouldCollide=false`、软分离都会威胁物理枪、子弹命中、prop 伤害等 GMod 基础交互；当前选择接受 GMod 手感，后续不要沿这条线继续调，除非先设计出不会影响 trace/physgun/damage 的分层方案。
 - **第三十五轮剩余风险**：红闪用客户端 `render.SetColorModulation` 做整模型 tint，后续换 MC 模型/材质后要确认不会和皮肤材质冲突。竖直击退现在用 `loco:Jump()` + 直接 z 速度；若第一下仍偶尔不上抬，下一轮打受击 tick 日志（onGround、IsClimbingOrJumping、vel.z）确认是否被地面解算吞。摔伤尚未实现，后续应作为独立伤害来源，不触发击退。
+- **第三十六轮剩余风险**：外部 `specV3_zombie_phase1.md` 因 H 盘读取审批工具故障未能直接读取，本轮按仓库现有 Phase 3/CLAUDE 架构约定实现最小纵向切片。Zombie 目标目前只锁玩家；日光燃烧、开门/破门、装备、村民/其它目标、声音频率细化和 MC 模型动画都未做。追击用短时间片 A* 重规划，移动玩家时观感需要实测再调。
+- **第三十七轮剩余风险**：`RunActivity=ACT_WALK` 是针对当前 Classic zombie 占位模型的兼容映射；后续换 MC 模型后应改回模型自己的 run/walk 动作表。`AttackVerticalRange=28` 会阻止高一整格贴边攻击，符合本轮寻路需求，但如果后续想还原 MC 某些边缘能打到的 case，需要结合模型/碰撞盒再调。
+- **第三十八轮剩余风险**：攻击期间用 `SteerTowards` 直接保持前压，只在近战范围内运行，未接完整 path safety；若贴玩家/平台边缘出现推挤或越边，需要把 attack pressure 收敛为更短距离的 path/direct helper。final hop 的脚底高度阈值当前是 8u，若真实 MCSWEP cell center/碰撞高度偏移导致成功 hop 不推进，再按 HUD 的 cell/z 数据调 `VerticalPathReachZTolerance`。
+- **第三十九轮剩余风险**：`BlockHopAllowCloseLaunch` 只给 Zombie 开，用于狭槽里无法后退助跑的攻击性追击；如果出现贴墙弹跳/穿模，下一轮要在 close_lift 上加更严格的 Source hull clearance 或失败方向记忆。高处目标 XY 几乎重合时，`SteerTowards(target)` 的水平向量接近 0，若仍不动，需要给 chase_repath 加“高处贴脸目标的邻近 offset 点”而不是直接瞄玩家脚下。
+- **第四十轮剩余风险**：`chase_direct` 依赖 `Visible(target)` + `IsMovementTargetSafe` 短探测；如果玩家隔着低矮障碍仍被判可见，Zombie 会先直压到障碍前再切 A*，这是预期的“看见就压迫，挡住再绕路”。`chase_stalk` 当前只保持贴底等待/盯人，不做环绕徘徊；如果后续想更像 MC 的小范围挤压，可以在 stalk 内加安全的近距离 offset，但不要重新清 target 或用零向量追击。
 - **第二十三轮剩余风险**：用户当前未发现 bug，但 StepHeight 临时切换、状态驱动 activity、debug 长路径 timeout 仍需要后续场景持续回归，尤其是套皮后动作映射。
 - **hop 候选分诊**：若失败处 HUD 根本不进 `path_hop`，不要按弹道修；要开 A* hop 候选日志看是上方净空/支撑正确拒绝，还是邻接标记漏判。
 - **PhysgunPickup 钩子语义**：它在"尝试抓取"时触发，若有第三方 addon 拒绝了这次拾取，BMBHeld 可能误置（下次松手钩子不来）；目前单机沙盒无此问题，联机装权限 addon 时留意。
@@ -92,7 +106,8 @@
 
 ## 下一步
 
-1. 等朋友提供 shape/floor height 接口后，做半砖/楼梯/MC 台阶表面高度寻路。
-2. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
-3. 吃草原版粒子/动画/音效。
-4. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。
+1. 复测 `BMB Prototype Zombie`：`chase_direct` 开阔地直追、A* 绕路、`chase_stalk` 高处等待、近战、BaseMob 受击/held/debug/stranded 优先级。
+2. 等朋友提供 shape/floor height 接口后，做半砖/楼梯/MC 台阶表面高度寻路。
+3. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
+4. 吃草原版粒子/动画/音效。
+5. 怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。

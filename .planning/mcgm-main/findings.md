@@ -455,3 +455,42 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **地面击退需要一点 z 速度**：MC `knockback` grounded 分支会给 `min(0.4, y/2 + power)` 的竖直速度；BMB 不能只水平推，否则看起来像被平移。第三十五轮用 `loco:Jump()` 先打开跳跃态，再给 170~240u/s 的竖直速度；空中受击保留当前 z，不二次弹高。
 - **第一下没击退常见原因是行为协程还没接上**：刚生成/initial idle 时，伤害事件可能早于下一轮行为调度。击退必须在 `StartBMBKnockback` 伤害 tick 当场写入 velocity，不能等 `RunBMBKnockback` 下一轮才开始。
 - **空中 flee 需要放宽起点合法性**：被击飞后脚下 cell 不是 standable，普通 A* 从严格合法起点出发会失败或等落地。Flee 在 airborne start 时传 `allowStrandedStart`，只放宽起点，不放宽目标/路径节点合法性，保持“空中也在尝试跑”的观感。
+
+## 2026-06-13: Zombie Phase 1 hostile slice
+
+- **第二只怪要验证 Base，而不是复制一份 Base**：Zombie 的价值在于覆盖索敌、追击、近战、声音、受击和移动优先级。如果加 Zombie 需要改出一套平行移动/攻击架构，说明 Base 抽象失败。本轮把敌对差异压到薄状态机和参数里。
+- **旧 `mcgm_zombie.lua` 是 legacy 对照，不是迁移模板**：它依赖 Source navmesh / `Path("Follow")` / 自己的避障和手动角度控制，和 BMB 方块 A*、hop/drop、held、knockback、stranded 管线不是同一套世界模型。新 `bmb_zombie.lua` 必须继承 `bmb_base_mob`。
+- **Hostile 行为拆三层**：`SeekTarget` 只决定目标；`Chase` 只做短时间片 BMB A* 追目标当前位置；`MeleeAttack` 只处理 range、windup、cooldown、DamageInfo。这样以后 Skeleton 复用 target/chase，Creeper 复用 target/chase 但换 attack，Avoid/Neutral 也能组合。
+- **追移动目标要短时间片重规划**：`MoveToWorldPosition` 是阻塞式路径执行，如果一次性追玩家旧位置，玩家移动后会拖到旧终点才重算。Chase 用约 0.35s timeout + `acceptPartial=true`，每段消费已有 BMB path，一小段后自然重查目标位置。
+- **攻击停顿是 attack lock，不是全局硬直**：MeleeAttack 用 `BMBMeleeLockUntil` 让挥击 windup 时短暂停步/面向目标，但不改 Base 的 knockback/held/debug 优先级。受击、物理枪、debug 仍能打断或优先接管。
+- **第一版目标只锁玩家**：这是最小可测切片。后续村民、铁傀儡、其它 mob、仇恨/中立规则应扩 `CanBMBTarget` 或 target module 配置，不要把特殊 case 写死进 `SeekTarget`。
+- **外部 spec 未读风险**：`specV3_zombie_phase1.md` 在 H 盘，读取被审批工具故障挡住。本轮实现的是 repo 内 Phase 3 约定的最小纵向切片；若 spec 有额外硬要求，下一轮按差异补。
+
+## 2026-06-13: Zombie first retest fixes
+
+- **`attack_ready + vel 0/0 + 高低差` 不是寻路没路，是攻击准备抢跑**：旧 `Chase.Run` 只看水平距离，玩家在一格高平台边缘时水平很近，于是 Zombie 进入 `attack_ready` 停住，而没有机会继续 A* / hop。近战 range 必须拆成 horizontal range 与 vertical range。
+- **攻击距离加长不能顺手加高差攻击**：把 `AttackRange` 从 38 提到 52 会让同层不再贴脸才挨打；但如果 vertical 也跟着 range 变大，就会继续从台阶下打空气。Zombie 现在单独设 `AttackVerticalRange=28`，小于一个完整 36.5u 方块。
+- **追移动目标的时间片不能太短**：0.35s 同时承担“重规划频率”和“本段移动 timeout”时，远距离目标容易刚算完路/刚起步就返回。拆出 `ChaseSegmentTimeout=1.0`，重规划仍频繁，但给移动段足够推进时间。
+- **占位模型 activity 要按模型能力映射**：Classic zombie 模型在部分环境下 `ACT_RUN` 腿部不动，`ACT_WALK` 稳定。Base 需要 per-mob `WalkActivity/RunActivity/JumpActivity` 映射，后续换 MC 模型只改映射表。
+- **MC 红闪不是曲线**：BMB 之前用 remaining time 做颜色强度，表现成渐变。用户对照 MC 后要求命中后立刻红，持续 hurt/invulnerability window 后恢复。Base 改为固定红 0.5s，脚本禁止再把 Draw 写成 fade curve。
+
+## 2026-06-13: Zombie attack pressure and final-hop completion
+
+- **近战 windup 不是硬直**：第一版为了看清攻击，把 `BMBMeleeLockUntil` 和 `MaintainBMBMoveSpeed(0)` 塞进 MeleeAttack/Zombie。实测表现为 HUD 速度 0、攻击时停住，和 MC Zombie 边挥手边贴近不一致。正确做法是只启动 gesture/timer/cooldown，移动通道继续由 Chase/attack_ready 前压。
+- **攻击期间的速度语义也不能写 0**：这和前面击退 `70/0` 是同类坑。`BMBDesiredSpeed=0` 会污染 HUD、动画和后续追击。Zombie 现在用 `AttackMoveSpeed=92`，attack_ready 继续 `SteerTowards(target)`。
+- **追击失败不能立即丢目标**：高两格或暂时不可达时，`Chase.Run` 失败不代表目标消失。旧状态机会 `TargetEntity=nil` + 等待，造成“走几步停一下/回 idle”。现在目标仍有效就保留，短暂 `chase_repath` 后重算。
+- **final hop 不能只靠 2D 到达**：复杂台阶截图显示 `path_hop dist≈5.6` 后直接 `idle dist:0`，说明最终节点被 2D/格语义提前消费。新增 `IsBMBVerticalPathNodeReached`，要求 onGround、目标 cell level、实际脚底高度达到目标脚底高度附近，才推进 hop/drop 或判 final reached。
+
+## 2026-06-13: Zombie chase smoothing and close-lift hop
+
+- **chase 的时间片也会变成肉眼节奏**：1s 一段的 `MoveToWorldPosition` 在远距离追击中仍会看到“走一会停一下”，尤其每段重新算路/转向时。Zombie 追击段拉到 2s，失败重算 delay 降到 0.05s，减少分段感。
+- **羊的 TurnInPlace 规则对敌对追击偏保守**：Base 为了羊不倒着走，yaw 差大时会原地转。Zombie 追击时 path carrot/目标移动导致角度变化更频繁，原地转会像停顿。Zombie 单独把 `TurnInPlaceAngle` 放宽到 170。
+- **贴脸 hop 需要和羊区分**：羊之前 face-distance gate 是为了避免无助跑贴墙反复失败；Zombie 在狭槽/台阶下追击玩家时，backoff 点常不可用，导致 `path_hop` 与 `chase_repath` 来回切。给 Zombie 开 `BlockHopAllowCloseLaunch`，只在 lateral 对齐且距离不远时允许 `close_lift`，仍走两段式先竖直抬升再水平前压。
+- **高处贴脸仍可能需要 target offset**：如果玩家在 Zombie 正上方，水平向量接近 0，`SteerTowards(target)` 没有方向。若第三十九轮后仍看到高两格贴脸不动，下一步不是再调 hop，而是给 chase_repath/target selection 增加“不可达高处目标的邻近可走 offset 点”。
+
+## 2026-06-13: Zombie MC-style direct chase
+
+- **开阔地追击不应该全程依赖 path carrot**：A* 擅长迷宫和方块高低差，但在玩家可见的平地上，持续追“当前玩家位置”的直线 steering 更像 MC，也避免每段路径重算带来的停顿/拐弯感。结论：敌对 Chase 应先判断能否直追，不能直追再交给 BMB A*。
+- **直追不是绕过安全层**：`chase_direct` 必须同时满足 line of sight 和短距离 `IsMovementTargetSafe`，否则会把“看得到玩家”误写成“可以冲下悬崖/撞墙”。安全探测失败、视线断开、迷宫转弯时，立即回到 `MoveToWorldPosition`。
+- **旧 `mcgm_zombie` 的手感可参考，架构不能复用**：它直盯玩家的追击观感是对的，但 `Path("Follow")` / navmesh / 旧避障不适合动态方块世界。BMB 的版本只借“视线段直压”这个策略，不借实现。
+- **高处不可达目标要保持仇恨，不要伪移动**：玩家在正上方时水平向量接近 0，`SteerTowards(target)` 没有实际方向；反复 `chase_repath` 会在 HUD 上像追击，实际不动。A* 失败且目标近处高于攻击范围时用 `chase_stalk`：保留 target、面向玩家、短周期重查，表现为贴底等待。

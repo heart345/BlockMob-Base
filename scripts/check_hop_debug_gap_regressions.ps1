@@ -34,6 +34,12 @@ Assert-Contains $base "BlockHopLaunchMinFaceDistanceScale" "BlockHop should gate
 Assert-Contains $base "BlockHopLaunchIdealFaceDistanceScale" "BlockHop backoff should target a face-distance launch point"
 Assert-Contains $base "faceDistance\s*>=\s*minFaceDistance" "hop ready condition must reject face-close launches"
 Assert-Contains $base "reason\s*=\s*""face_close""" "HUD/debug should distinguish face-close hop setup from generic close distance"
+Assert-Contains $base "BlockHopAllowCloseLaunch" "some hostile mobs need a close-lift hop fallback when cramped geometry makes backoff impossible"
+Assert-Contains $base "reason\s*=\s*""close_lift""" "close-lift launches should be diagnosable in hop logs/HUD"
+Assert-Contains $base "function\s+ENT:IsBMBVerticalPathNodeReached" "vertical path nodes need a shared reached predicate"
+Assert-Contains $base "targetFootZ" "vertical hop/drop completion must compare actual foot height, not only 2D distance"
+Assert-Contains $base "IsBMBVerticalPathNodeReached\(final\)" "final hop/drop nodes must not be accepted before the vertical move actually lands"
+Assert-Contains $base "IsBMBVerticalPathNodeReached\(node\)" "hop/drop node advancement must wait for the entity to reach the target level"
 
 Assert-Contains $base "DebugPathCommandTimeout" "debug target movement needs a long command lifetime for maze/hop paths"
 Assert-Contains $tool "DebugPathCommandTimeout" "tool right-click target moves must use the debug path command timeout"

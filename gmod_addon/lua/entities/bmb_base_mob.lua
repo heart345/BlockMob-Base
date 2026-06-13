@@ -118,6 +118,7 @@ ENT.PhysicsImpactMaxDamage = 80
 ENT.PhysicsPropImpactDamping = 0.45
 ENT.PhysicsPropKillDamping = 0.68
 ENT.HurtFlashTime = 0.5
+ENT.HurtFlashRedAmount = 0.65
 ENT.DamageInvulnerabilityTime = 0.5
 ENT.KnockbackDuration = 0.12
 ENT.KnockbackMinSpeed = 150
@@ -126,6 +127,10 @@ ENT.KnockbackMaxSpeed = 320
 ENT.KnockbackVerticalSpeedScale = 6
 ENT.KnockbackVerticalMinSpeed = 170
 ENT.KnockbackVerticalMaxSpeed = 240
+ENT.IdleActivity = ACT_IDLE
+ENT.WalkActivity = ACT_WALK
+ENT.RunActivity = ACT_RUN
+ENT.JumpActivity = ACT_JUMP
 
 local function flatDistance(a, b)
     local dx = a.x - b.x
@@ -171,9 +176,7 @@ if CLIENT then
         local flashUntil = self:GetNWFloat("BMBHurtFlashUntil", 0)
 
         if flashUntil > CurTime() then
-            local duration = math.max(0.01, self:GetNWFloat("BMBHurtFlashDuration", 0.5))
-            local amount = math.Clamp((flashUntil - CurTime()) / duration, 0, 1)
-            local gb = 1 - amount * 0.65
+            local gb = 1 - (self.HurtFlashRedAmount or 0.65)
 
             render.SetColorModulation(1, gb, gb)
             self:DrawModel()
@@ -272,14 +275,34 @@ function ENT:StartBMBActivity(activity)
     self.CurrentMoveActivity = activity
 end
 
+function ENT:GetBMBIdleActivity()
+    return self.IdleActivity or ACT_IDLE
+end
+
+function ENT:GetBMBWalkActivity()
+    return self.WalkActivity or ACT_WALK
+end
+
+function ENT:GetBMBRunActivity()
+    return self.RunActivity or ACT_RUN
+end
+
+function ENT:GetBMBJumpActivity()
+    return self.JumpActivity or ACT_JUMP
+end
+
 function ENT:GetBMBRunActivityThreshold()
     return (self.WalkSpeed + self.RunSpeed) * 0.5
+end
+
+function ENT:GetBMBMoveActivityForSpeed(speed)
+    return speed >= self:GetBMBRunActivityThreshold() and self:GetBMBRunActivity() or self:GetBMBWalkActivity()
 end
 
 function ENT:UpdateMoveActivity(speed, activitySpeed)
     local commandSpeed = speed or self.WalkSpeed
     local intentSpeed = activitySpeed or commandSpeed
-    local activity = intentSpeed >= self:GetBMBRunActivityThreshold() and ACT_RUN or ACT_WALK
+    local activity = self:GetBMBMoveActivityForSpeed(intentSpeed)
 
     self:StartBMBActivity(activity)
     self:SetNWFloat("BMBDesiredSpeed", commandSpeed)
@@ -423,7 +446,7 @@ function ENT:MarkBMBPathAdvanced(nodeIndex)
 end
 
 function ENT:StartBMBIdleActivity()
-    self:StartBMBActivity(ACT_IDLE)
+    self:StartBMBActivity(self:GetBMBIdleActivity())
 end
 
 function ENT:UpdateBMBActivityFromLocomotion()
@@ -441,7 +464,7 @@ function ENT:UpdateBMBActivityFromLocomotion()
     local onGround = self:IsBMBOnGround()
 
     if jumping or not onGround then
-        self:StartBMBActivity(ACT_JUMP)
+        self:StartBMBActivity(self:GetBMBJumpActivity())
         return
     end
 
@@ -460,7 +483,7 @@ function ENT:UpdateBMBActivityFromLocomotion()
         return
     end
 
-    local activity = math.max(activitySpeed, speed2D) >= self:GetBMBRunActivityThreshold() and ACT_RUN or ACT_WALK
+    local activity = self:GetBMBMoveActivityForSpeed(math.max(activitySpeed, speed2D))
 
     self:StartBMBActivity(activity)
 end
@@ -1763,11 +1786,23 @@ function ENT:IsBMBPathActionAtTargetLevel(node)
     return (currentCell.z or 0) == (node.coord.z or 0)
 end
 
+function ENT:IsBMBVerticalPathNodeReached(node)
+    if not node then return false end
+    if not self:IsBMBOnGround() then return false end
+    if not self:IsBMBPathActionAtTargetLevel(node) then return false end
+    if not node.z then return true end
+
+    local targetFootZ = node.z - self:GetBMBBlockSize() * 0.5 + (self.BlockHopLandingLift or 2)
+    local tolerance = self.VerticalPathReachZTolerance or 8
+
+    return self:GetPos().z >= targetFootZ - tolerance
+end
+
 function ENT:ShouldAdvanceBMBPathNode(node, action, nodeDistance, nodeTolerance)
     if nodeDistance > nodeTolerance then return false end
     if not self:IsBMBPathVerticalAction(action) then return true end
 
-    return self:IsBMBOnGround() and self:IsBMBPathActionAtTargetLevel(node)
+    return self:IsBMBVerticalPathNodeReached(node)
 end
 
 function ENT:IsBMBPathFinalReached(final, tolerance)
@@ -1775,8 +1810,8 @@ function ENT:IsBMBPathFinalReached(final, tolerance)
     if flatDistance(self:GetPos(), final) > tolerance then return false end
     if not final.coord then return true end
 
-    if self:IsBMBPathVerticalAction(final.action) and not self:IsBMBOnGround() then
-        return false
+    if self:IsBMBPathVerticalAction(final.action) then
+        return self:IsBMBVerticalPathNodeReached(final)
     end
 
     return self:IsBMBPathActionAtTargetLevel(final)
@@ -1850,6 +1885,7 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     local backoff = Vector(target.x - forward.x * idealDistance, target.y - forward.y * idealDistance, current.z)
     local approach = Vector(target.x, target.y, current.z)
     local needsSpeed = self.BlockHopRequireLaunchSpeed == true
+    local allowCloseLaunch = self.BlockHopAllowCloseLaunch == true
     local ready = distance >= minDistance and distance <= maxDistance
         and faceDistance >= minFaceDistance
         and lateralOffset <= lateralTolerance
@@ -1857,7 +1893,13 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     local steerTarget = approach
     local reason = "approach"
 
-    if lateralOffset > lateralTolerance then
+    if allowCloseLaunch and distance <= maxDistance
+        and faceDistance < minFaceDistance
+        and lateralOffset <= lateralTolerance
+        and (not needsSpeed or speedAlong >= minSpeed) then
+        ready = true
+        reason = "close_lift"
+    elseif lateralOffset > lateralTolerance then
         steerTarget = backoff
         reason = "align"
     elseif faceDistance < minFaceDistance then

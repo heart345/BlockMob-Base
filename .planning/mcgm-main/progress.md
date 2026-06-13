@@ -1045,3 +1045,131 @@
   - Stranded recovery script.
   - Block-size parameterization script.
   - glualint on changed Lua files.
+
+## 2026-06-13 Zombie phase 1 - BMB Base migration slice
+
+- User confirmed round 35 sheep/base damage feedback has no visible bugs, then started the next stage: new mob / Zombie.
+- External `H:\工作视频\20251115毕业\specV3_zombie_phase1.md` could not be read because the approval service rejected the H drive read with an auto-review error. Proceeded from repo docs/CLAUDE Phase 3 direction and kept the slice intentionally small.
+- Goal:
+  - Validate BaseMob with a hostile mob.
+  - Do not reuse the old `mcgm_zombie.lua` navmesh prototype except as rough parameter history.
+  - Add reusable hostile modules instead of putting chase/attack logic inside one zombie file.
+- Added `scripts/check_zombie_phase1.ps1`.
+  - Requires new `bmb_zombie.lua` to inherit `bmb_base_mob`.
+  - Requires shared `SeekTarget`, `Chase`, and `MeleeAttack` behaviors.
+  - Forbids `Path("Follow")`, `navmesh`, and `SetAngles` in the new zombie.
+  - Checks spawn menu registration and docs/planning entries.
+- `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - Added `BMB.Behaviors.SeekTarget`.
+    - Keeps current valid target within lose range.
+    - Scans alive players on a configurable interval.
+    - Lets mobs override target filtering through `CanBMBTarget`.
+  - Added `BMB.Behaviors.Chase`.
+    - Runs short BMB A* chase segments toward the target's current position.
+    - Uses `skipSourcePath=true`, `allowPartial=true`, `acceptPartial=true`, `moveIntentSpeed=RunSpeed`, and run-threshold `minPathSpeed`.
+    - Replans naturally every chase segment instead of using the old Source `Path("Follow")`.
+  - Added `BMB.Behaviors.MeleeAttack`.
+    - Handles range, cooldown, windup/hit delay, attack lock, gesture, `DamageInfo`, and target knockback.
+    - Damage attribution uses the mob as attacker/inflictor.
+- `gmod_addon/lua/entities/bmb_zombie.lua`
+  - New spawnable `BMB Prototype Zombie`.
+  - Inherits `bmb_base_mob`.
+  - Parameters first-pass migrated from legacy feel: 20 HP, speed 92/115, target 900/1150, attack range 38, 10 damage, 1.05s cooldown, 0.38s hit delay.
+  - MC-sized-ish hull for zombie: width 22u, height 72u.
+  - Scheduler priority mirrors sheep/base: held -> knockback -> debug -> stranded -> hostile AI.
+  - Targets players only for phase 1.
+  - On damage, retaliates by setting attacker as target and uses BaseMob hurt flash/iframes/knockback.
+- `gmod_addon/lua/autorun/mcgm_autorun.lua`
+  - Registered `BMB Prototype Sheep` and `BMB Prototype Zombie` under `BlockMob Base`.
+  - Kept old `MCGM Prototype Zombie` registration for legacy comparison.
+- Docs updated:
+  - `docs/STATE.md`
+  - `CLAUDE.md`
+  - `.planning/mcgm-main/task_plan.md`
+  - `.planning/mcgm-main/progress.md`
+  - `.planning/mcgm-main/findings.md`
+  - `.planning/mcgm-main/status_summary_2026-06-10.md`
+- Verification planned:
+  - New zombie phase script.
+  - Existing movement/damage regression scripts.
+  - glualint on changed Lua files.
+  - Sync addon to GMod for user retest.
+
+## 2026-06-13 Zombie phase 1 first retest fixes
+
+- User retest found:
+  - Zombie can enter `chase` at range but does not obviously move toward the player.
+  - While moving, Classic zombie legs do not animate.
+  - With vertical height difference, Zombie stands below the player in `attack_ready` / `vel:0/0` and looks upward instead of finding a route.
+  - Hurt flash appears to have a fade curve, but MC hurt flash should be instant red for the whole short window.
+  - Attack range feels too short /贴脸.
+- Root cause / fix:
+  - `Chase.Run` used horizontal range only for `attack_ready`; added vertical melee range semantics in `MeleeAttack.IsInRange`.
+  - Zombie now uses `AttackRange = 52` and `AttackVerticalRange = 28`; one full block above should keep chasing instead of attack-ready idling.
+  - `ChaseSegmentTimeout = 1.0` separates movement segment budget from target scan/repath cadence.
+  - BaseMob activity selection now supports `IdleActivity`, `WalkActivity`, `RunActivity`, and `JumpActivity`; Zombie maps `RunActivity = ACT_WALK` because the current Classic zombie placeholder can freeze its legs on `ACT_RUN`.
+  - Base hurt flash draw changed from remaining-time fade to constant red while `BMBHurtFlashUntil > CurTime()`.
+- Regression checks:
+  - Extended `scripts/check_zombie_phase1.ps1`.
+  - Extended `scripts/check_damage_iframes_knockback.ps1`.
+  - glualint on changed Lua files.
+
+## 2026-06-13 Zombie phase 1 second retest fixes
+
+- User retest found:
+  - Standing two blocks above makes Zombie stop.
+  - At distance it can move, but walks a few steps and pauses.
+  - Attack speed should be faster.
+  - During attack, HUD target speed becomes 0, unlike MC.
+  - Complex stair block shows `path_hop`, but jump does not actually trigger; state soon returns to `idle`.
+- Fix:
+  - Removed melee hard lock (`BMBMeleeLockUntil`) from shared hostile attack flow.
+  - Removed `MaintainBMBMoveSpeed(0)` from attack/attack_ready.
+  - Added/used `AttackMoveSpeed=92` so Zombie keeps pressure while swinging.
+  - Tuned Zombie attack: cooldown 1.05 -> 0.8, hit delay 0.38 -> 0.28.
+  - When chase fails but the target remains valid, Zombie keeps `TargetEntity`, publishes `chase_repath`, and retries shortly instead of clearing target and idling.
+  - Added `IsBMBVerticalPathNodeReached` in BaseMob; hop/drop node advance and final reached now require actual target foot height, not only 2D distance/cell.
+- Tests:
+  - Extended `scripts/check_zombie_phase1.ps1`.
+  - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
+  - glualint on changed Lua files.
+
+## 2026-06-13 Zombie phase 1 direct chase / high-target stalk
+
+- User retest found:
+  - Far chase still visibly walks and pauses.
+  - On open ground the Zombie does not feel like MC, which stares at the player and presses directly when it has line of sight.
+  - The old `mcgm_zombie` direct pursuit felt more target-focused, but its navmesh/old obstacle avoidance is not suitable for BMB.
+  - When the player stands high and no route is available, MC-like behavior is to stay below/near the block and wait or pace locally, not clear the target.
+- Implemented:
+  - Shared `Chase` now has `CanDirect` / `RunDirect` / `StalkHighTarget`.
+  - Direct chase requires line of sight by default and still checks `IsMovementTargetSafe` with a short forward probe before bypassing A*.
+  - Open visible pursuit publishes `mode=chase_direct` and runs `FaceTarget + SteerTowards(player)` every tick for short refreshed segments.
+  - If direct pursuit is blocked or visibility is lost, chase falls back to the existing BMB block A* pathing, preserving maze/hop/drop behavior.
+  - If A* fails and the target is near but vertically above attack range, chase publishes `mode=chase_stalk`, keeps the target, faces the player, and repolls shortly instead of steering into a zero horizontal vector.
+  - Zombie enables `ChasePreferDirect`, sets a 0.28s direct segment, a 4-cell safety probe, and high-target stalk timing/hold cells.
+- Checks updated:
+  - `scripts/check_zombie_phase1.ps1` now requires `chase_direct`, `chase_stalk`, line-of-sight gating, and direct safety probing.
+- Next game retest:
+  1. Open-ground visible player: HUD should show `chase_direct` often and movement should be continuous/direct.
+  2. Maze/wall/corner: should fall back to BMB A* and still route around obstacles.
+  3. High unreachable close player: should show `chase_stalk`, keep the target, and wait below instead of idle/wander.
+
+## 2026-06-13 Zombie phase 1 third retest fixes
+
+- User retest found:
+  - Attack speed and non-zero attack target speed are now OK.
+  - Far chase still visibly pauses after walking for a bit.
+  - At close ledges/stairs, Zombie alternates between `path_hop` and `chase_repath` instead of jumping.
+  - Two-block high target in face still does not move meaningfully.
+- Fix:
+  - Zombie chase segment timeout increased to 2.0s.
+  - Zombie chase failure replan delay reduced to 0.05s.
+  - Zombie `TurnInPlaceAngle` widened to 170 to avoid ordinary chase heading changes becoming full stop-and-turn.
+  - `chase_repath` now continues `SteerTowards(target)` + `BodyMoveXY` during the short replan wait.
+  - Base hop launch supports optional `BlockHopAllowCloseLaunch`; Zombie enables it for cramped close ledges.
+  - Close launches are labeled `close_lift` and still use the existing two-stage manual hop.
+- Tests:
+  - Extended `scripts/check_zombie_phase1.ps1`.
+  - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
+  - glualint on changed Lua files.
