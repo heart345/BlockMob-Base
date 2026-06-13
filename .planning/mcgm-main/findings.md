@@ -365,3 +365,93 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **StepHeight 拆成两个语义**：普通 `StepHeight=28` 是 Source locomotion 绝对值，不是 `BS` 派生；它必须保持 > 半砖（36.5 半砖 18.25）且 < 整格。hop 期间临时 StepHeight 才是方块尺寸派生，必须是 `< 0.5*BS`，当前 `0.49*BS`，防止 apex + auto-step 误上两格。
 - **apex 目标随 BS 而不是固定 54/65**：一格 hop 的默认 jumpheight/apex 目标改为约 `1.5*BS`，36.5 下约 54.75，留足 Source hull 余量；两格不上靠 hop 期间低 StepHeight 保证，不靠把 apex 削到危险低值。
 - **裸数字复查清单**：grep `36 / 45 / 18 / 40 / 72 / 108 / 28 / 54 / 65` 时，尺寸派生必须参数化；保留项要能解释为非尺寸（声音 pitch、时间、调试 HUD z 偏移、旧 zombie 样机、Source locomotion 绝对值等）。新增 `scripts/check_block_size_parameterization.ps1` 专查高风险回归点。
+
+## 2026-06-12: StrandedRecovery 与半砖分层（第二十五轮）
+
+- **半砖/MC 台阶是表面高度问题，不是 path_cliff 调参问题**：locomotion 能走上半砖（StepHeight 28 > 18.25），但 A* 只有 solid/air 二值。半砖算 solid 会变 wall，算 air 会变 no-support/cliff。正确修法是等 MCSWEP 暴露 shape/floor height 后，把 support 与邻接改成按真实表面高度差判断；不要在 `path_cliff` 里塞半砖特判。
+- **玻璃板顶不是合法寻路目标**：顶面比 mob hull 窄的 PARTIAL/窄碰撞应当"有碰撞但不可站立"，普通 A* 不应主动规划上去。这和 MC 原版怪物不会把玻璃板顶当路一致。
+- **但已经站上非法节点时必须能脱困**：物理枪、外力、脚下支撑失效都可能把 mob 放到 BMB 语义非法的位置。此时普通 A* 的"只扩展 standable 表面"原则会让行为层空转。StrandedRecovery 是一个独立入口：只在当前 `IsOnGround` 且当前 cell 非 standable 时触发，目标不是寻一条路，而是尽快离开非法当前位置。
+- **大范围搜索 + 远点 direct 是错误兜底**：用户直接在玻璃板上生成时出现卡顿，并沿玻璃板结构走下去。原因是 real world 的大范围 support/passable 查询成本高；同时远点 steering 会把玻璃板的真实碰撞当连续可走路线。修正为本地 bail-out：只采样周围短距离点，能走到邻近合法地面就走，否则侧向离开窄支撑并下落。
+- **非法节点恢复不是寻路**：StrandedRecovery 的职责是尽快离开不合法当前位置，而不是规划到一个远处合法目标。它可以让实体掉落，因为触发前提已经是"实体被放到了普通 A* 不会选择的非法节点"；这和普通 path_cliff 防跳崖不冲突。
+
+## 2026-06-13: 移动恢复/Drop/Hop/性能（第二十六轮）
+
+- **StrandedRecovery 失败方向要有记忆**：本地 bail-out 如果方向顺序固定，撞障碍后会每轮选同一个点，表现为 `stranded_bail_blocked` 永久不动。恢复逻辑需要把失败方向短暂拉黑并旋转游标，才像“脱困”而不是“撞同一堵墙”。
+- **drop 空中不是 hop 空中**：hop 需要空中弱控落到目标格；drop 是走出边缘后自然落下。把两者共用 `SteerBMBInAir` 会让 carrot 在身后时回头转向，产生用户看到的空中反向速度。drop 空中应保持朝向/水平速度，只刷新 watchdog。
+- **hop 触发要先对齐 launch line**：只看距离会导致 mob 从侧面、墙角、台阶面前“试跳”，失败后看起来像不会找能跳的位置。起跳准入要包含 lateral offset；横向偏离或距离过远时先走 backoff/launch 点。
+- **多 mob 性能先砍维护频率**：50 只 idle mob 掉帧时，首要嫌疑是每 tick 的通用维护，而不是单只移动控制。非 held 的 `Think` 可降到 0.1s；移动协程仍逐帧，held 仍每 tick 缴械。后续若 50 只同时寻路仍卡，再做 A* 全局分帧/预算队列。
+
+## 2026-06-13: Drop 惯性、debug replan、spawn idle、峰值性能（第二十七轮）
+
+- **移除空中回头后还要处理 Source 空中惯性**：drop 不再追 carrot 后，朝向问题解决了，但离边瞬间仍带完整 `pathSpeed` 水平速度。Source 空中摩擦小，mob 会被甩远。正确补丁不是恢复反向 steering，而是只按原方向钳制水平速度大小。
+- **debug 目标不能把一次移动结果当命令结果**：`MoveToWorldPosition` 失败可能只是当前 partial/hop/dead-end 段失败，不代表玩家右键目标取消。debug path 应在 target/timeout 这一层持有命令，移动层一次失败只进入 `debug_repath` 并重算。
+- **新生成 mob 的 idle 也是性能优化**：MC 观感上动物不是生成后一帧就集体散步；工程上这还把大量同帧出生的 wander/A* 起点错开。spawn idle 不能压过 debug/flee/stranded，否则会妨碍测试和受击反应。
+- **A* yield 的单位要看“全场总量”**：单只 mob 每 64 iteration yield 看着不大，20 只同帧寻路就是 1280 iteration/帧。把 yield budget 下放到 `BMB.Config.PathfinderYieldEvery`，先降低默认单帧展开量，后续若仍卡再上全局 path 队列。
+- **Wander 不应一轮连刷多条完整路径**：旧逻辑一轮最多 8 个候选，每个候选可能跑一次 A*；这对“单只羊努力找路”合理，但对 20+ 羊同步运行会形成尖峰。普通 wander 失败后随机退避比连续重试更接近 MC 的低频随机散步。
+- **周期性实体球查找必须错峰**：`ents.FindInSphere` 这类全局查询即使有 interval，如果所有实体初始时间相同，仍会在同一帧一起爆发。生成时给 `NextPhysicsImpactCheck` 一个随机 offset，平均成本不变但峰值低很多。
+
+## 2026-06-13: NextBot entity Think 不能作为性能阀门（第二十八轮）
+
+- **一卡一卡的根因是 whole Think 被降频**：第 27 轮把 `NextThink(CurTime())` 改成 `NextThink(CurTime()+0.2)`，相当于把 NextBot 实体级更新降到 5Hz。移动协程和 path following 还在逻辑上推进，但身体/locomotion/客户端插值的外层节奏被拖慢，表现就是走路一顿一顿。
+- **优化边界要分清**：可以节流 A* 展开、Wander 选点次数、physics impact 球查找、吃草/行为决策；不能节流整个实体 Think。NextBot 的 per-tick Think 是 locomotion 平滑度的一部分。
+- **旧坑复现**：早前 `NextThink(CurTime()+0.08)` 已经制造过移动补油门感；这次 `0.2` 只是更明显。以后看到“性能优化后移动一卡一卡”，第一时间 grep `NextThink(CurTime()+...)`。
+- **防回归规则**：检查脚本必须要求 `NextThink(CurTime())` 并禁止 `NextThink(CurTime()+self.ThinkInterval)`。如果 50 只仍不够，下一步是全局 path/AI queue，不是再次降 entity Think。
+
+## 2026-06-13: hop face-distance 与 carrot 防跨洞（第二十九轮）
+
+- **hop 准入要看“离方块面”不是只看“离目标中心”**：中心距 `dist≈34~38` 看似在旧窗口内，但减去半格后 `face≈16~20`，已经接近羊 hull 半径，等于贴在方块侧面起跳。日志证明这类跳 apex 经常为 0；成功样本在 `face≈31`。结论：BlockHop 需要 face-distance gate，贴脸先 backoff。
+- **不要靠削 apex 修贴脸失败**：成功样本 apex≈50，失败样本 apex=0/36，说明弹道可以工作；问题是 launch 点太坏。调低高度只会损伤可靠一格 hop，不能解决 hull 顶侧面。
+- **debug 目标是长命令，移动段是短尝试**：Tool 右键的初始直线预算不等于复杂路径预算。debug path 应在命令层持有 target，移动段只报告一次尝试结果；只要推进节点或靠近目标，就续命。否则复杂路径会“明明在走”但到时间回 wander。
+- **carrot 可见性必须包含支撑**：只检查 solid 会允许直线穿过空气洞，因为洞里没有墙；Source safety 只探 carrot 位置又会漏掉中间 gap。pure pursuit 的“可见”在方块世界里应当是 hull clear + standable，每个采样点都用 A* 同一 standable 语义。
+- **性能注意**：沿线 standable 采样会增加查询量，必须在单次 visibility 检查中复用 passable/support cache；若后续复杂路径掉帧，再优化采样步长或按 segment 缓存，不能删掉支撑语义。
+
+## 2026-06-13: debug gap no-progress 与软碰撞（第三十轮）
+
+- **长命令和不可达出口必须成对出现**：第二十九轮把 debug target 寿命拉到 120s 解决“还在路上却过期”，但也让不可达 gap/dead-end 的反复失败显得像死机。规则：推进节点/靠近目标才续命；连续无推进就 `debug_no_progress` 退出。不能用“缩短 debug 总寿命”修，否则长路径 bug 会回归。
+- **`moved == true` 不等于命令有进展**：`MoveToWorldPosition` 在 partial/acceptPartial 语义下可能返回成功，但对最终 debug target 没有真正靠近。debug 命令层要看 path node advance 和最终目标距离，而不是只看一次移动调用的 bool。
+- **MC 式实体碰撞先调碰撞组，再软分离**：默认改为 player-like collision group 是最轻的一步；如果玩家/羊仍重叠，软分离只负责水平错开，不应该重新变成 rigid support。
+- **软分离是速度仲裁的末尾层**：它不能写进 steering、stranded、hop/drop、knockback 的内部逻辑，否则会互相吃速度或抖动。当前放在 Think 尾部，对当前 velocity 叠加水平分量并保留 z。
+- **近邻扫描必须错峰**：玩家/羊推挤需要持续运行，但不能 O(n²)。用 `ents.FindInSphere` + `NextSoftSeparationAt` 随机 offset；后续如果 50+ 仍卡，先调 interval/空间查询频率，不要节流 whole Think。
+
+## 2026-06-13: player/BMB hard support（第三十一轮）
+
+- **collision group 不是 pair collision policy**：`COLLISION_GROUP_PLAYER` 在当前 GMod/NextBot 组合里仍允许玩家被 BMB bbox 垂直支撑。它可以作为默认组保留，但不能当成“玩家不会站在 mob 上”的保证。
+- **软分离不能修仍存在的硬支撑**：如果 engine 仍在 player↔mob 这对实体上做硬碰撞解算，玩家先被托住，水平软推只是在托住之后尝试挪 mob，不能变成 MC 式穿插/滑开。必须先在 `ShouldCollide` 返回 `false` 关闭硬 pair，再让软分离接手水平错开。
+- **禁用范围要窄**：只对 player↔BMB mob、BMB mob↔BMB mob 返回 false；prop/世界/其它实体不动。这样保留走路撞墙、prop 物理伤害、工具/子弹命中的余地。若后续发现 trace 选择受影响，再单独处理 trace，不退回硬支撑。
+
+## 2026-06-13: MC-like collision rollback
+
+- **上面的第三十一轮 hard-support 修法已撤销**：实测 `ShouldCollide=false` 让物理枪抓不起 mob，子弹不掉血，还和 prop 物理伤害链路冲突。这个结果说明当前 GMod/NextBot 实体碰撞、trace、physgun、damage 并没有被干净分层。
+- **默认 GMod 手感优先级高于 MC 式穿插**：玩家能踩/挤到 mob 先接受；比起这点观感，物理枪、子弹、prop 伤害是核心调试/玩法链路，不能牺牲。
+- **防回归规则**：不要再顺手加 `COLLISION_GROUP_PLAYER`、`SetCustomCollisionCheck`、`ShouldCollide`、软分离 velocity overlay。除非将来单独设计并验证“玩家移动碰撞”和“trace/physgun/damage”完全分层，否则保持 `COLLISION_GROUP_NPC`。
+
+## 2026-06-13: Flee speed/activity stability
+
+- **`BMBDesiredSpeed` 不能同时承担 loco 命令和动画意图**：path follower 会因 `path_corner`、drop、local safety 临时改变命令速度。如果 activity 用这个瞬时值，Flee/Panic 这类“行为上正在跑”的状态会在拐角被误判成 walk。
+- **Base 需要稳定的行为意图速度**：新增 `BMBActivitySpeed` 后，动画/套皮看的是行为意图，loco 仍可按路径控制短暂降速。以后 Chase、Avoid、Attack windup 等也应按这个模式传 `moveIntentSpeed`。
+- **Flee 的 corner slow 有下限**：panic 可以为了转弯略降速，但不能降到 run/walk 阈值以下。对 sheep，`RunSpeed=90`、阈值约 80；旧 `PathCornerSpeedScale=0.55` 会掉到 49.5，这是速度抖动和动作切换的根因。
+
+## 2026-06-13: MC hurt feedback / iframes / knockback
+
+- **MC 受击有两个不同计时器，且 `invulnerableTime=20` 不能直译成 1s 完全无敌**：本地 `LivingEntity.java` 中完整受伤分支设置 `invulnerableTime = 20`，同时 `hurtDuration = 10; hurtTime = hurtDuration`。但伤害冷却分支只有 `invulnerableTime > 10` 时挡同等/更低伤害；有效冷却是前 10 ticks = 0.5s。BMB 映射为伤害冷却 0.5s、红闪 0.5s。
+- **无敌帧内重复命中不应刷新行为**：如果忽略的命中还刷新 `FleeUntil`、重选威胁或重启击退，连续攻击会让羊停在原地“思考”而不是跑。`OnTakeDamage` 的 invulnerable return 必须发生在扣血、`OnInjured`、flee refresh 和 knockback 之前。
+- **击退是一等状态，不是一次 SetVelocity**：如果只在伤害事件里写速度，正在跑的 `MoveAlongPath`/Flee 会在下一 tick 用 steering 把速度抢回来。正确位置是行为调度：held 之后立刻进入 knockback，窗口结束后再交给 debug/stranded/flee/wander。
+- **击退速度要重置而不是累加**：连续可接受命中应按新来源方向重置 capped 水平速度；否则连射或高伤害来源会把 mob 越推越快。第一版只做水平，保留 z 轴当前速度，避免打断下落/落地恢复。
+- **来源方向不能用“面朝反方向”偷懒**：枪击/近战优先攻击者→mob；爆炸优先爆心/伤害位置→mob；fallback 才看 damage force。物理砸击 `DMG_CRUSH` 当前保留原 GMod/prop 伤害链路，不叠 BMB 击退。
+- **Flee 中受击要刷新窗口但不重复打断段落**：`OnBMBInjured` 需要知道受击前是否已经在 flee。已在 flee 时只更新威胁和 `FleeUntil`，不再额外 `InterruptBMBMovement`，否则连续受击会把当前 move 段反复取消。
+- **摔伤后做且独立处理**：摔伤和普通受击只共享“扣血”结果，不共享击退方向/状态；否则从高处掉落可能被错误地水平击退，污染 drop/stranded 手感。
+
+## 2026-06-13: Knockback speed budget vs public movement intent
+
+- **HUD `70/0` 的第二项是 `BMBDesiredSpeed`**：不是 Source maxspeed，也不是红闪材质状态。看到这个签名时，先 grep 谁写了 `BMBDesiredSpeed` / `MaintainBMBMoveSpeed(0)`。
+- **红闪必须纯视觉，但这轮红闪本身是干净的**：`StartBMBHurtFlash()` 只写 `BMBHurtFlashUntil` / duration。实际冻结来自同一次受击启动的 knockback runner。
+- **不要用 `BMBDesiredSpeed=0` 表达“steering 让位”**：这会污染 HUD、动画意图和后续行为接管，还可能让 `loco:SetVelocity` 的直接击退被 desired speed 0 吞掉。让位应由状态优先级 + 移动入口拒绝新命令实现。
+- **击退需要两套速度语义**：公开的 `BMBDesiredSpeed/BMBActivitySpeed` 继续表达受击前的移动/动画意图；内部的 loco desired speed 只作为击退预算，保证水平 `SetVelocity` 能推动实体。第三十四轮用 `BMBKnockbackDesiredSpeed` / `BMBKnockbackActivitySpeed` / `BMBKnockbackLocoSpeed` 分开这三件事。
+- **启动当帧先给一次速度**：伤害事件和行为协程之间可能隔一轮 scheduler。`StartBMBKnockback` 立即写一次水平 `loco:SetVelocity`，后续 `RunBMBKnockback` 再衰减维护，视觉上更像“被打的一瞬间弹开”。
+
+## 2026-06-13: MC knockback lift and airborne flee
+
+- **击退状态窗口不能承担“硬直”语义**：MC 生物受击后会被打出冲量，但 AI 仍会继续尝试跑，尤其被击飞在空中也不会完全停思考。BMB 的 knockback window 只负责防止 steering 吃掉初始冲量，窗口应短（当前 0.12s），而不是 0.35s 这种可见停顿。
+- **地面击退需要一点 z 速度**：MC `knockback` grounded 分支会给 `min(0.4, y/2 + power)` 的竖直速度；BMB 不能只水平推，否则看起来像被平移。第三十五轮用 `loco:Jump()` 先打开跳跃态，再给 170~240u/s 的竖直速度；空中受击保留当前 z，不二次弹高。
+- **第一下没击退常见原因是行为协程还没接上**：刚生成/initial idle 时，伤害事件可能早于下一轮行为调度。击退必须在 `StartBMBKnockback` 伤害 tick 当场写入 velocity，不能等 `RunBMBKnockback` 下一轮才开始。
+- **空中 flee 需要放宽起点合法性**：被击飞后脚下 cell 不是 standable，普通 A* 从严格合法起点出发会失败或等落地。Flee 在 airborne start 时传 `allowStrandedStart`，只放宽起点，不放宽目标/路径节点合法性，保持“空中也在尝试跑”的观感。

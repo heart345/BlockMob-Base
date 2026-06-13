@@ -50,6 +50,9 @@ ENT.BlockHopLandingLift = 2
 ENT.BlockHopLaunchMinDistanceScale = 0.85
 ENT.BlockHopLaunchIdealDistanceScale = 1.15
 ENT.BlockHopLaunchMaxDistanceScale = 1.4
+ENT.BlockHopLaunchMinFaceDistanceScale = 0.75
+ENT.BlockHopLaunchIdealFaceDistanceScale = 0.85
+ENT.BlockHopLaunchLateralToleranceScale = 0.35
 ENT.BlockHopMinLaunchSpeedScale = 0.6
 ENT.BlockHopRequireLaunchSpeed = false
 ENT.BlockHopManualHorizontalMinSpeed = 32
@@ -89,20 +92,40 @@ ENT.PathTimeoutMax = 45
 ENT.DebugPathTimeoutScale = 3.0
 ENT.DebugPathTimeoutBase = 4.0
 ENT.DebugPathTimeoutMax = 90
+ENT.DebugPathSegmentMinTimeout = 3.0
+ENT.DebugPathRepathDelay = 0.25
+ENT.DebugPathCommandTimeout = 120
+ENT.DebugPathProgressGrace = 8.0
+ENT.DebugPathNoProgressTimeout = 3.5
 ENT.MoveNoProgressGrace = 0.35
 ENT.MoveNoProgressTimeout = 0.25
 ENT.MoveNoProgressDistance = 8
 ENT.MoveNoProgressSpeed = 16
 ENT.PathGoalProgressTimeout = 1.2
 ENT.PathGoalProgressDistance = 10
+ENT.DropAirMaxHorizontalSpeedScale = 0.35
+ENT.StrandedRecoveryRetryDelay = 0.35
+ENT.StrandedRecoveryBlockedDirectionCooldown = 1.2
+ENT.StrandedRecoveryLocalStepScale = 0.75
+ENT.StrandedRecoveryBailDuration = 0.55
+ENT.StrandedRecoveryFallTimeout = 2.0
 ENT.PhysicsImpactRadius = 44
-ENT.PhysicsImpactInterval = 0.08
+ENT.PhysicsImpactInterval = 0.3
 ENT.PhysicsImpactCooldown = 0.22
 ENT.PhysicsImpactMinSpeed = 260
 ENT.PhysicsImpactDamageScale = 0.035
 ENT.PhysicsImpactMaxDamage = 80
 ENT.PhysicsPropImpactDamping = 0.45
 ENT.PhysicsPropKillDamping = 0.68
+ENT.HurtFlashTime = 0.5
+ENT.DamageInvulnerabilityTime = 0.5
+ENT.KnockbackDuration = 0.12
+ENT.KnockbackMinSpeed = 150
+ENT.KnockbackDamageSpeedScale = 8
+ENT.KnockbackMaxSpeed = 320
+ENT.KnockbackVerticalSpeedScale = 6
+ENT.KnockbackVerticalMinSpeed = 170
+ENT.KnockbackVerticalMaxSpeed = 240
 
 local function flatDistance(a, b)
     local dx = a.x - b.x
@@ -122,6 +145,17 @@ local function copyVector(vec)
     return Vector(vec.x, vec.y, vec.z)
 end
 
+local strandedEscapeDirections = {
+    Vector(1, 0, 0),
+    Vector(-1, 0, 0),
+    Vector(0, 1, 0),
+    Vector(0, -1, 0),
+    Vector(1, 1, 0),
+    Vector(1, -1, 0),
+    Vector(-1, 1, 0),
+    Vector(-1, -1, 0)
+}
+
 local function getBlockSizeValue()
     if BMB and BMB.GetBlockSize then return BMB.GetBlockSize() end
     return (BMB and BMB.BS) or 36.5
@@ -130,6 +164,25 @@ end
 local function scaledBlockDistance(value, scale, fallbackScale)
     if value then return value end
     return getBlockSizeValue() * (scale or fallbackScale or 1)
+end
+
+if CLIENT then
+    function ENT:Draw()
+        local flashUntil = self:GetNWFloat("BMBHurtFlashUntil", 0)
+
+        if flashUntil > CurTime() then
+            local duration = math.max(0.01, self:GetNWFloat("BMBHurtFlashDuration", 0.5))
+            local amount = math.Clamp((flashUntil - CurTime()) / duration, 0, 1)
+            local gb = 1 - amount * 0.65
+
+            render.SetColorModulation(1, gb, gb)
+            self:DrawModel()
+            render.SetColorModulation(1, 1, 1)
+            return
+        end
+
+        self:DrawModel()
+    end
 end
 
 local function pathFlatLength(waypoints, startIndex)
@@ -171,8 +224,11 @@ function ENT:BaseInitialize()
     self.BMBMoveInterrupt = false
     self.BMBDead = false
     self.BMBHeld = false
+    self.BMBDamageInvulnerableUntil = 0
+    self.BMBKnockbackUntil = 0
+    self.BMBKnockbackVelocity = nil
     self.BMBLastLandTime = 0
-    self.NextPhysicsImpactCheck = 0
+    self.NextPhysicsImpactCheck = CurTime() + math.Rand(0, self.PhysicsImpactInterval or 0.3)
     self.PhysicsImpactTimes = {}
 
     -- mock/real 块世界的懒选择：MCSWEP 比 BMB 后加载，include 时选不到 real，
@@ -188,6 +244,7 @@ function ENT:BaseInitialize()
     self:SetNWString("BMBState", self.State)
     self:SetNWInt("BMBHealth", self:Health())
     self:SetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
+    self:SetNWFloat("BMBActivitySpeed", self.WalkSpeed)
     self:SetNWString("BMBMoveMode", "idle")
     self:SetNWFloat("BMBDistToGoal", 0)
     self:SetNWInt("BMBPathNode", 0)
@@ -200,6 +257,11 @@ function ENT:BaseInitialize()
     self:SetNWFloat("BMBHopSpeed", 0)
     self:SetNWFloat("BMBHopApex", 0)
     self:SetNWFloat("BMBHopDebugUntil", 0)
+    self:SetNWFloat("BMBHurtFlashUntil", 0)
+    self:SetNWFloat("BMBHurtFlashDuration", self.HurtFlashTime or 0.5)
+    self:SetNWFloat("BMBInvulnerableUntil", 0)
+    self:SetNWFloat("BMBKnockbackUntil", 0)
+    self:SetNWFloat("BMBKnockbackSpeed", 0)
 end
 
 function ENT:StartBMBActivity(activity)
@@ -210,12 +272,18 @@ function ENT:StartBMBActivity(activity)
     self.CurrentMoveActivity = activity
 end
 
-function ENT:UpdateMoveActivity(speed)
-    local runThreshold = (self.WalkSpeed + self.RunSpeed) * 0.5
-    local activity = (speed or self.WalkSpeed) >= runThreshold and ACT_RUN or ACT_WALK
+function ENT:GetBMBRunActivityThreshold()
+    return (self.WalkSpeed + self.RunSpeed) * 0.5
+end
+
+function ENT:UpdateMoveActivity(speed, activitySpeed)
+    local commandSpeed = speed or self.WalkSpeed
+    local intentSpeed = activitySpeed or commandSpeed
+    local activity = intentSpeed >= self:GetBMBRunActivityThreshold() and ACT_RUN or ACT_WALK
 
     self:StartBMBActivity(activity)
-    self:SetNWFloat("BMBDesiredSpeed", speed or self.WalkSpeed)
+    self:SetNWFloat("BMBDesiredSpeed", commandSpeed)
+    self:SetNWFloat("BMBActivitySpeed", intentSpeed)
 end
 
 function ENT:GetBMBBlockSize()
@@ -325,11 +393,12 @@ function ENT:SetBMBMoveMode(mode)
     end
 end
 
-function ENT:MaintainBMBMoveSpeed(speed)
+function ENT:MaintainBMBMoveSpeed(speed, activitySpeed)
     local desiredSpeed = speed or self.WalkSpeed
 
     self.loco:SetDesiredSpeed(desiredSpeed)
     self:SetNWFloat("BMBDesiredSpeed", desiredSpeed)
+    self:SetNWFloat("BMBActivitySpeed", activitySpeed or desiredSpeed)
 end
 
 function ENT:UpdateBMBApproachDebug(target, nodeIndex)
@@ -363,6 +432,11 @@ function ENT:UpdateBMBActivityFromLocomotion()
         return
     end
 
+    if self:IsBMBKnockbackActive() then
+        self:StartBMBIdleActivity()
+        return
+    end
+
     local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
     local onGround = self:IsBMBOnGround()
 
@@ -373,6 +447,7 @@ function ENT:UpdateBMBActivityFromLocomotion()
 
     local speed2D = self:GetVelocity():Length2D()
     local desiredSpeed = self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
+    local activitySpeed = self:GetNWFloat("BMBActivitySpeed", desiredSpeed)
     local mode = self:GetNWString("BMBMoveMode", "idle")
 
     if mode == "idle" and speed2D < 8 then
@@ -385,8 +460,7 @@ function ENT:UpdateBMBActivityFromLocomotion()
         return
     end
 
-    local runThreshold = (self.WalkSpeed + self.RunSpeed) * 0.5
-    local activity = math.max(desiredSpeed, speed2D) >= runThreshold and ACT_RUN or ACT_WALK
+    local activity = math.max(activitySpeed, speed2D) >= self:GetBMBRunActivityThreshold() and ACT_RUN or ACT_WALK
 
     self:StartBMBActivity(activity)
 end
@@ -500,6 +574,15 @@ function ENT:InterruptibleWait(duration)
     return true
 end
 
+function ENT:RunBMBInitialIdle()
+    local idleUntil = self.BMBInitialIdleUntil
+    if not idleUntil or CurTime() >= idleUntil then return false end
+
+    self:SetBMBState("idle")
+    self:InterruptibleWait(math.min(0.2, math.max(0, idleUntil - CurTime())))
+    return true
+end
+
 function ENT:RunBehaviour()
     while true do
         coroutine.wait(0.2)
@@ -529,6 +612,9 @@ function ENT:Think()
 
         self:UpdateBMBActivityFromLocomotion()
 
+        -- Keep entity Think per tick: NextBot locomotion/body interpolation becomes visibly
+        -- choppy if the whole entity Think is throttled. Expensive maintenance is throttled
+        -- inside its own helpers instead.
         self:NextThink(CurTime())
         return true
     end
@@ -596,6 +682,195 @@ function ENT:SetBMBState(state)
     self:SetNWString("BMBState", state)
 end
 
+function ENT:IsBMBFleeing()
+    return self.State == "flee" or self:GetNWString("BMBState", "") == "flee"
+end
+
+function ENT:IsBMBInDamageInvulnerability()
+    return CurTime() < (self.BMBDamageInvulnerableUntil or 0)
+end
+
+function ENT:StartBMBHurtFlash()
+    local duration = self.HurtFlashTime or 0.5
+    self:SetNWFloat("BMBHurtFlashDuration", duration)
+    self:SetNWFloat("BMBHurtFlashUntil", CurTime() + duration)
+end
+
+function ENT:HasBMBDamageType(damageInfo, mask)
+    if not damageInfo or not mask then return false end
+    return bit.band(damageInfo:GetDamageType() or 0, mask) ~= 0
+end
+
+function ENT:IsBMBPhysicsDamage(damageInfo)
+    return self:HasBMBDamageType(damageInfo, DMG_CRUSH)
+end
+
+function ENT:GetBMBKnockbackDirection(damageInfo)
+    if not damageInfo then return nil end
+
+    local origin = self:WorldSpaceCenter()
+    local function awayFromPoint(point)
+        if not point then return nil end
+        if point:LengthSqr() <= 1 then return nil end
+
+        local direction = origin - point
+        direction.z = 0
+
+        if direction:LengthSqr() <= 1 then return nil end
+
+        direction:Normalize()
+        return direction
+    end
+
+    if self:HasBMBDamageType(damageInfo, DMG_BLAST) then
+        local blastDirection = awayFromPoint(damageInfo:GetDamagePosition())
+        if blastDirection then return blastDirection end
+
+        local inflictor = damageInfo:GetInflictor()
+        if IsValid(inflictor) and inflictor ~= self then
+            blastDirection = awayFromPoint(inflictor:WorldSpaceCenter())
+            if blastDirection then return blastDirection end
+        end
+    end
+
+    local attacker = damageInfo:GetAttacker()
+    if IsValid(attacker) and attacker ~= self then
+        local attackDirection = awayFromPoint(attacker:WorldSpaceCenter())
+        if attackDirection then return attackDirection end
+    end
+
+    local hitDirection = awayFromPoint(damageInfo:GetDamagePosition())
+    if hitDirection then return hitDirection end
+
+    local force = damageInfo:GetDamageForce()
+    if force and force:LengthSqr() > 1 then
+        local forceDirection = Vector(force.x, force.y, 0)
+        if forceDirection:LengthSqr() > 1 then
+            forceDirection:Normalize()
+            return forceDirection
+        end
+    end
+
+    local fallback = -self:GetForward()
+    fallback.z = 0
+    if fallback:LengthSqr() <= 1 then return Vector(1, 0, 0) end
+
+    fallback:Normalize()
+    return fallback
+end
+
+function ENT:IsBMBKnockbackActive()
+    return CurTime() < (self.BMBKnockbackUntil or 0) and self.BMBKnockbackVelocity ~= nil
+end
+
+function ENT:GetBMBKnockbackVerticalVelocity(currentVelocity)
+    currentVelocity = currentVelocity or self:GetVelocity()
+    if not self:IsBMBOnGround() then return currentVelocity.z end
+
+    local blockSize = self:GetBMBBlockSize()
+    local lift = math.Clamp(
+        blockSize * (self.KnockbackVerticalSpeedScale or 6),
+        self.KnockbackVerticalMinSpeed or 170,
+        self.KnockbackVerticalMaxSpeed or 240
+    )
+
+    return math.max(currentVelocity.z, lift)
+end
+
+function ENT:StartBMBKnockback(damageInfo)
+    if self.BMBHeld then return false end
+    if self:IsBMBPhysicsDamage(damageInfo) then return false end
+
+    local direction = self:GetBMBKnockbackDirection(damageInfo)
+    if not direction then return false end
+
+    local damage = math.max(0, damageInfo:GetDamage() or 0)
+    local minSpeed = self.KnockbackMinSpeed or 150
+    local maxSpeed = self.KnockbackMaxSpeed or 320
+    local speed = math.Clamp(minSpeed + damage * (self.KnockbackDamageSpeedScale or 8), minSpeed, maxSpeed)
+    local now = CurTime()
+    local currentVelocity = self:GetVelocity()
+    local verticalSpeed = self:GetBMBKnockbackVerticalVelocity(currentVelocity)
+
+    self.BMBKnockbackStartedAt = now
+    self.BMBKnockbackUntil = now + (self.KnockbackDuration or 0.12)
+    self.BMBKnockbackVelocity = direction * speed
+    self.BMBKnockbackVerticalSpeed = verticalSpeed
+    self.BMBKnockbackDesiredSpeed = math.max(1, self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed), self.WalkSpeed or 1)
+    self.BMBKnockbackActivitySpeed = math.max(
+        self.BMBKnockbackDesiredSpeed,
+        self:GetNWFloat("BMBActivitySpeed", self.BMBKnockbackDesiredSpeed)
+    )
+    self.BMBKnockbackLocoSpeed = math.max(speed, self.BMBKnockbackDesiredSpeed)
+    self:SetNWFloat("BMBKnockbackUntil", self.BMBKnockbackUntil)
+    self:SetNWFloat("BMBKnockbackSpeed", speed)
+
+    self:InterruptBMBMovement()
+    self:SetBMBState("knockback")
+    self:SetBMBMoveMode("knockback")
+    self:UpdateBMBApproachDebug(nil, 0)
+    self:MaintainBMBKnockbackSpeedBudget()
+
+    if verticalSpeed > currentVelocity.z and self.loco.Jump then
+        self.loco:Jump()
+    end
+
+    self.loco:SetVelocity(Vector(self.BMBKnockbackVelocity.x, self.BMBKnockbackVelocity.y, verticalSpeed))
+
+    return true
+end
+
+function ENT:MaintainBMBKnockbackSpeedBudget()
+    local displayDesired = math.max(1, self.BMBKnockbackDesiredSpeed or self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed))
+    local displayActivity = math.max(displayDesired, self.BMBKnockbackActivitySpeed or self:GetNWFloat("BMBActivitySpeed", displayDesired))
+    local velocity = self.BMBKnockbackVelocity or vector_origin
+    local locoBudget = math.max(displayDesired, self.BMBKnockbackLocoSpeed or 0, velocity:Length2D())
+
+    self.loco:SetDesiredSpeed(locoBudget)
+    self:SetNWFloat("BMBDesiredSpeed", displayDesired)
+    self:SetNWFloat("BMBActivitySpeed", displayActivity)
+end
+
+function ENT:RunBMBKnockback()
+    if not self:IsBMBKnockbackActive() then return false end
+
+    self:ClearBMBMovementInterrupt()
+    self:SetBMBState("knockback")
+    self:SetBMBMoveMode("knockback")
+    self:MaintainBMBKnockbackSpeedBudget()
+    self:StartBMBIdleActivity()
+
+    local duration = math.max(0.01, (self.BMBKnockbackUntil or CurTime()) - (self.BMBKnockbackStartedAt or CurTime()))
+
+    while self:IsBMBKnockbackActive() do
+        local baseVelocity = self.BMBKnockbackVelocity or vector_origin
+        local remaining = math.Clamp(((self.BMBKnockbackUntil or 0) - CurTime()) / duration, 0, 1)
+        local currentVelocity = self:GetVelocity()
+
+        self:SetBMBState("knockback")
+        self:SetBMBMoveMode("knockback")
+        self:MaintainBMBKnockbackSpeedBudget()
+        self.loco:SetVelocity(Vector(baseVelocity.x * remaining, baseVelocity.y * remaining, currentVelocity.z))
+        self:UpdateBMBApproachDebug(nil, 0)
+
+        coroutine.yield()
+    end
+
+    local restoreSpeed = self.BMBKnockbackDesiredSpeed or self.WalkSpeed
+    self.BMBKnockbackVelocity = nil
+    self.BMBKnockbackVerticalSpeed = nil
+    self.BMBKnockbackDesiredSpeed = nil
+    self.BMBKnockbackActivitySpeed = nil
+    self.BMBKnockbackLocoSpeed = nil
+    self:SetNWFloat("BMBKnockbackSpeed", 0)
+    self.loco:SetDesiredSpeed(restoreSpeed)
+    self:SetBMBMoveMode("idle")
+    self:UpdateBMBApproachDebug(nil, 0)
+    self:ClearBMBMovementInterrupt()
+
+    return true
+end
+
 function ENT:HasBMBDebugMove()
     return self.BMBDebugMoveUntil and CurTime() < self.BMBDebugMoveUntil and (self.BMBDebugMoveDirection or self.BMBDebugMoveTarget)
 end
@@ -607,29 +882,297 @@ function ENT:ClearBMBDebugMove()
     self.BMBDebugMoveUsePath = nil
 end
 
+function ENT:IsBMBCurrentPositionStandable()
+    if not BMB or not BMB.Pathfinder or not BMB.Pathfinder.IsStandablePosition then
+        return true
+    end
+
+    return BMB.Pathfinder.IsStandablePosition(self:GetPos(), { mob = self })
+end
+
+function ENT:ShouldRunBMBStrandedRecovery()
+    if self.BMBHeld then return false end
+    if self:IsBMBKnockbackActive() then return false end
+    if not self:IsBMBOnGround() then return false end
+
+    local standable, cell = self:IsBMBCurrentPositionStandable()
+    if standable then
+        self.BMBStrandedCell = nil
+        return false
+    end
+
+    self.BMBStrandedCell = cell
+    return true
+end
+
+function ENT:IsBMBStrandedEscapeDirectionBlocked(directionKey)
+    if not directionKey or not self.BMBStrandedBlockedDirections then return false end
+
+    local blockedUntil = self.BMBStrandedBlockedDirections[directionKey]
+    if not blockedUntil then return false end
+
+    if CurTime() < blockedUntil then return true end
+
+    self.BMBStrandedBlockedDirections[directionKey] = nil
+    return false
+end
+
+function ENT:RecordBMBStrandedEscapeFailure(directionKey)
+    if not directionKey then return end
+
+    self.BMBStrandedBlockedDirections = self.BMBStrandedBlockedDirections or {}
+    self.BMBStrandedBlockedDirections[directionKey] = CurTime() + (self.StrandedRecoveryBlockedDirectionCooldown or 1.2)
+    self.BMBStrandedEscapeCursor = directionKey % #strandedEscapeDirections + 1
+end
+
+function ENT:HasBMBPhysicalGroundAt(pos)
+    local probeHalf = math.max(2, self:GetBMBBlockSize() * 0.08)
+    local startHeight = math.max(6, (self.GroundProbeHeight or 32) * 0.25)
+    local probeDepth = math.max(12, self:GetBMBBlockSize() * 0.75)
+
+    local trace = util.TraceHull({
+        start = Vector(pos.x, pos.y, pos.z + startHeight),
+        endpos = Vector(pos.x, pos.y, pos.z - probeDepth),
+        mins = Vector(-probeHalf, -probeHalf, 0),
+        maxs = Vector(probeHalf, probeHalf, probeHalf),
+        filter = self,
+        mask = MASK_SOLID
+    })
+
+    return trace.Hit and not trace.StartSolid, trace
+end
+
+function ENT:FindBMBStrandedEscapePoint()
+    local current = self:GetPos()
+    local step = self:GetBMBScaledDistance(self.StrandedRecoveryLocalStep, self.StrandedRecoveryLocalStepScale, 0.75)
+    local fallPoint
+    local fallKey
+    local standableOptions = { mob = self }
+    local count = #strandedEscapeDirections
+    local startIndex = ((self.BMBStrandedEscapeCursor or 1) - 1) % count + 1
+
+    for offset = 0, count - 1 do
+        local directionKey = ((startIndex + offset - 2) % count) + 1
+        if self:IsBMBStrandedEscapeDirectionBlocked(directionKey) then continue end
+
+        local direction = strandedEscapeDirections[directionKey]
+        local normal = Vector(direction.x, direction.y, 0)
+        normal:Normalize()
+
+        local candidate = Vector(current.x + normal.x * step, current.y + normal.y * step, current.z)
+        if self:IsBMBHullClearAtPosition(candidate) then
+            local standable = false
+            if BMB and BMB.Pathfinder and BMB.Pathfinder.IsStandablePosition then
+                standable = BMB.Pathfinder.IsStandablePosition(candidate, standableOptions)
+            end
+
+            if standable then
+                self.BMBStrandedEscapeCursor = directionKey % count + 1
+                return candidate, "standable", directionKey
+            end
+
+            local hasGround = self:HasBMBPhysicalGroundAt(candidate)
+            if not hasGround and not fallPoint then
+                fallPoint = candidate
+                fallKey = directionKey
+            end
+        end
+    end
+
+    if fallPoint then
+        self.BMBStrandedEscapeCursor = fallKey % count + 1
+        return fallPoint, "fall", fallKey
+    end
+
+    return nil
+end
+
+function ENT:MoveBMBStrandedBailOut(destination, speed, options)
+    options = options or {}
+
+    local desiredSpeed = speed or self.WalkSpeed
+    local moveIntentSpeed = options.moveIntentSpeed or desiredSpeed
+    local bailUntil = CurTime() + (options.duration or self.StrandedRecoveryBailDuration or 0.55)
+    local fallUntil = bailUntil + (self.StrandedRecoveryFallTimeout or 2.0)
+    local escapeKey = options.escapeKey
+    self.BMBStrandedEscapeKey = escapeKey
+
+    self:ClearBMBMovementInterrupt()
+    self:MaintainBMBMoveSpeed(desiredSpeed, moveIntentSpeed)
+    self:UpdateMoveActivity(desiredSpeed, moveIntentSpeed)
+    self:SetBMBMoveMode("stranded_bail")
+
+    local progressWatch = self:StartBMBMoveProgressWatch()
+
+    while CurTime() < fallUntil do
+        if self.BMBMoveInterrupt then return false end
+
+        if self:IsBMBOnGround() and self:IsBMBCurrentPositionStandable() then
+            self.BMBStrandedCell = nil
+            self:SetBMBMoveMode("idle")
+            self:UpdateBMBApproachDebug(nil, 0)
+            return true
+        end
+
+        if not self:IsBMBOnGround() then
+            self:SetBMBMoveMode("stranded_fall")
+            if progressWatch then
+                progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+            end
+        elseif CurTime() < bailUntil then
+            local target = Vector(destination.x, destination.y, self:GetPos().z)
+
+            self:SetBMBMoveMode("stranded_bail")
+            self:MaintainBMBMoveSpeed(desiredSpeed)
+            self:UpdateBMBApproachDebug(target, 0)
+            self:SteerTowards(target, progressWatch)
+            self:BodyMoveXY()
+            self:MaybePlayStep()
+
+            if not self:CheckBMBMoveProgress(progressWatch) then
+                self:RecordBMBStrandedEscapeFailure(escapeKey)
+                self:SetBMBMoveMode("stranded_bail_retry")
+                self:StartBMBIdleActivity()
+                self:UpdateBMBApproachDebug(nil, 0)
+                return false
+            end
+
+            if self.loco:IsStuck() then
+                self:HandleStuck()
+                self:RecordBMBStrandedEscapeFailure(escapeKey)
+                self:SetBMBMoveMode("stranded_bail_retry")
+                self:StartBMBIdleActivity()
+                self:UpdateBMBApproachDebug(nil, 0)
+                return false
+            end
+        else
+            return false
+        end
+
+        coroutine.yield()
+    end
+
+    return self:IsBMBOnGround() and self:IsBMBCurrentPositionStandable()
+end
+
+function ENT:RunBMBStrandedRecovery()
+    if not self:ShouldRunBMBStrandedRecovery() then return false end
+
+    self:SetBMBState("stranded")
+    self:SetBMBMoveMode("stranded_recovery")
+
+    local now = CurTime()
+    if now < (self.BMBNextStrandedRecoveryAt or 0) then
+        coroutine.wait(math.min(0.1, (self.BMBNextStrandedRecoveryAt or now) - now))
+        return true
+    end
+
+    self.BMBNextStrandedRecoveryAt = now + (self.StrandedRecoveryRetryDelay or 0.35)
+
+    local target, _, escapeKey = self:FindBMBStrandedEscapePoint()
+    if not target then
+        self:FailBMBMove("stranded_no_escape")
+        coroutine.wait(self.StrandedRecoveryRetryDelay or 0.35)
+        return true
+    end
+
+    self:MoveBMBStrandedBailOut(target, self.WalkSpeed, {
+        duration = self.StrandedRecoveryBailDuration or 0.55,
+        escapeKey = escapeKey
+    })
+
+    return true
+end
+
 function ENT:RunBMBDebugMove()
     if not self:HasBMBDebugMove() then return false end
 
     local desiredSpeed = self.BMBDebugMoveSpeed or self.RunSpeed
 
     if self.BMBDebugMoveTarget and self.BMBDebugMoveUsePath then
-        local minTimeout = math.max(0.1, (self.BMBDebugMoveUntil or CurTime()) - CurTime())
-
         self:SetBMBState("debug_move")
         self:SetBMBMoveMode("debug_path")
         self:MaintainBMBMoveSpeed(desiredSpeed)
         self:UpdateMoveActivity(desiredSpeed)
 
-        self:MoveToWorldPosition(self.BMBDebugMoveTarget, desiredSpeed, {
-            skipSourcePath = true,
-            minTimeout = minTimeout,
-            timeoutScale = self.DebugPathTimeoutScale or 3.0,
-            timeoutBase = self.DebugPathTimeoutBase or 4.0,
-            timeoutMax = self.DebugPathTimeoutMax or 90,
-            goalTolerance = self.BMBDebugMoveTolerance or BMB.Config.DefaultGoalTolerance
-        })
+        local debugLastProgressAt = CurTime()
+        local debugProgressTarget = self.BMBDebugMoveTarget
+        local debugLastProgressDistance = debugProgressTarget and flatDistance(self:GetPos(), debugProgressTarget) or math.huge
+
+        while self:HasBMBDebugMove() do
+            local target = self.BMBDebugMoveTarget
+            if not target then break end
+
+            if target ~= debugProgressTarget then
+                debugProgressTarget = target
+                debugLastProgressAt = CurTime()
+                debugLastProgressDistance = flatDistance(self:GetPos(), target)
+            end
+
+            local goalTolerance = self.BMBDebugMoveTolerance or BMB.Config.DefaultGoalTolerance
+            if flatDistance(self:GetPos(), target) <= goalTolerance then
+                self:ClearBMBDebugMove()
+                self:SetBMBMoveMode("idle")
+                self:UpdateBMBApproachDebug(nil, 0)
+                return true
+            end
+
+            local remaining = math.max(0.1, (self.BMBDebugMoveUntil or CurTime()) - CurTime())
+            local minTimeout = math.min(self.DebugPathSegmentMinTimeout or 3.0, remaining)
+            local distanceBefore = flatDistance(self:GetPos(), target)
+            local advanceBefore = self.BMBPathAdvanceCount or 0
+            local moved = self:MoveToWorldPosition(target, desiredSpeed, {
+                skipSourcePath = true,
+                allowStrandedStart = true,
+                allowPartial = true,
+                acceptPartial = true,
+                minTimeout = minTimeout,
+                timeoutScale = self.DebugPathTimeoutScale or 3.0,
+                timeoutBase = self.DebugPathTimeoutBase or 4.0,
+                timeoutMax = self.DebugPathTimeoutMax or 90,
+                goalTolerance = goalTolerance
+            })
+
+            if flatDistance(self:GetPos(), target) <= goalTolerance then
+                self:ClearBMBDebugMove()
+                self:SetBMBMoveMode("idle")
+                self:UpdateBMBApproachDebug(nil, 0)
+                return true
+            end
+
+            local distanceAfter = flatDistance(self:GetPos(), target)
+            local advanceAfter = self.BMBPathAdvanceCount or 0
+            local madeProgress = advanceAfter > advanceBefore
+                or distanceAfter < distanceBefore - goalTolerance * 0.25
+                or distanceAfter < debugLastProgressDistance - goalTolerance * 0.25
+
+            if madeProgress then
+                debugLastProgressAt = CurTime()
+                debugLastProgressDistance = math.min(debugLastProgressDistance, distanceAfter)
+                self.BMBDebugMoveUntil = math.max(
+                    self.BMBDebugMoveUntil or 0,
+                    CurTime() + (self.DebugPathProgressGrace or 8.0)
+                )
+            elseif CurTime() - debugLastProgressAt >= (self.DebugPathNoProgressTimeout or 3.5) then
+                self:FailBMBMove("debug_no_progress")
+                self:ClearBMBDebugMove()
+                return true
+            end
+
+            if not self:HasBMBDebugMove() then return true end
+
+            if not moved then
+                self:SetBMBMoveMode("debug_repath")
+                self:StartBMBIdleActivity()
+                self:UpdateBMBApproachDebug(target, 0)
+            end
+
+            coroutine.wait(math.min(self.DebugPathRepathDelay or 0.25, remaining))
+        end
 
         self:ClearBMBDebugMove()
+        self:SetBMBMoveMode("idle")
+        self:UpdateBMBApproachDebug(nil, 0)
         return true
     end
 
@@ -713,6 +1256,7 @@ function ENT:MoveToWorldPosition(destination, speed, options)
     -- 物理枪持握中不接新移动（held 与 hop/path 状态握手：当前 move 协程已被
     -- InterruptBMBMovement 掐掉、hop 重跳计数随局部变量一起销毁，这里再挡新请求）
     if self.BMBHeld then return false end
+    if self:IsBMBKnockbackActive() then return false end
 
     local desiredSpeed = speed or self.WalkSpeed
     self.loco:SetDesiredSpeed(desiredSpeed)
@@ -729,7 +1273,8 @@ function ENT:MoveToWorldPosition(destination, speed, options)
 
     local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination, {
         mob = self,
-        allowPartial = options.allowPartial
+        allowPartial = options.allowPartial,
+        allowUnsupportedWalk = options.allowUnsupportedWalk or options.allowStrandedStart
     })
     if not waypoints or #waypoints == 0 then
         if options.allowDirectFallback then
@@ -752,6 +1297,7 @@ end
 function ENT:MoveWithSourcePath(destination, speed, options)
     options = options or {}
 
+    if self:IsBMBKnockbackActive() then return false end
     if not Path then return false end
 
     local path = Path("Follow")
@@ -958,7 +1504,14 @@ function ENT:IsBMBPathCellPassable(blockCoord)
     return self:IsBMBHullClearAtPosition(BMB.BlockWorld.BlockToWorld(blockCoord))
 end
 
-function ENT:IsPathGridVisible(target)
+function ENT:IsBMBPathLineStandable(pos, options)
+    if not BMB or not BMB.Pathfinder or not BMB.Pathfinder.IsStandablePosition then return true end
+
+    local standable = BMB.Pathfinder.IsStandablePosition(pos, options or { mob = self })
+    return standable == true
+end
+
+function ENT:IsPathGridVisible(target, requireStandable)
     if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock then return true end
     if not BMB.BlockWorld.IsSolid then return true end
 
@@ -974,10 +1527,12 @@ function ENT:IsPathGridVisible(target)
 
     local step = math.max(self:GetBMBBlockSize() * 0.25, 6)
     local samples = math.max(1, math.ceil(distance / step))
+    local standableOptions = requireStandable ~= false and { mob = self } or nil
     for i = 1, samples do
         local sampleDistance = math.min(distance, i * step)
         local sample = current + delta * sampleDistance
         if not self:IsBMBHullClearAtPosition(sample) then return false end
+        if standableOptions and not self:IsBMBPathLineStandable(sample, standableOptions) then return false end
     end
 
     return true
@@ -1272,24 +1827,50 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     local horizontal = Vector(velocity.x, velocity.y, 0)
     local speed2D = horizontal:Length2D()
     local speedAlong = horizontal:Dot(forward)
-    local minDistance = self.BlockHopLaunchMinDistance or blockSize * (self.BlockHopLaunchMinDistanceScale or 0.85)
-    local idealDistance = self.BlockHopLaunchIdealDistance or blockSize * (self.BlockHopLaunchIdealDistanceScale or 1.15)
+    local minFaceDistance = self.BlockHopLaunchMinFaceDistance
+        or blockSize * (self.BlockHopLaunchMinFaceDistanceScale or 0.75)
+    local idealFaceDistance = self.BlockHopLaunchIdealFaceDistance
+        or blockSize * (self.BlockHopLaunchIdealFaceDistanceScale or 0.85)
+    local minDistance = math.max(
+        self.BlockHopLaunchMinDistance or 0,
+        blockSize * (self.BlockHopLaunchMinDistanceScale or 0.85),
+        blockSize * 0.5 + minFaceDistance
+    )
+    local idealDistance = math.max(
+        self.BlockHopLaunchIdealDistance or 0,
+        blockSize * (self.BlockHopLaunchIdealDistanceScale or 1.15),
+        blockSize * 0.5 + idealFaceDistance
+    )
     local maxDistance = self.BlockHopLaunchMaxDistance or blockSize * (self.BlockHopLaunchMaxDistanceScale or 1.4)
+    local lateralTolerance = self.BlockHopLaunchLateralTolerance or blockSize * (self.BlockHopLaunchLateralToleranceScale or 0.35)
+    local right = Vector(-forward.y, forward.x, 0)
+    local targetDelta = Vector(current.x - target.x, current.y - target.y, 0)
+    local lateralOffset = math.abs(targetDelta:Dot(right))
     local minSpeed = (speed or self.WalkSpeed) * (self.BlockHopMinLaunchSpeedScale or 0.6)
     local backoff = Vector(target.x - forward.x * idealDistance, target.y - forward.y * idealDistance, current.z)
     local approach = Vector(target.x, target.y, current.z)
     local needsSpeed = self.BlockHopRequireLaunchSpeed == true
-    local ready = distance >= minDistance and distance <= maxDistance and (not needsSpeed or speedAlong >= minSpeed)
+    local ready = distance >= minDistance and distance <= maxDistance
+        and faceDistance >= minFaceDistance
+        and lateralOffset <= lateralTolerance
+        and (not needsSpeed or speedAlong >= minSpeed)
     local steerTarget = approach
     local reason = "approach"
 
-    if distance < minDistance then
+    if lateralOffset > lateralTolerance then
+        steerTarget = backoff
+        reason = "align"
+    elseif faceDistance < minFaceDistance then
+        steerTarget = backoff
+        reason = "face_close"
+    elseif distance < minDistance then
         steerTarget = backoff
         reason = "close"
     elseif needsSpeed and speedAlong < minSpeed then
         steerTarget = distance < idealDistance and backoff or approach
         reason = "slow"
     elseif distance > maxDistance then
+        steerTarget = backoff
         reason = "far"
     else
         reason = "ready"
@@ -1302,6 +1883,8 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
         forward = forward,
         distance = distance,
         faceDistance = faceDistance,
+        minFaceDistance = minFaceDistance,
+        lateralOffset = lateralOffset,
         speed2D = speed2D,
         speedAlong = speedAlong
     }
@@ -1564,6 +2147,26 @@ function ENT:SteerBMBInAir(target, speed, progressWatch)
     end
 end
 
+function ENT:MaintainBMBDropAir(progressWatch)
+    -- Drop 是 A* 明确授权的下落边：离开边缘后不要再朝 carrot 转向。
+    -- 否则 carrot 可能落到身后，实体会在空中回头给一脚反向速度，看起来很不 MC。
+    -- 但 Source 空中几乎不吃地面摩擦；离边瞬间若保留完整行走速度，会被水平惯性甩很远。
+    -- 这里只钳制当前水平速度大小，不改朝向、不 FaceTowards，避免回到"空中掉头刹车"。
+    local velocity = self:GetVelocity()
+    local horizontalSpeed = math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y)
+    local desiredSpeed = self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
+    local maxHorizontal = self.DropAirMaxHorizontalSpeed or desiredSpeed * (self.DropAirMaxHorizontalSpeedScale or 0.35)
+
+    if horizontalSpeed > maxHorizontal and horizontalSpeed > 0 then
+        local scale = maxHorizontal / horizontalSpeed
+        self.loco:SetVelocity(Vector(velocity.x * scale, velocity.y * scale, velocity.z))
+    end
+
+    if progressWatch then
+        progressWatch.deadline = CurTime() + (self.MoveNoProgressGrace or 0.35)
+    end
+end
+
 function ENT:MaintainBMBNativeHop(target, progressWatch)
     local current = self:GetPos()
     local aim = Vector(target.x, target.y, current.z)
@@ -1581,8 +2184,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     options = options or {}
 
     if not waypoints or #waypoints == 0 then return false end
+    if self:IsBMBKnockbackActive() then return false end
 
     local desiredSpeed = speed or self.WalkSpeed
+    local moveIntentSpeed = options.moveIntentSpeed or desiredSpeed
     local blockSize = self:GetBMBBlockSize()
     local goalTolerance = options.goalTolerance or self:GetBMBDefaultGoalTolerance()
     local nodeTolerance = options.nodeTolerance or self:GetBMBPathNodeTolerance()
@@ -1605,8 +2210,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
     local timeout = CurTime() + self:GetBMBPathTimeout(waypoints, desiredSpeed, options, nodeIndex)
 
     self:ClearBMBMovementInterrupt()
-    self:MaintainBMBMoveSpeed(desiredSpeed)
-    self:UpdateMoveActivity(desiredSpeed)
+    self:MaintainBMBMoveSpeed(desiredSpeed, moveIntentSpeed)
+    self:UpdateMoveActivity(desiredSpeed, moveIntentSpeed)
     self:SetBMBMoveMode("path_carrot")
 
     local progressWatch = self:StartBMBMoveProgressWatch()
@@ -1691,6 +2296,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             carrot = self:GetPathCarrot(waypoints, nodeIndex, pathCarrotDistance)
         end
 
+        if options.minPathSpeed then
+            pathSpeed = math.max(pathSpeed, math.min(desiredSpeed, options.minPathSpeed))
+        end
+
         if not carrot then
             self:RestoreBMBStepHeight()
             return false
@@ -1713,7 +2322,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         end
 
         self.loco:SetDeceleration(cornering and math.max(self.Deceleration, self.PathCornerDeceleration or 720) or self.Deceleration)
-        self:MaintainBMBMoveSpeed(pathSpeed)
+        self:MaintainBMBMoveSpeed(pathSpeed, moveIntentSpeed)
         self:UpdateBMBApproachDebug(carrot, nodeIndex)
 
         if activeAction == "hop" then
@@ -1778,7 +2387,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                 end
             end
         elseif activeAction == "drop" and not self:IsBMBOnGround() then
-            self:SteerBMBInAir(carrot, pathSpeed, progressWatch)
+            self:MaintainBMBDropAir(progressWatch)
         else
             self:SteerTowards(carrot, progressWatch)
         end
@@ -1828,6 +2437,8 @@ end
 function ENT:MoveDirectFallback(destination, speed, options)
     options = options or {}
 
+    if self:IsBMBKnockbackActive() then return false end
+
     local desiredSpeed = speed or self.RunSpeed
     local duration = options.duration or 0.55
     local timeout = CurTime() + duration
@@ -1872,6 +2483,7 @@ function ENT:MoveAlongDirection(direction, speed, options)
     options = options or {}
 
     if self.BMBHeld then return false end
+    if self:IsBMBKnockbackActive() then return false end
 
     local moveDirection = Vector(direction.x, direction.y, 0)
     -- 只挡零向量：Flee 传进来的是归一化单位向量（LengthSqr ≈ 1.0），阈值用 1 会把它拒收
@@ -1937,6 +2549,8 @@ function ENT:MoveAlongDirection(direction, speed, options)
 end
 
 function ENT:MoveToWaypoint(waypoint)
+    if self:IsBMBKnockbackActive() then return false end
+
     local target = Vector(waypoint.x, waypoint.y, self:GetPos().z)
     local timeout = CurTime() + self.WaypointTimeout
 
@@ -2229,14 +2843,20 @@ function ENT:PlayBMBAnimation(name)
     end
 end
 
-function ENT:OnInjured(damageInfo)
+function ENT:OnInjured(damageInfo, context)
     if CLIENT then return end
 
-    self:InterruptBMBMovement()
+    local wasFleeing = context and context.wasFleeing
+    local startedKnockback = self:StartBMBKnockback(damageInfo)
+
+    if not startedKnockback and not wasFleeing then
+        self:InterruptBMBMovement()
+    end
+
     self:PlayBMBAnimation("hurt")
 
     if self.OnBMBInjured then
-        self:OnBMBInjured(damageInfo)
+        self:OnBMBInjured(damageInfo, wasFleeing)
     end
 end
 
@@ -2244,9 +2864,21 @@ function ENT:OnTakeDamage(damageInfo)
     if CLIENT or self.BMBDead then return end
 
     local damage = damageInfo:GetDamage()
+    if damage <= 0 then return 0 end
+
+    if self:IsBMBInDamageInvulnerability() then
+        return 0 -- invulnerable
+    end
+
+    local now = CurTime()
+    local wasFleeing = self:IsBMBFleeing()
+    self.BMBDamageInvulnerableUntil = now + (self.DamageInvulnerabilityTime or 1.0)
+    self:SetNWFloat("BMBInvulnerableUntil", self.BMBDamageInvulnerableUntil)
+    self:StartBMBHurtFlash()
+
     self:SetHealth(self:Health() - damage)
     self:SetNWInt("BMBHealth", self:Health())
-    self:OnInjured(damageInfo)
+    self:OnInjured(damageInfo, { wasFleeing = wasFleeing })
 
     if self:Health() <= 0 then
         self.BMBDead = true

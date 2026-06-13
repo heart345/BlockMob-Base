@@ -18,6 +18,7 @@ end
 BMB.Config.DefaultGoalToleranceScale = 0.5
 BMB.GetBlockSize()
 BMB.Config.MaxPathIterations = 900
+BMB.Config.PathfinderYieldEvery = 24
 -- MC 普通 LivingEntity/Mob 的 getMaxFallDistance 默认 3；羊未覆写。
 BMB.Config.MaxPathDropCells = 3
 -- 到达阈值 = 0.5 个方块（CLAUDE.md），必须 >= PathNodeTolerance，

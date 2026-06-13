@@ -2,7 +2,7 @@
 
 > 每次开工先读这份（CLAUDE.md 指定入口）。历史流水/早期调试记录归档在 `.planning/mcgm-main/`（status_summary、findings、progress），只读参考，不再更新。
 
-## 当前进度（2026-06-12）
+## 当前进度（2026-06-13）
 
 - `bmb_sheep` 切片（mock 世界）：生成 ✅、Flee ✅（**第九轮 MC PanicGoal 式重写，用户已实测通过**：随机近点 dash、没路放弃、平地不跑远）、prop 物理伤害 ✅、速度锯齿 ✅、倒退 ✅、吃草频率 ✅、MC 游荡节奏 ✅、转圈 ✅、跳崖 ✅、贴 prop 冻住 ✅、障碍犹豫掉速 ✅。
 - **第十轮（待复测）：RealBlockWorld 接通 MCSWEP，mock 首次切真环境**。朋友的 `MC.SV.SetBlock` 已就位（addon 在 `D:\...\addons\mcswep-main`，接口文档在其 `docs/interface-usage.md`，签名已对照源码 `mc/sv_world.lua:392` 验证）。目标：羊在真方块世界跑通"游荡 → 受击逃 → 吃草 grass_block→dirt"全链路。
@@ -30,6 +30,17 @@
 - **第二十二轮（用户已实测：一格高 BlockHop 成功 ✅）：BlockHop 两段式 manual hop**。`ApplyBMBPendingBlockHop` 不再立刻给水平速度，而是建立 `BMBActiveBlockHop`：第一段 lift 只给竖直速度，短窗口内如果仍在地面就重复 `loco:Jump()`；达到约 `0.8*BlockSize` 抬升或超过 lift 时间后，第二段再加水平速度/弱转向落到上层格。实测日志 `apex≈54~65`，NPC 已能跳上一格台阶。保留问题：弧线偏高，偶发能误上两格（A* 不会主动规划两格 hop）；跳完动作会多保持一段时间，套皮后要复查观感。
 - **第二十三轮（用户已实测：当前未发现 bug ✅）：StepHeight / timeout / activity 收口**。按 Fable 诊断，误上两格是 apex≈55 与空中 `StepHeight=28` 叠加：脚部高度超过 `72-28=44` 后落地解算会 step 上两格台沿。因此不削掉一格 hop 需要的 apex，而是在 hop 状态临时把 `loco:SetStepHeight(18)`，成功/失败/中断/路径结束恢复默认 28。debug 右键长路径不再把面板 duration 当硬截断：路径 timeout 改为路径长度 / 速度 × 系数 + base，仍由 no-progress watchdog 判断真卡住。跳后动作残留改为 Think/落地的状态驱动 activity 选择，落地后按速度回 idle/walk/run。用户复测：一格 hop、误上两格、debug 长路径、跳后动作均未再暴露问题。
 - **第二十四轮（代码已切：36.5 / BS 参数化，待用户游戏回归）：MCSWEP 已把 `MC.Config.BlockSize` 切到 36.5，BMB 同步收口到单一尺寸入口**。`BMB.GetBlockSize()` 每次优先读 `(MC and MC.BS)`，mock fallback 改 36.5，并同步 `BMB.BS` / 兼容字段 `BMB.Config.BlockSize`；业务代码不再直接读 `BMB.Config.BlockSize`。BaseMob 的尺寸派生默认改为 scale/cell：goal/node tolerance = `0.5*BS`，carrot min/max = `2*BS` / `25/6*BS`，corner slow = `2*BS`，hop apex/jumpheight = `1.5*BS`，manual lift = `0.8*BS`，hop 临时 StepHeight = `0.49*BS`（36.5 时约 17.9 < 半砖 18.25），`MaxStepDown = 1.1*BS`；默认 StepHeight=28 保留为 Source locomotion 绝对值（仍 > 半砖、< 整格）。Sheep 的 wander/flee 半径改用 cell 数（3~8 格、panic 5 格、min 1 格）。Real/Mock block world、debug HUD/tool、HasSupport 轴向偏移也改为跟随 BS。新增 `scripts/check_block_size_parameterization.ps1` 防止旧尺寸 fallback 回归。已从朋友源码确认 `D:\...\mcswep-main\lua\mc\sh_config.lua` 中 `MC.Config.BlockSize = 36.5`。
+- **第二十五轮（代码已切：StrandedRecovery，待用户游戏回归）：半砖/MC 台阶走不上是表面高度接口缺失，不在本轮硬修；先解决玻璃板/脚下支撑失效导致的非法起点冻结**。新增 `BMB.Pathfinder.IsStandablePosition` / `FindNearestStandable`，BaseMob 在 `IsOnGround` 且当前脚部 cell 非 standable 时进入 `stranded` 状态。复测发现两版问题：① 只检测不够会卡在 `stranded_no_target`；② 大半径搜索 + 远点 direct 会卡顿，并让实体沿玻璃板网络走下去。现改为本地 bail-out：采样周围 8 个短距离点，优先走到邻近合法 standable 点；否则选择没有物理支撑的一侧轻推下去，进入 `stranded_fall` 后靠重力落回合法地面。普通 Wander/Flee A* 仍不会主动把玻璃板顶、栅栏顶等窄碰撞规划为合法节点。新增 `scripts/check_stranded_recovery.ps1` 防止调度/bail-out 语义回退。
+- **第二十六轮（用户已实测核心移动通过）：StrandedRecovery 卡障碍、drop 空中回头、hop 起跳对齐、多 mob 性能首轮优化**。玻璃板上撞障碍后不再永久 `stranded_bail_blocked`：记录失败方向短冷却，HUD 进入 `stranded_bail_retry`，下一轮换方向。`path_drop` 离边后改用 `MaintainBMBDropAir`，不再 FaceTowards/air-steer 追 carrot，避免高处下来空中回头转一圈。BlockHop 起跳新增横向对齐窗口，横向偏离或距离过远时先走 backoff/launch 点，不直接冲方块面“试一下”。用户确认玻璃板撞障碍、高处 drop 回头、复杂台阶 hop 对齐均通过；遗留 drop 水平惯性和性能。
+- **第二十七轮（用户已实测功能通过，发现移动一卡一卡 → 第二十八轮）：drop 水平惯性、debug partial/hop 早停、新出生 idle、多 mob 峰值优化**。`MaintainBMBDropAir` 保持不转身，但把空中水平速度钳到目标速度的一小段，避免从高处掉下时被完整行走惯性带太远。debug 右键 path 不再一次 `MoveToWorldPosition` 后无论成败都清空命令：到达目标或过期前持续 replan，partial/dead-end/hop 失败只进入 `debug_repath` 短暂停顿。新生成 sheep 默认 `idle` 4~9s，debug/stranded/flee 仍优先。性能分摊保留：physics impact 周期查找 `0.3s` 且生成时错峰，A* `PathfinderYieldEvery=24`，Wander 单轮最多 2 次完整路径尝试并对失败随机退避。
+- **第二十八轮（代码已切，待用户游戏回归）：恢复 NextBot entity Think 每 tick，修第二十七轮一卡一卡回归**。根因：把整个 `Think()` 调度改成 `NextThink(CurTime()+0.2)` 等于把 NextBot 实体更新降到 5Hz，loco/身体插值表现为走路一顿一顿。修法：`Think` 末尾恢复 `NextThink(CurTime())`；性能优化不再节流实体 Think，只保留内部贵操作的节流/错峰（physics impact、A* yield、Wander attempts/failure pause、spawn idle）。`scripts/check_drop_debug_spawn_perf.ps1` 和 `scripts/check_movement_recovery_and_scaling.ps1` 已改为禁止 `NextThink(CurTime()+self.ThinkInterval)` 回归。
+- **第二十九轮（代码已切，待用户游戏回归）：hop 贴脸反复失败、debug 半路过期、carrot 跨一格空**。用户日志显示失败 hop 多为 `face≈16~20/speed≈0/apex=0`，成功样本为 `face≈31/speed≈111/apex≈50`，根因是起跳准入只看中心距，允许 hull 已贴近方块面时硬跳；现新增 `BlockHopLaunchMinFaceDistanceScale=0.75` / `IdealFaceDistanceScale=0.85`，`face_close` 时先退到更远 launch 点再跳。debug 右键目标默认命令寿命改为约 120s，并在推进节点/靠近目标时用 `DebugPathProgressGrace` 续命，避免复杂路径跑一半过期回 wander。carrot 直线可见从“没有 solid 挡住”升级为“沿线 hull clear 且每个采样点 standable”，防止路径跟随为抄近路跨一格空洞；新增 `scripts/check_hop_debug_gap_regressions.ps1`。
+- **第三十轮（debug 已验证通过；碰撞计划后续撤销）：debug gap 假死 + MC 式碰撞试验第一版**。用户确认普通 path 已不会跨一格空，但 debug 期间走到空洞/死路前会卡在 `debug_repath`。根因是第二十九轮把 debug 命令寿命放长后，缺少命令级“无进展”出口：一段段失败会持续到 120s。现保留 `DebugPathNoProgressTimeout=3.5`，debug path 只把“推进节点/明显靠近目标”算进展并续命；连续无进展则 `debug_no_progress` 急停并清掉命令，回到普通行为。碰撞方面曾尝试 `COLLISION_GROUP_PLAYER` + 软分离，但后续实测会继续引出硬支撑/物理交互问题，已撤销。
+- **第三十一轮（已撤销）：禁用 player/BMB mob 硬碰撞试验失败**。用户复测确认第三十轮 debug gap 修好 ✅，但碰撞试验导致物理枪抓不起、子弹不掉血，并和 prop 物理伤害链路冲突。结论：不继续做 MC 式实体穿插，保留 GMod/NextBot 默认手感。代码恢复 `SetCollisionGroup(COLLISION_GROUP_NPC)`，删除 player-like collision group、`SetCustomCollisionCheck`/`ShouldCollide` hook、软分离函数与 Think 调用；`scripts/check_debug_gap_and_collision.ps1` 改为防止碰撞试验代码回归，同时继续保护 debug gap 修复。
+- **第三十二轮（代码已切，待用户游戏回归）：Flee 速度/动作意图稳定化**。用户反馈 flee 状态速度不稳定，后续套皮会导致羊动作异常，也会污染 Base。根因是 Flee 虽然以 `RunSpeed` 调 `MoveToWorldPosition`，但通用 `path_corner` 会把瞬时 path speed 降到 `RunSpeed*0.55`（sheep 约 49.5），低于 walk/run 阈值（约 80），导致 HUD 目标速度和 activity 在跑/走之间波动。现 Base 新增 `BMBActivitySpeed`：`BMBDesiredSpeed` 继续表示 loco 当前命令速度，`BMBActivitySpeed` 表示行为/动画意图速度；activity 选择改用意图速度。Flee 传 `moveIntentSpeed=RunSpeed`，并用 `minPathSpeed` 把过弯临时降速夹到 run 阈值以上，既保留 corner 控制，又不让 panic/run 动画抖。新增 `scripts/check_flee_speed_stability.ps1`。
+- **第三十三轮（代码已切，待用户游戏回归）：受击红闪 / 伤害冷却 / 水平击退 + Flee 连击不重选方向**。MC 源码确认 `hurtTime = 10 ticks`；`invulnerableTime` 字段会设为 20，但 `LivingEntity` 只有 `invulnerableTime > 10` 时挡同等/更低伤害，所以 BMB 对应红闪 0.5s、有效伤害冷却 0.5s。`OnTakeDamage` 只有在非冷却窗口内才扣血、开启客户端红色调制、触发 flee 和击退；冷却内重复命中 `return 0`，不刷新 flee。击退是一等状态：sheep 调度顺序为 held → knockback → debug/stranded/flee，击退窗口内普通 path/steering 拒绝新移动，水平速度按来源方向重置并 capped，不和旧速度累加；`DMG_CRUSH` 物理砸击保留原 GMod/prop 伤害链路，不叠 BMB 击退。Flee 中受击会刷新恐慌窗口/威胁来源，但不再额外 `InterruptBMBMovement` 当前 flee 段，避免连续受击时反复重选目标方向导致原地犹豫。新增 `scripts/check_damage_iframes_knockback.ps1`。摔伤仍是待办，本轮不实现。
+- **第三十四轮（代码已切，待用户游戏回归）：修受击后 `vel:70/0` 和击退不生效**。用户实测红闪/无敌帧正常，但每次闪红都会让羊静止，HUD 显示当前速度/目标速度如 `70/0`，且看不到击退。根因不是红闪渲染越界：`StartBMBHurtFlash()` 只写红闪 NWFloat；真正把第二个数写 0 的是 `RunBMBKnockback()` 中的 `MaintainBMBMoveSpeed(0)`。这既把 HUD/行为意图速度变成 0，也可能让 `loco:SetVelocity` 的水平击退被 desired speed 0 吞掉。修法：击退状态不再发布 `BMBDesiredSpeed=0`，而是保存受击前的 `BMBKnockbackDesiredSpeed` / `BMBKnockbackActivitySpeed` 供 HUD/动画继续显示原意图；内部单独给 loco 一个 `BMBKnockbackLocoSpeed` 预算以允许水平 `SetVelocity` 生效，并在击退启动当帧立即写一次水平速度。新增检查确保红闪函数不碰 movement/loco，且 knockback runner 不再写 `MaintainBMBMoveSpeed(0)` / `SetDesiredSpeed(0)`。
+- **第三十五轮（代码已切，待用户游戏回归）：击退手感对齐 MC：0.5s 冷却、短窗口、竖直上抬、空中继续 flee**。用户复测确认 `vel` 不再变 0，但受击后仍有停顿；MC 26.1.2 实测/源码显示有效无敌约 0.5s，受击会有上抬离地，且空中仍尝试逃跑。修法：`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 从 0.35 缩到 0.12，只保留防 steering 吞冲量的短仲裁窗口；新增 `GetBMBKnockbackVerticalVelocity()`，地面受击用 `loco:Jump()` 开跳跃态后给约 `6*BS`、clamp 到 170~240u/s 的竖直速度，空中受击保留当前 z；Flee 在 knockback 结束后若仍在空中，传 `allowStrandedStart = airborneStart`，让 A* 从 unsupported/airborne 起点继续尝试逃跑，而不是原地等落地。
 - 本轮修掉的对接隐藏 bug（接 real 之前就存在）：
   1. **mock 占死 `BMB.BlockWorld` 名字、无切换机制** → mock 改名 `BMB.MockBlockWorld`；新增 `BMB.SelectBlockWorld()` + convar `bmb_use_real_world`（默认 1，MCSWEP 不在场回退 mock）+ 控制台 `bmb_world mock|real`。MCSWEP 比 BMB 后加载（addons 字母序），所以 `BaseInitialize` 生成 mob 时会再选一次（幂等）。
   2. **类型枚举对不上**：real `GetBlockAt` 原来返回数字 id，行为层比较的是 `BMB.BlockTypes.Grass` 字符串，永远不相等 → adapter 现在做 id↔枚举双向映射（`blockTypeToId`/`idToBlockType`），未建模的 id 原样透传。
@@ -45,19 +56,30 @@
 2. **同步整个 `gmod_addon/` 到 `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon\`**（用户在游戏里直接测）。
 3. **更新本文件 + `.planning/mcgm-main/` 四个文件**（task_plan / progress / findings / status_summary，codex 接手要看）。
 
-## 复测清单（当前：第二十四轮 36.5 待游戏回归）
+## 复测清单（当前：第三十五轮 MC 击退手感）
 
 1. **上一轮已通过**：一格 hop 稳定，未再发现误上两格；debug 远点未再早停；跳后动作能复位。
 2. **36.5 必测**：`lua_run print(MC and MC.BS, BMB and BMB.BS)` 应输出 36.5/36.5；一格 hop apex 约 `1.4~1.5*BS` 且稳定上台；两格必须上不去；半砖/楼梯应靠 StepHeight=28 走上去而不是 hop；36.5 宽走廊 hull 32 双向通行；drop 主动下 3 格（109.5u），4 格拒绝且不卡顿；吃草链路正常；`WorldToBlock/BlockToWorld` 新尺寸下往返一致；`bmb_world mock` 与 real 行为尺度一致。
-3. **回归仍需留意**：物理枪、绕路、窄沿、不卡顿、不跳楼、地图墙/拐弯、Flee 围住放弃、套皮后 activity。
+3. **StrandedRecovery 必测**：物理枪/工具把羊放到玻璃板顶或挖掉脚下支撑后，HUD 应显示 `state=stranded`，随后短暂进入 `mode=stranded_bail`；撞障碍时应进入 `stranded_bail_retry` 并换方向，不应永久不动；若旁边没有合法地面，应侧向离开窄支撑并进入 `stranded_fall`，落到合法地面后恢复 wander。不得明显卡顿，也不得沿玻璃板网络当路走；普通 wander 不应主动把目标选到玻璃板顶。
+4. **第二十九轮已初测**：普通 path 不应再靠 carrot 抄近路跨一格空洞；BlockHop 不应在 `face≈16~20` 贴脸位置反复硬跳，HUD 应先显示 setup/backoff（必要时 `face_close`）再在更远位置起跳；复杂 debug 右键路径不应跑一半过期回 wander；第二十八轮的平滑移动和第二十七轮的性能/drop/debug/spawn idle 不回归。
+5. **第三十轮已验证**：debug 右键目标若被一格空洞/死路隔开，已确认不再假死 ✅；这一修复必须保留。
+6. **第三十一轮回滚必测**：物理枪应恢复可抓取；子弹/枪击应恢复掉血和受击反应；prop 物理伤害链路不受碰撞试验影响；玩家能踩/挤到 mob 按 GMod 手感接受；debug gap 不回归。
+7. **第三十二轮必测**：受击进入 Flee 后 HUD `vel:实际/目标` 的目标速度不应在 run/walk 阈值上下大幅跳变；过弯 `path_corner` 可以略降速但不应降到走路动作；ACT_RUN 应在整个 panic 段保持稳定，直到 Flee 结束回 idle/wander。确认围住放弃、撞墙/悬崖保护、hop/drop、debug gap 不回归。
+8. **第三十五轮必测**：非冷却窗口枪击/近战命中应扣血、红闪约 0.5s，并在约 0.5s 内忽略同等重复伤害；HUD 不应再出现受击后目标速度永久 `0`。普通攻击应能看见水平击退 + 一点离地上抬，第一下生成后也要有击退；击退后不应原地等很久，空中/落地都应继续进入 flee。爆炸应从爆心径向散开；冷却窗口内连击不应继续扣血、击退或刷新 flee 方向。prop `DMG_CRUSH` 仍按原物理伤害链路，不额外 BMB 击退。被击退落到非法格后应能进入 StrandedRecovery。
+9. **回归仍需留意**：物理枪、子弹伤害、prop 伤害、绕路、窄沿、不卡顿、不跳楼、地图墙/拐弯、Flee 围住放弃、套皮后 activity。
 
 ## 未解 bug / 风险
 
 - **第二十四轮剩余风险**：代码层已按 36.5 参数化并通过静态检查/lint，但实际 GMod 场景还要按复测清单确认，尤其 hop apex、两格边界、半砖/楼梯和 36.5 走廊。
+- **第二十五轮剩余风险**：StrandedRecovery 的移动阶段故意绕开 A* 和 `path_cliff`，但只做短距离 bail-out；若窄碰撞四周都被其它碰撞托住，可能显示 `stranded_no_escape` 并周期重试。高空玻璃板上会选择掉落式恢复，这是"已经被放到非法节点"的兜底，不代表普通 A* 允许跳崖。
+- **第二十八轮剩余风险**：恢复 whole Think 每 tick 会拿回一点维护成本，但应该保留第 27 轮主要收益（A* / Wander / physics impact 的内部节流）。若 50 只仍不够，需要全局 AI/path queue，而不是再节流 entity Think。
+- **第二十九轮剩余风险**：carrot 沿线 standable 检查每 tick 多做若干支撑查询，已在单次检查内共享 cache；若复杂路径性能变差，再考虑把 standable line check 降采样或缓存到当前 segment。
+- **第三十一轮结论**：MC 式实体穿插/软推挤暂不做。`COLLISION_GROUP_PLAYER`、`ShouldCollide=false`、软分离都会威胁物理枪、子弹命中、prop 伤害等 GMod 基础交互；当前选择接受 GMod 手感，后续不要沿这条线继续调，除非先设计出不会影响 trace/physgun/damage 的分层方案。
+- **第三十五轮剩余风险**：红闪用客户端 `render.SetColorModulation` 做整模型 tint，后续换 MC 模型/材质后要确认不会和皮肤材质冲突。竖直击退现在用 `loco:Jump()` + 直接 z 速度；若第一下仍偶尔不上抬，下一轮打受击 tick 日志（onGround、IsClimbingOrJumping、vel.z）确认是否被地面解算吞。摔伤尚未实现，后续应作为独立伤害来源，不触发击退。
 - **第二十三轮剩余风险**：用户当前未发现 bug，但 StepHeight 临时切换、状态驱动 activity、debug 长路径 timeout 仍需要后续场景持续回归，尤其是套皮后动作映射。
 - **hop 候选分诊**：若失败处 HUD 根本不进 `path_hop`，不要按弹道修；要开 A* hop 候选日志看是上方净空/支撑正确拒绝，还是邻接标记漏判。
 - **PhysgunPickup 钩子语义**：它在"尝试抓取"时触发，若有第三方 addon 拒绝了这次拾取，BMBHeld 可能误置（下次松手钩子不来）；目前单机沙盒无此问题，联机装权限 addon 时留意。
-- **半砖对 A* 不可见**（`BlockIsFullCube`=false → BMB 当空气）：混半砖地形会选择跳整格而不是走半砖台阶，且半砖不能作为 MC 支撑（目前靠 Source 不了 trace——MCSWEP 方块碰撞不是刷子，`MASK_SOLID_BRUSHONLY` 探不到）。观感问题，需要时用 `MC.BlockBoxes` 细化 IsSolid/支撑语义。
+- **半砖/MC 台阶对 A* 不可见**（`BlockIsFullCube`=false → BMB 当空气）：混半砖地形会选择跳整格或把半砖前方判成 cliff，且半砖不能作为 MC 支撑（目前靠 Source 不了 trace——MCSWEP 方块碰撞不是刷子，`MASK_SOLID_BRUSHONLY` 探不到）。需要 MCSWEP 暴露 shape / floor height（例如 `IBlockWorld:GetFloorHeight` 或 `MC.BlockBoxes`），再把 A* 的 walk/hop/drop 从二值格子改为真实表面高度差。
 - **窄沿偏移采样的副作用**：紧挨沿边的悬空格可能因偏移样本擦到沿边被判可站立，理论上增加贴边坠落风险——`path_cliff` Source safety 仍兜底。
 - **`HasSupport` 的 Source trace 语义**：若 MCSWEP cell 网格与 flatgrass 地面错位较大，站立层判定可能漂移一格；遇到再调 trace 区间。
 - **partial path 改变了"路径失败"语义**：Wander/debug 移动遇到不可达目标会走到最近可达点算成功（MC 手感），只有 Flee 显式关闭（`allowPartial=false`）。
@@ -70,6 +92,7 @@
 
 ## 下一步
 
-1. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
-2. 吃草原版粒子/动画/音效。
-3. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。
+1. 等朋友提供 shape/floor height 接口后，做半砖/楼梯/MC 台阶表面高度寻路。
+2. 坑/走廊场景的 Flee 采样改为枚举可站立格后随机抽样。
+3. 吃草原版粒子/动画/音效。
+4. Sheep 稳定后迁移 Zombie 验证 base 抽象；怕人生物做 `Avoid` 行为模块（参考 `AvoidEntityGoal.java`）。

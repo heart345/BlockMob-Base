@@ -315,9 +315,109 @@
 
 ## Current Next Checklist
 
-1. **第二十四轮代码已完成，待用户游戏回归**：MCSWEP 已切 `MC.BS=36.5`，BMB 改为 `BMB.GetBlockSize()` / `BMB.BS` 单一尺寸入口，mock fallback 36.5。先在控制台确认 `MC.BS` 与 `BMB.BS` 都为 36.5。
-2. **36.5 必测**：hop 一格稳定、两格不上；半砖/楼梯靠普通 `StepHeight=28` 走上去；36.5 走廊 hull 32 双向通行；drop 3 格（109.5u）主动下、4 格拒绝；吃草链路和坐标往返正常；`bmb_world mock` 尺度一致。
-3. **继续回归观察**：hop/StepHeight、debug timeout、activity reset 在更多地形和套皮后继续留意。
-4. **下一功能短板**：Flee 坑/封闭结构采样，改为枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
-5. **表现收尾**：吃草原版粒子/动画/音效。
-6. **后续地形细化**：半砖/栅栏 `MC.BlockBoxes`，以及 Zombie 迁移验证 base 抽象。
+1. **第二十六轮用户已复测核心移动通过**：玻璃板撞障碍不再永久卡住；高处 `path_drop` 不空中回头；复杂台阶 `path_hop` 会先对准 launch/backoff 再跳。遗留：drop 水平惯性太大、debug path partial/hop 到无路处会清空、sheep 新生成立刻 wander、20+ sheep FPS 仍低。
+2. **第二十七轮用户已复测通过核心项**：drop 空中不转身、debug 右键寻路、新 sheep spawn idle、性能优化都正常；新回归是 NPC 走路一卡一卡。
+3. **第二十八轮用户已复测通过**：NPC 不再卡，玩家也不卡；第 27 轮性能优化仍正常。
+4. **第二十九轮已切，用户已初步确认普通 path 不再跨一格空**：hop 失败签名为 `face≈16~20/speed≈0/apex=0`，成功为 `face≈31/speed≈111/apex≈50`，所以新增 face-distance gate，贴脸显示/走 `face_close` backoff；debug target move 默认 120s 且推进节点/靠近目标时续命；carrot line visibility 增加 standable 采样，防止 path 跨一格空洞。
+5. **第三十轮用户复测**：debug target 卡在 gap/dead-end 前不再假死 ✅；碰撞第一版失败，玩家仍能站上 sheep bbox。
+6. **第三十一轮碰撞试验已撤销**：`COLLISION_GROUP_PLAYER` + 软分离不够，`SetCustomCollisionCheck/ShouldCollide` 又导致物理枪抓不起、子弹不掉血，并和 prop 物理伤害链路冲突。用户决定保留 GMod 手感。
+7. **第三十一轮回滚代码已完成，待用户游戏回归**：恢复 `SetCollisionGroup(COLLISION_GROUP_NPC)`；删除 player-like collision group、`SetCustomCollisionCheck`/`ShouldCollide`、软分离参数/函数/Think 调用；脚本改为防止碰撞试验代码回归，同时保留 debug gap no-progress 检查。
+8. **第三十一轮回滚必测**：物理枪恢复可抓；子弹/枪击恢复掉血；prop 物理伤害不受影响；debug gap 不回归；玩家踩/挤 mob 保留 GMod 手感。
+9. **第三十二轮代码已完成，待用户游戏回归**：Flee 速度不稳定根因是 `path_corner` 把瞬时命令速度压到 run/walk 阈值以下，而旧 activity 又直接看 `BMBDesiredSpeed`。本轮 Base 新增 `BMBActivitySpeed`（行为/动画意图速度），`BMBDesiredSpeed` 只表示 loco 当前命令速度；Flee 传 `moveIntentSpeed=RunSpeed`，并用 `minPathSpeed` 把 panic 过弯降速夹到 run 阈值以上。
+10. **第三十二轮必测**：受击 Flee 期间目标速度/ACT_RUN 不再在 run/walk 阈值上下抖；path_corner 可以轻微降速但不切走路动作；Flee 围住放弃、悬崖/撞墙、hop/drop/debug gap 不回归。
+11. **36.5 回归继续观察**：hop 一格稳定、两格不上；36.5 走廊 hull 32 双向通行；drop 3 格主动下、4 格拒绝；吃草链路和坐标往返正常；`bmb_world mock` 尺度一致。
+12. **半砖/MC 台阶先放一放**：当前缺 MCSWEP shape/floor height 接口，不能靠 path_cliff 调参修。接口到位后把 A* support/邻接升级为真实表面高度差；玻璃板/栅栏这类 PARTIAL 应归为不可站立，StrandedRecovery 只负责已站上去的逃生。
+13. **下一功能短板**：Flee 坑/封闭结构采样，改为枚举可站立格（复用 `HasSupport`）-> 随机抽 -> A* 验证。
+14. **表现收尾**：吃草原版粒子/动画/音效。
+15. **后续架构验证**：Zombie 迁移验证 base 抽象。
+
+## 2026-06-13 Latest Status After Third 33rd Round
+
+- User moved to MC-style damage feedback before the next milestone.
+- Implemented:
+  - MC timing: hurt flash = `hurtTime = 10 ticks` = 0.5s; later corrected in round 35: `invulnerableTime` is set to 20 but effective same-damage cooldown is the `>10` branch, about 0.5s.
+  - Accepted hits only: deduct health, network/client red tint, refresh flee, and start knockback only when not invulnerable.
+  - Ignored invulnerability hits return 0 and do not knock back or make flee re-pick direction.
+  - First-class horizontal knockback state: scheduler priority is held -> knockback -> debug/stranded/flee; normal steering refuses new movement while knockback is active.
+  - Knockback direction is source-aware: blast position first for explosions, attacker position for gun/melee, damage position/force as fallback.
+  - `DMG_CRUSH` prop/physics damage does not get BMB knockback overlay, preserving current GMod physics damage behavior.
+  - Flee re-hit bug: when already fleeing, `OnBMBInjured` refreshes panic time/threat but does not additionally interrupt the current flee segment.
+- Test/doc changes:
+  - Added `scripts/check_damage_iframes_knockback.ps1`.
+  - Updated `CLAUDE.md`, `docs/STATE.md`, `task_plan.md`, `progress.md`, `findings.md`, and this summary.
+- Fall damage is still pending and intentionally not implemented. When added, it should be a separate damage source that does not trigger horizontal knockback.
+- Next required game retest:
+  1. Shoot/hit sheep once: health drops, red flash visible around 0.5s, knockback away from attacker, then flee.
+  2. Hit repeatedly inside 0.5s: no extra health loss, knockback, or flee direction reset.
+  3. Explosion: sheep push radially away from blast center.
+  4. Prop physics impact: damage still works, physgun/bullets remain normal, no extra BMB knockback overlay.
+  5. Hit during active flee: sheep should not freeze from repeated direction re-picks.
+  6. Knockback into invalid/narrow support: stranded recovery should take over after landing.
+
+## 2026-06-13 Latest Status After Fourth 34th Round
+
+- User retest found:
+  - Hurt flash is visible.
+  - Invulnerability frames work.
+  - Regression: on every flash, HUD looked like `vel:70/0` and the mob stopped.
+  - Regression: no visible knockback.
+- Diagnosis:
+  - The red flash function itself did not touch movement.
+  - HUD's second `vel` number is `BMBDesiredSpeed`.
+  - `RunBMBKnockback()` was calling `MaintainBMBMoveSpeed(0)`, publishing `BMBDesiredSpeed=0`.
+  - That created the freeze and likely suppressed horizontal knockback.
+- Fix:
+  - Added `BMBKnockbackDesiredSpeed`, `BMBKnockbackActivitySpeed`, and `BMBKnockbackLocoSpeed`.
+  - Knockback keeps public desired/activity speed at the pre-hit non-zero intent for HUD/animation.
+  - Knockback uses an internal loco desired-speed budget to allow direct horizontal `SetVelocity`.
+  - `StartBMBKnockback()` now applies one immediate horizontal velocity write in the damage tick.
+  - Regression script now forbids movement writes inside `StartBMBHurtFlash()` and forbids `MaintainBMBMoveSpeed(0)` / `SetDesiredSpeed(0)` inside `RunBMBKnockback()`.
+- Verification passed:
+  - Damage/knockback script.
+  - Flee speed script.
+  - Debug gap/collision rollback script.
+  - Hop/debug/gap script.
+  - Drop/debug/spawn/perf script.
+  - Movement recovery/scaling script.
+  - Stranded recovery script.
+  - Block-size parameterization script.
+  - glualint on changed Lua files.
+- Next game retest:
+  1. Shoot/hit a walking sheep: red flash should happen, but HUD target speed should not stick at 0.
+  2. Accepted hit should visibly push sheep horizontally away from attacker.
+  3. Invulnerability hits within 0.5s should still do no extra damage/knockback/flee refresh.
+  4. Flee after hit should resume normally after knockback, without repeated direction re-pick.
+
+## 2026-06-13 Latest Status After Fifth 35th Round
+
+- User retest after round 34:
+  - `vel` no longer becomes `.../0`.
+  - The mob still visibly stops after hit.
+  - Cooldown felt too long; user verified current MC behavior as closer to 0.5s.
+  - MC mobs get a small upward pop and continue trying to flee while airborne.
+  - First hit after spawn had no visible knockback; later hits only pushed a little.
+- Source correction:
+  - `LivingEntity` sets `invulnerableTime = 20`, but same/lower damage is ignored only while `invulnerableTime > 10`.
+  - Effective BMB damage cooldown should be 0.5s.
+  - MC grounded knockback has a vertical component; airborne knockback preserves current vertical velocity.
+- Implemented:
+  - `DamageInvulnerabilityTime = 0.5`.
+  - `KnockbackDuration = 0.12`, so knockback is a short impulse arbitration window rather than visible hard-stun.
+  - Added vertical lift: grounded hit calls `loco:Jump()` and writes z velocity clamped 170-240u/s.
+  - `StartBMBKnockback()` immediately writes horizontal + vertical velocity in the damage tick, covering first-hit-after-spawn cases.
+  - Flee passes `allowStrandedStart = airborneStart` after knockback so airborne mobs continue attempting to run.
+- Verification passed:
+  - Damage/knockback script.
+  - Flee speed script.
+  - Debug gap/collision rollback script.
+  - Hop/debug/gap script.
+  - Drop/debug/spawn/perf script.
+  - Movement recovery/scaling script.
+  - Stranded recovery script.
+  - Block-size parameterization script.
+  - glualint on changed Lua files.
+- Next game retest:
+  1. First hit after spawn should knock back and pop slightly upward.
+  2. Hit cooldown should feel around 0.5s, not 1s.
+  3. After the short knockback impulse, sheep should continue flee behavior even if still airborne.
+  4. `vel` target speed must not return to 0; prop damage and physgun should remain unchanged.

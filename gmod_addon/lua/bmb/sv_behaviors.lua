@@ -17,8 +17,9 @@ function BMB.Behaviors.Wander.Run(mob)
     local size = blockSize()
     local minDistance = mob.WanderDistanceMin or size * (mob.WanderDistanceMinCells or 2)
     local maxDistance = mob.WanderDistanceMax or mob.WanderRadius or size * (mob.WanderDistanceMaxCells or 5)
+    local attempts = mob.WanderPathAttempts or 2
 
-    for _ = 1, 8 do
+    for _ = 1, attempts do
         if mob.BMBMoveInterrupt then return end
 
         local destination = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), maxDistance, mob)
@@ -36,11 +37,12 @@ function BMB.Behaviors.Wander.Run(mob)
 
             -- 走不通（路径失败/被挡）直接换个目标点重试，不插入停顿，保持移动连贯
             if mob.BMBMoveInterrupt then return end
+            coroutine.yield()
         end
     end
 
-    -- 候选点全部失败，歇一拍避免空转刷路径
-    mob:InterruptibleWait(math.Rand(1.0, 2.0))
+    -- 候选点全部失败，歇一拍避免多只 mob 在同一帧连续刷 A*。
+    mob:InterruptibleWait(math.Rand(mob.WanderFailurePauseMin or 0.8, mob.WanderFailurePauseMax or 1.8))
 end
 
 -- Flee = MC 的 PanicGoal（参考 net/minecraft/world/entity/ai/goal/PanicGoal.java +
@@ -87,6 +89,8 @@ function BMB.Behaviors.Flee.Run(mob)
     local giveUpAfter = mob.FleeGiveUpFailures or 4
 
     while CurTime() < (mob.FleeUntil or 0) do
+        if mob.IsBMBKnockbackActive and mob:IsBMBKnockbackActive() then return end
+
         if mob.ClearBMBMovementInterrupt then
             mob:ClearBMBMovementInterrupt()
         else
@@ -97,12 +101,30 @@ function BMB.Behaviors.Flee.Run(mob)
         local moved = false
 
         if destination then
+            local airborneStart = mob.IsBMBOnGround and not mob:IsBMBOnGround() or false
+            local fleeMinPathSpeed
+            if mob.GetBMBRunActivityThreshold then
+                fleeMinPathSpeed = mob:GetBMBRunActivityThreshold() + (mob.FleeMinPathSpeedPadding or 1)
+            else
+                fleeMinPathSpeed = ((mob.WalkSpeed or mob.RunSpeed or 0) + (mob.RunSpeed or mob.WalkSpeed or 0)) * 0.5 + 1
+            end
+
+            fleeMinPathSpeed = math.min(mob.RunSpeed or fleeMinPathSpeed, fleeMinPathSpeed)
+
             -- allowPartial=false：恐慌候选不可达就该算失败计数（MC：被围住冲几下放弃），
             -- 部分路径会把"撞墙"洗成"成功冲刺"，失败计数永远清零、围栏里无限乱撞
-            moved = mob:MoveToWorldPosition(destination, mob.RunSpeed, { skipSourcePath = true, allowPartial = false })
+            moved = mob:MoveToWorldPosition(destination, mob.RunSpeed, {
+                skipSourcePath = true,
+                allowPartial = false,
+                allowStrandedStart = airborneStart,
+                moveIntentSpeed = mob.RunSpeed,
+                minPathSpeed = fleeMinPathSpeed
+            })
         end
 
         if mob.BMBMoveInterrupt then
+            if mob.IsBMBKnockbackActive and mob:IsBMBKnockbackActive() then return end
+
             -- 跑动中再次受击：FleeUntil 已被刷新，不算逃跑失败，直接进下一段
             if mob.ClearBMBMovementInterrupt then
                 mob:ClearBMBMovementInterrupt()

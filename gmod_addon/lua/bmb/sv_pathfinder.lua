@@ -141,6 +141,13 @@ local function neighbors(coord, blockWorld, options)
             if isStandable(blockWorld, sameLevel, options) then
                 addNeighbor(found, copyCoord(sameLevel), "walk", 1)
             else
+                -- StrandedRecovery 专用：实体已经被物理托在一个 BMB 语义非法的位置
+                -- （例如玻璃板/脚下支撑失效），允许它沿 passable 但无支撑的表面逃向最近合法格。
+                -- 普通寻路不走这里，因此不会主动把玻璃板等窄碰撞规划为目标路线。
+                if options and options.allowUnsupportedWalk and isPassable(blockWorld, sameLevel, options) then
+                    addNeighbor(found, copyCoord(sameLevel), "stranded", 1.05)
+                end
+
                 local dropTarget, dropCells = findDropNeighbor(blockWorld, coord, sameLevel, options)
 
                 if dropTarget then
@@ -245,6 +252,94 @@ local function snapGoalToStandable(blockWorld, goalCoord, options)
     return nil
 end
 
+local function prepareQueryOptions(options)
+    options = options or {}
+    options.passableCache = options.passableCache or {}
+    options.supportCache = options.supportCache or {}
+    return options
+end
+
+local function searchOffsetAt(index, radius, downCells)
+    local width = radius * 2 + 1
+    local layerSize = width * width
+    local zeroIndex = index - 1
+    local layer = math.floor(zeroIndex / layerSize)
+    local layerIndex = zeroIndex - layer * layerSize
+
+    return (layerIndex % width) - radius,
+        math.floor(layerIndex / width) - radius,
+        layer - downCells
+end
+
+local function scoreStandableCandidate(blockWorld, origin, center, dx, dy, dz, options)
+    if dx == 0 and dy == 0 and dz == 0 then return nil end
+    if options and options.minHorizontalCells
+        and math.max(math.abs(dx), math.abs(dy)) < options.minHorizontalCells then
+        return nil
+    end
+
+    local cell = {
+        x = center.x + dx,
+        y = center.y + dy,
+        z = (center.z or 0) + dz
+    }
+
+    if not isStandable(blockWorld, cell, options) then return nil end
+
+    local pos = blockWorld.BlockToWorld(cell)
+    local flatCost = math.sqrt(dx * dx + dy * dy)
+    local verticalCost = math.abs(dz) * 1.25
+
+    return flatCost + verticalCost + origin:DistToSqr(pos) * 0.0001, pos, cell
+end
+
+function pathfinder.IsStandablePosition(pos, options)
+    if not BMB or not BMB.BlockWorld then return true end
+
+    local blockWorld = BMB.BlockWorld
+    if not blockWorld.WorldToBlock or not blockWorld.EnsureInitialized then return true end
+
+    options = prepareQueryOptions(options)
+    blockWorld.EnsureInitialized(pos)
+
+    local cell = blockWorld.WorldToBlock(pos)
+    return isStandable(blockWorld, cell, options), copyCoord(cell)
+end
+
+function pathfinder.FindNearestStandable(origin, options)
+    if not BMB or not BMB.BlockWorld then return nil end
+
+    local blockWorld = BMB.BlockWorld
+    if not blockWorld.WorldToBlock or not blockWorld.BlockToWorld or not blockWorld.EnsureInitialized then return nil end
+
+    options = prepareQueryOptions(options)
+    blockWorld.EnsureInitialized(origin)
+
+    local center = blockWorld.WorldToBlock(origin)
+    local allowVertical = blockWorld.SupportsVerticalPath ~= false
+    local radius = math.max(1, math.floor(options.searchRadiusCells or 6))
+    local downCells = allowVertical and math.max(0, math.floor(options.searchDownCells or options.maxDropCells or 3)) or 0
+    local upCells = allowVertical and math.max(0, math.floor(options.searchUpCells or 1)) or 0
+    local bestCell
+    local bestPos
+    local bestScore = math.huge
+    local searchWidth = radius * 2 + 1
+    local searchCount = searchWidth * searchWidth * (downCells + upCells + 1)
+
+    for i = 1, searchCount do
+        local dx, dy, dz = searchOffsetAt(i, radius, downCells)
+        local score, pos, cell = scoreStandableCandidate(blockWorld, origin, center, dx, dy, dz, options)
+
+        if score and score < bestScore then
+            bestScore = score
+            bestCell = copyCoord(cell)
+            bestPos = pos
+        end
+    end
+
+    return bestPos, bestCell
+end
+
 function pathfinder.FindPath(startPos, goalPos, options)
     options = options or {}
     options.passableCache = {}
@@ -288,7 +383,7 @@ function pathfinder.FindPath(startPos, goalPos, options)
 
     -- 时间切片：FindPath 只在 nextbot 行为协程里调用，定期 yield 把大搜索摊到多个
     -- tick 上（mob 停半拍"想路"），不可达目标也不会再把单帧卡住
-    local yieldEvery = math.max(16, options.yieldEvery or 64)
+    local yieldEvery = math.max(8, options.yieldEvery or BMB.Config.PathfinderYieldEvery or 64)
 
     for iteration = 1, BMB.Config.MaxPathIterations do
         if #open == 0 then break end

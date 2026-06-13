@@ -120,7 +120,7 @@ local function startTargetMove(mob, target, speed, duration)
     mob.BMBDebugMoveSpeed = speed
     -- 右键寻路目标不能用面板 duration 当硬截断；长路径预算由 MoveAlongPath
     -- 按路径长度再算一次。这里的 Until 只保证行为循环有足够时间接到 debug 请求。
-    mob.BMBDebugMoveUntil = CurTime() + math.max(duration or 0, pathBudget, 12)
+    mob.BMBDebugMoveUntil = CurTime() + math.max(duration or 0, pathBudget, mob.DebugPathCommandTimeout or 120)
     mob.BMBDebugMoveLookAhead = math.max(speed * 1.2, 160)
     mob.BMBDebugMoveTolerance = BMB and BMB.Config and BMB.Config.DefaultGoalTolerance or (blockSize() * 0.5)
     mob.FleeUntil = 0

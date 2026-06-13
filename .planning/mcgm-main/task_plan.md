@@ -84,7 +84,31 @@ Phase 2
 - [x] 复测第二十三轮：用户确认当前未发现 bug ✅；一格 hop、误上两格、debug 远点早停、跳后动作残留暂未复现
 - [x] 第二十四轮：MCSWEP 已切 `MC.BS=36.5`，BMB 改为单一尺寸入口 `BMB.GetBlockSize()` / `BMB.BS`；mock fallback 36.5；BaseMob 尺寸默认改 scale/cell（goal/node tolerance、carrot、corner、hop apex/lift/StepHeight、MaxStepDown），Sheep wander/flee 改 cell 数，mock/real/debug 跟随 BS；新增 `scripts/check_block_size_parameterization.ps1`
 - [ ] 复测第二十四轮：控制台确认 `MC.BS` 与 `BMB.BS` 都为 36.5；hop 一格稳定、两格不上；半砖/楼梯走上去；36.5 走廊双向通行；drop 3 格主动下、4 格拒绝；吃草链路和坐标往返正常；mock/real 尺度一致
-- [ ] 半砖/栅栏细化（`MC.BlockBoxes`）：A* 当前把半砖当空气，混半砖地形选择跳整格而非走半砖台阶（观感问题，hop 稳定后再做）
+- [x] 第二十五轮：StrandedRecovery（非法起点恢复）——当前脚部 cell 非 standable 但物理上 onGround 时，本地 8 方向 bail-out；优先走到邻近合法 standable 点，否则侧向离开窄支撑并下落；普通 A* 仍不把玻璃板顶当合法目标
+- [ ] 复测第二十五轮：物理枪/工具把羊放玻璃板顶或挖掉脚下支撑后，`state=stranded` 后应进入 `mode=stranded_bail`，必要时 `stranded_fall`，不卡顿、不沿玻璃板网络当路走，落到合法地面后恢复 wander；普通 wander 不主动规划到玻璃板顶；旧 hop/drop/走廊/物理枪不回归
+- [x] 第二十六轮：移动/性能收口——Stranded bail-out 撞障碍后记录失败方向并 `stranded_bail_retry` 换方向；drop 空中保持朝向不回头；BlockHop 起跳前按 lateral tolerance 对齐 launch/backoff；非 held Think 维护节流；新增 `scripts/check_movement_recovery_and_scaling.ps1`
+- [x] 复测第二十六轮：用户确认玻璃板撞障碍不再永久卡住 ✅；高处 drop 不空中回头 ✅；复杂台阶 hop 先对准再跳 ✅；遗留 drop 水平惯性、debug partial/hop 早停、新出生立刻 wander、20+ sheep FPS 低
+- [x] 第二十七轮：drop 空中水平速度钳制但不反向 steering；debug path 在到达/过期前持续 replan，partial/dead-end 进入 `debug_repath`；sheep 新生成 idle 4~9s；A* yield budget、wander attempts/failure pause、Think/physics impact 间隔和错峰做多 mob 峰值优化；新增 `scripts/check_drop_debug_spawn_perf.ps1`
+- [x] 复测第二十七轮：用户确认 drop 不回头 ✅、debug 右键寻路 ✅、新 sheep 先 idle ✅、优化有效 ✅；发现回归：NPC 走路一卡一卡
+- [x] 第二十八轮：修一卡一卡回归——恢复 `Think` 每 tick `NextThink(CurTime())`，禁止节流整个 NextBot entity Think；性能优化保留在 physics impact 内部间隔/错峰、A* yield、Wander attempts/failure pause、spawn idle；更新检查脚本防 `NextThink(CurTime()+self.ThinkInterval)` 回归
+- [x] 复测第二十八轮：用户确认 NPC 不再卡、玩家也不卡 ✅；发现新问题：hop 多次贴脸失败、debug 复杂路径跑到一半回 wander、debug/path 会跨过一格空
+- [x] 第二十九轮：BlockHop 增加 faceDistance 起跳准入（`face_close` 先退到更远 launch 点）；debug target 默认 120s 命令寿命并在路径推进/靠近目标时续命；carrot 视线检查增加沿线 standable 采样，防止抄近路跨一格空；新增 `scripts/check_hop_debug_gap_regressions.ps1`
+- [ ] 复测第二十九轮：hop 不再 `face≈16~20` 贴脸硬跳多次；debug 不再半路过期回 wander；一格空洞不再被 carrot 跨过去；平滑移动和性能不回归（用户已确认 path 跨一格空没问题，debug gap 假死转入第三十轮）
+- [x] 第三十轮：debug gap/dead-end 无进展时不再假死到 120s，新增 `DebugPathNoProgressTimeout` + `debug_no_progress`；碰撞第一版曾尝试 player-like collision group + 软分离，后续撤销
+- [x] 复测第三十轮：debug 右键目标隔着一格空/死路时短暂 repath 后退出 debug，不假死 ✅；碰撞第一版失败，玩家仍能站在 sheep bbox 上
+- [x] 第三十一轮：禁用 player/BMB 硬碰撞试验失败（物理枪抓不起、子弹不掉血、prop 物理伤害链路受影响）；回滚全部碰撞计划，恢复 `SetCollisionGroup(COLLISION_GROUP_NPC)`，删除 `SetCustomCollisionCheck`/`ShouldCollide`/软分离；脚本改为防止碰撞计划回归
+- [ ] 复测第三十一轮回滚：物理枪恢复可抓；子弹/枪击恢复掉血；prop 物理伤害不受影响；debug gap 不回归；玩家踩/挤 mob 保留 GMod 手感
+- [x] 第三十二轮：Flee 速度/动作意图稳定化——Base 新增 `BMBActivitySpeed`，把 animation/activity intent 与瞬时 `BMBDesiredSpeed` 分离；Flee 传 `moveIntentSpeed=RunSpeed` 并用 `minPathSpeed` 把 path_corner 降速夹在 run 阈值以上；新增 `scripts/check_flee_speed_stability.ps1`
+- [ ] 复测第三十二轮：受击 Flee 期间目标速度/ACT_RUN 不再在 run/walk 阈值上下抖；path_corner 可以轻微降速但不切走路动作；Flee 围住放弃、悬崖/撞墙、hop/drop/debug gap 不回归
+- [x] 第三十三轮：MC 式受击反馈第一版——受击红闪（`hurtTime = 10 ticks` / 0.5s）、有效伤害冷却（源码 `invulnerableTime=20` 但 `>10` 前半段才挡同等/更低伤害，BMB 取 0.5s）、非冷却窗口才触发击退；击退是一等状态，优先级 held 之后、debug/stranded/flee 之前；`DMG_CRUSH` 物理砸击不叠 BMB 击退；Flee 中受击只刷新恐慌窗口/威胁来源，不额外打断当前 flee 段；新增 `scripts/check_damage_iframes_knockback.ps1`
+- [ ] 复测第三十三轮：普通攻击扣血红闪并远离攻击者击退；无敌帧内连击不扣血、不击退、不刷新 flee；爆炸从爆心径向击退；prop 物理伤害链路不回归；击退落地到非法格后 StrandedRecovery 能接住；Flee 中连击不再原地反复重选方向
+- [x] 第三十四轮：修第三十三轮实测回归——受击红闪正常但 HUD `vel` 第二项变 0、NPC 停住且无击退。根因是 `RunBMBKnockback()` 用 `MaintainBMBMoveSpeed(0)` 把 `BMBDesiredSpeed` 发布成 0，同时可能吞掉 `loco:SetVelocity` 击退。改为保存 `BMBKnockbackDesiredSpeed` / `BMBKnockbackActivitySpeed`，公开速度意图保持非 0；内部单独给 loco 击退速度预算并启动当帧写入水平击退；检查脚本禁止红闪碰 movement/loco、禁止 knockback 写 `DesiredSpeed=0`
+- [ ] 复测第三十四轮：受击红闪时 HUD 不再 `70/0`，普通移动/flee 能继续接管；非无敌帧命中能看见水平击退；无敌帧连击仍不扣血/不击退；prop 物理伤害、物理枪、debug gap 不回归
+- [x] 第三十五轮：MC 击退手感收口——`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 缩到 0.12，避免长时间压住 flee；地面受击 `loco:Jump()` 后给竖直上抬（`KnockbackVerticalSpeedScale=6`，clamp 170~240u/s），第一下也立即写水平+竖直冲量；Flee 在空中恢复时传 `allowStrandedStart=airborneStart` 继续尝试逃跑
+- [ ] 复测第三十五轮：第一下生成后受击也有击退；受击有一点离地上抬；击退后不再长时间停住，空中/落地都会继续 flee；冷却约 0.5s；旧红闪、prop 伤害、物理枪、debug gap 不回归
+- [ ] Fall damage / 摔伤：后续单独实现掉血来源，不和受击击退共用状态；摔伤不应触发击退
+- [ ] 半砖/楼梯/MC 台阶表面高度寻路：等待 MCSWEP shape/floor height 接口（`MC.BlockBoxes` 或等价 API）；A* 从二值 solid/air 升级为 surface-height walk/hop/drop
+- [ ] 玻璃板/栅栏 shape 接口接入后：PARTIAL/窄顶碰撞按"有碰撞但不可站立"，普通 A* 不规划其顶面；StrandedRecovery 负责已站上去的逃生
 - **Status:** in_progress
 
 ### Phase 3: Zombie 迁移回新架构

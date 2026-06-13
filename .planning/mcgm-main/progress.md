@@ -669,3 +669,379 @@
   - `CLAUDE.md`
   - `docs/STATE.md`
   - `.planning/mcgm-main/*`
+
+### 第二十五轮：StrandedRecovery 非法起点恢复（2026-06-12，待复测）
+
+- 用户复测第二十四轮：36.5 后一格 hop、普通上台阶、旧 bug 回归项都没问题。新问题：羊不会走上 MC 半砖/台阶（path_cliff）；另一个场景是站到玻璃板上后 idle 冻住。
+- 分诊：
+  - MC 半砖/台阶是表面高度/shape 语义缺失，当前 MCSWEP 未提供接口，本轮不在 path_wall/path_cliff 里写特判，记录为后续 shape/floor height 接口待办。
+  - 玻璃板问题可先修：实体物理上被 Source/MCSWEP 碰撞托着，但 BMB 网格语义认为当前 cell 非 standable。普通 Wander/Flee 从非法起点出发会空转或拿不到路，需要统一的 StrandedRecovery。
+- `sv_pathfinder.lua`
+  - 新增 `pathfinder.IsStandablePosition(pos, options)`，复用现有 passable + support 缓存语义，供 BaseMob 判断当前脚下是否合法。
+  - 新增 `pathfinder.FindNearestStandable(origin, options)`，在半径内搜索最近合法 standable cell，供 recovery 选目标。
+  - 新增 recovery 专用 `allowUnsupportedWalk`：普通 A* 仍要求 walk 邻居 standable；只有 recovery path 可把 passable 但无支撑的格子作为 `action="stranded"` 过渡节点，用来从玻璃板/非法起点逃回合法格。
+- `bmb_base_mob.lua`
+  - 新增 `ShouldRunBMBStrandedRecovery` / `RunBMBStrandedRecovery`。条件：非 held、`IsOnGround`、当前 BMB standable=false。空中下落不抢控制。
+  - recovery 进入 `state=stranded` / `mode=stranded_recovery`，找最近合法 target，然后 `MoveToWorldPosition(..., allowStrandedStart=true, allowPartial=false)`。
+  - Debug 右键 path 也带 `allowStrandedStart=true`，方便从玻璃板上直接点合法地面拉出来。
+- `bmb_sheep.lua`
+  - 状态机顺序：held → debug → stranded recovery → flee/eat/wander。debug 保持优先；无 debug 时先恢复合法地面再跑普通目标。
+- 新增 `scripts/check_stranded_recovery.ps1`，先红灯确认缺口，再改到绿灯，防止以后移除 recovery 调度或路径语义。
+- 用户复测截图显示 `state=stranded mode=stranded_no_target`：检测已命中，但逃生目标搜索/移动策略不够。
+- 补丁：
+  - `FindNearestStandable` 支持 `minHorizontalCells`，避免选中正下方合法格导致直线逃生水平向量为 0。
+  - StrandedRecovery 默认搜索扩大为水平 16 格、向下 12 格、向上 3 格；这是逃生路径，成本优先级低于可用性。
+  - 新增 `MoveBMBStrandedDirect`：找到合法目标后不走 A*，直接用 NextBot `SteerTowards` 朝目标 XY 直线逃离；中途离地进入 `stranded_fall`，落地后重新判定 standable。
+  - `stranded_no_target` 只表示当前大范围内真没找到合法格，会按 `StrandedRecoveryRetryDelay` 周期重扫，不永久冻结。
+- 用户再次复测：直接在玻璃板上生成会明显卡顿，而且会沿玻璃板结构走下去。分诊为两点：
+  - 大范围 3D 搜索在 real world 中会触发大量 passable/support 查询，周期性卡顿。
+  - 远处合法目标 direct steering 会把玻璃板真实碰撞当成可走路线，破坏"玻璃板不可寻路"语义。
+- 修正：
+  - StrandedRecovery 默认搜索降回小范围，不在行为层周期性大半径扫格。
+  - 新增 `HasBMBPhysicalGroundAt` / `FindBMBStrandedEscapePoint` / `MoveBMBStrandedBailOut`。
+  - 恢复策略改为本地 8 方向 bail-out：邻近合法 standable 点优先；否则选无物理支撑的一侧轻推下去，进入 `stranded_fall` 后落地复判。
+  - HUD 预期从 `stranded_recovery` 转为 `stranded_bail`，必要时 `stranded_fall`；不再使用远点 `stranded_direct` 作为默认恢复路径。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sv_pathfinder.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/entities/bmb_sheep.lua`
+  - `scripts/check_stranded_recovery.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十六轮：移动恢复与多 mob 首轮性能优化（2026-06-13，待复测）
+
+- 用户复测第二十五轮：玻璃板上能进入 `stranded_bail`，但撞到障碍会停在 `stranded_bail_blocked`；高处 `path_drop` 下落时会在空中回头给一脚反向速度再转回来；复杂台阶 `path_hop` 会直接贴着能跳/不能跳的位置都试一下；50 只 NPC 帧率掉到十位数。
+- 分诊：
+  - `FindBMBStrandedEscapePoint` 方向顺序固定，bail-out 被挡后下一轮还会选同方向。
+  - `path_drop` 空中仍走通用 `SteerBMBInAir(carrot)`，carrot 落到身后时会 FaceTowards + 改水平速度。
+  - `GetBMBHopLaunchControl` 只看距离窗口，不看横向是否对齐 launch line；距离过远时仍朝上层格中心/方块面走。
+  - `Think()` 每 tick 做 activity/物理影响维护；activity 又可能查地面状态，多只 idle mob 会放大。
+- `bmb_base_mob.lua`
+  - 新增 `RecordBMBStrandedEscapeFailure` / `IsBMBStrandedEscapeDirectionBlocked`，bail-out 失败方向短冷却，HUD 模式改 `stranded_bail_retry`，下一轮从游标方向继续找。
+  - 新增 `MaintainBMBDropAir`，drop 离地后只刷新 watchdog，不再 FaceTowards/air-steer，保持 MC 式下落观感。
+  - `GetBMBHopLaunchControl` 新增 `BlockHopLaunchLateralToleranceScale=0.35`；横向偏离先 `align` 到 backoff，距离过远也走 backoff，不直接冲方块面。
+  - 新增 `ThinkInterval=0.1` / `HeldThinkInterval=0`；非 held 的维护 Think 节流，held 仍每 tick 缴械防物理枪抽动回归。
+- 新增 `scripts/check_movement_recovery_and_scaling.ps1`，覆盖 stranded retry、drop no-backturn、hop align、Think throttling。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `scripts/check_movement_recovery_and_scaling.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十七轮：drop 惯性、debug replan、spawn idle 与多 mob 峰值优化（2026-06-13，待复测）
+
+- 用户复测第二十六轮：
+  - 玻璃板撞墙后不会继续卡死 ✅
+  - 高处 drop 不再空中转身 ✅，但仍带完整水平惯性，会从高处被甩出去一段。
+  - 复杂台阶 hop 已先对准再跳 ✅
+  - 性能仍不够：20 多只 sheep/NPC 就掉到十位数 FPS。
+  - debug 右键寻路经过 hop/partial 到没有可走地方会放弃 debug。
+  - 新放出来的羊应该先 idle 一会儿，像 MC，不应立刻 wander。
+- 分诊：
+  - `MaintainBMBDropAir` 只移除了 `FaceTowards`/air steer，没有处理离边瞬间保留下来的完整水平速度；Source 空中摩擦小，所以不会自动慢下来。
+  - `RunBMBDebugMove` path 分支只调用一次 `MoveToWorldPosition`，不管返回成功/失败都会 `ClearBMBDebugMove()`；partial/dead-end/hop 失败因此直接回普通行为。
+  - `bmb_sheep.Initialize` 直接 `SetBMBState("wander")`，行为循环第一轮就可能选目标。
+  - 性能尖峰不是单一 `Think`：Wander 单轮最多 8 次完整 A*，A* 默认每 64 iteration 才 yield，20 只同时起步会同帧堆搜索；周期 `ents.FindInSphere` 也过密且未错峰。
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - 新增 `DropAirMaxHorizontalSpeedScale=0.35`，`MaintainBMBDropAir` 在不转身、不追 carrot 的前提下钳制空中水平速度，避免完整行走/跑步惯性把 mob 甩远。
+  - 新增 `DebugPathSegmentMinTimeout` / `DebugPathRepathDelay`；debug path 分支改为 while：目标到达或 debug 过期前持续 `MoveToWorldPosition`，并显式 `allowPartial=true` / `acceptPartial=true`，失败只显示 `debug_repath` 后短暂停顿重算。
+  - 新增 `RunBMBInitialIdle`，供友好 mob 出生 idle 复用。
+  - 非 held `ThinkInterval` 进一步从 0.1 调到 0.2；`PhysicsImpactInterval` 从 0.08 调到 0.3，生成时 `NextPhysicsImpactCheck = CurTime() + math.Rand(...)` 错峰。`OnContact`/`StartTouch` 仍保留即时 prop impact。
+- `gmod_addon/lua/bmb/sh_config.lua` / `sv_pathfinder.lua`
+  - 新增 `BMB.Config.PathfinderYieldEvery = 24`；A* 默认 yield budget 从硬编码 64 改走全局配置，降低多 mob 同帧展开量。
+- `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - Wander 单轮完整 path 尝试改为 `mob.WanderPathAttempts`（sheep=2），失败后 `WanderFailurePauseMin/Max` 随机退避，避免同一行为 tick 连刷多次 A*。
+- `gmod_addon/lua/entities/bmb_sheep.lua`
+  - 新增 `InitialIdleMin=4.0` / `InitialIdleMax=9.0`；生成时状态为 `idle` 并记录 `BMBInitialIdleUntil`。状态机顺序保持 debug/stranded/flee 优先，initial idle 只挡普通 eat/wander。
+- 新增 `scripts/check_drop_debug_spawn_perf.ps1`，先红灯确认缺口，再改绿灯；同步更新 `scripts/check_movement_recovery_and_scaling.ps1` 的 ThinkInterval 期望。
+
+- Files modified:
+  - `gmod_addon/lua/bmb/sh_config.lua`
+  - `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - `gmod_addon/lua/bmb/sv_pathfinder.lua`
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/entities/bmb_sheep.lua`
+  - `scripts/check_drop_debug_spawn_perf.ps1`
+  - `scripts/check_movement_recovery_and_scaling.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十八轮：恢复 NextBot Think 每 tick，修走路一卡一卡回归（2026-06-13，待复测）
+
+- 用户复测第二十七轮：
+  - `path_drop` 空中不再转身 ✅
+  - debug 右键寻路正常 ✅
+  - 新生成 sheep 先 idle 4~9 秒 ✅
+  - 性能优化正常 ✅
+  - 新回归：NPC 走路一卡一卡，怀疑优化删减/节流误伤。
+- 分诊：
+  - 第 27 轮把 `bmb_base_mob:Think()` 末尾从 `NextThink(CurTime())` 改成 `NextThink(CurTime() + self.ThinkInterval)`，且 `ThinkInterval=0.2`。
+  - 这等于把整个 NextBot entity Think 降到 5Hz。移动协程仍 yield，但实体级 Think/身体更新/客户端插值会被外层调度拖成肉眼可见的“走一顿一顿”。
+  - 旧历史里也有类似经验：`NextThink(CurTime()+0.08)` 会制造移动补油门感；所以 whole Think 不能当性能阀门。
+- 修正：
+  - 删除 `ThinkInterval` / `HeldThinkInterval` 的外层调度语义。
+  - `Think()` 末尾恢复 `self:NextThink(CurTime())`，并加注释：NextBot locomotion/body interpolation 必须逐 tick；贵维护项在内部节流。
+  - 性能优化仍保留：`PhysicsImpactInterval=0.3` + 生成时错峰；A* `PathfinderYieldEvery=24`；Wander `WanderPathAttempts=2` + failure pause；spawn idle。
+  - 更新 `scripts/check_drop_debug_spawn_perf.ps1` / `scripts/check_movement_recovery_and_scaling.ps1`：要求 `NextThink(CurTime())`，禁止 `NextThink(CurTime()+self.ThinkInterval)` 回归。
+- 红绿验证：
+  - 改检查脚本后，当前第 27 轮代码红灯：两个脚本都报 `NextBot entity Think must stay every tick` / `many-mob scaling must not throttle the whole entity Think`。
+  - 恢复 per-tick Think 后两脚本转绿。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `scripts/check_drop_debug_spawn_perf.ps1`
+  - `scripts/check_movement_recovery_and_scaling.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+### 第二十九轮：hop face-distance、debug 命令续命、carrot 防跨洞（2026-06-13，待复测）
+
+- 用户复测第二十八轮：
+  - NPC 不再卡，玩家也不卡 ✅
+  - 新问题 1：BlockHop 很多时候连续跳不上去，日志里多次失败后才偶尔成功。
+  - 新问题 2：debug 右键跳到上面后跑到一半不动，随后回到 wander。
+  - 新问题 3：debug 期间能直接跨过一格方块空洞。
+- 分诊：
+  - hop 日志签名非常明确：失败多为 `dist≈34~38 / face≈16~20 / speed≈0~23 / apex=0~36`；成功样本为 `dist≈49 / face≈31 / speed≈111 / apex≈50`。弹道本身能成功，问题是准入允许在 hull 几乎贴着方块面时硬跳，水平段顶住方块侧面后上抛被吃。
+  - debug 半路回 wander 仍是命令寿命层问题：Tool 右键按直线距离给预算，复杂绕路/hop/repath 会超过初始 `BMBDebugMoveUntil`；MoveToWorldPosition 一段失败后如果命令过期就直接退出 debug。
+  - 跨一格空洞是 carrot 可见性缺了“支撑”维度：`IsPathGridVisible` 只检查直线 hull 是否撞 solid，不检查中间 sample 是否 standable；A* 绕洞的路径被 carrot 直线抄近路到对面平台，Source safety 只探 carrot 点本身，洞中间漏掉。
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - 新增 `BlockHopLaunchMinFaceDistanceScale=0.75` / `BlockHopLaunchIdealFaceDistanceScale=0.85`。
+  - `GetBMBHopLaunchControl` 的 ready 条件加入 `faceDistance >= minFaceDistance`；`face_close` 时先 steer 到按 ideal face distance 计算出的 backoff/launch 点。36.5 下最小 face≈27u，理想 face≈31u，对齐用户成功样本。
+  - 新增 `DebugPathCommandTimeout=120` / `DebugPathProgressGrace=8`；debug path 每段调用前记录 dist/advance，若 `moved`、推进节点或明显靠近目标，则 `BMBDebugMoveUntil = math.max(..., CurTime()+grace)` 续命。
+  - 新增 `IsBMBPathLineStandable`；`IsPathGridVisible` 现在每个 sample 同时要求 hull clear 和 A* 同一 standable 语义，单次 carrot 检查共享 `passable/support` cache，避免重复放大开销。
+- `gmod_addon/lua/weapons/gmod_tool/stools/bmb_debug.lua`
+  - 右键 target move 的初始 `BMBDebugMoveUntil` 改用 `mob.DebugPathCommandTimeout or 120` 作为下限，复杂路径默认不会十几秒就过期。
+- 新增 `scripts/check_hop_debug_gap_regressions.ps1`，先红灯确认缺口，再改绿灯。
+
+- Files modified:
+  - `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - `gmod_addon/lua/weapons/gmod_tool/stools/bmb_debug.lua`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `CLAUDE.md`
+  - `docs/STATE.md`
+  - `.planning/mcgm-main/*`
+
+## 2026-06-13 Second 30th round - debug gap no-progress + MC-like collision first pass
+
+- User follow-up:
+  - 普通 path 跨一格空已经没问题。
+  - debug 期间如果碰到这个空洞/死路位置会“死机”，卡在 debug 状态不恢复。
+  - 新需求：碰撞尽量接近 MC，玩家/羊之间不要像硬刚体支撑；优先尝试 collision group，不够再做软水平推挤，并注意性能。
+- Root cause / design:
+  - 第二十九轮把 debug target 命令寿命拉到约 120s 是正确的，但缺了“命令级无进展”出口。对于不可达 gap/dead-end，移动段会反复失败并进入 `debug_repath`，命令层仍然有效，于是看起来像假死。
+  - MC 式实体碰撞不能写进 path steering/stranded/hop 内部，否则会和移动目标抢速度。它应当是所有移动决策之后的最后一道水平速度叠加。
+  - 软推挤不能裸两两循环。用 `ents.FindInSphere` 近邻扫描、per-entity `NextSoftSeparationAt` 错峰限频，避免 50 只时 O(n²) 尖峰。
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - 新增 `DebugPathNoProgressTimeout=3.5`。
+  - `RunBMBDebugMove` path 模式新增 `debugLastProgressAt/debugProgressTarget/debugLastProgressDistance`。只有推进 path node 或明显靠近目标才刷新 `BMBDebugMoveUntil`；连续无进展超过阈值则 `FailBMBMove("debug_no_progress")` + `ClearBMBDebugMove()`，避免卡在 `debug_repath` 到命令过期。
+  - 新增 `MobCollisionGroup = COLLISION_GROUP_PLAYER or COLLISION_GROUP_NPC` 与 `GetBMBMobCollisionGroup()`；`BaseInitialize` 不再硬编码 `COLLISION_GROUP_NPC`。
+  - 新增软分离参数：`SoftSeparationEnabled/Interval/SearchRadiusScale/RadiusPadding/Strength/PlayerStrength/MaxSpeed/VerticalTolerance`。
+  - `BaseInitialize` 初始化 `NextSoftSeparationAt` 随机 offset；`Think` 保持 `NextThink(CurTime())`，在 activity 更新后调用 `ApplyBMBSoftSeparation()`。
+  - 新增 `IsBMBSoftSeparationEntity`、`GetBMBEntityHorizontalRadius`、`AreBMBSoftSeparationZRangesNear`、`GetBMBSoftSeparationFallbackDirection`、`ApplyBMBSoftSeparation`。
+  - 软分离只处理玩家和 BMB mob；垂直范围只做 near/overlap 判定，推力始终 `Vector(separation.x, separation.y, 0)`，叠加到当前 velocity，保留 z，不制造“站在 mob 上”的竖直支撑。
+- Docs/tests:
+  - 新增 `scripts/check_debug_gap_and_collision.ps1`，先红灯确认缺口，再改绿灯。
+  - `CLAUDE.md` 增加 debug no-progress 与 MC-like collision/soft separation 规则。
+  - `docs/STATE.md`、task_plan、progress、findings、status_summary 同步第三十轮状态。
+- Validation so far:
+  - `scripts/check_debug_gap_and_collision.ps1`
+
+## 2026-06-13 Second 31st round - disable player/BMB hard collision support
+
+- User retest:
+  - debug gap/dead-end no-progress fixed ✅.
+  - Collision first pass failed: screenshot shows player standing on top of `bmb_sheep` bbox, HUD still `state=idle mode=idle`, so the mob is acting as a hard support platform.
+- Root cause:
+  - `COLLISION_GROUP_PLAYER` alone does not disable player↔NextBot hard collision/support in this setup.
+  - Soft horizontal separation cannot remove vertical support if the engine collision pair still resolves player-on-mob contact first. The hard pair has to be disabled before soft push can produce MC-style overlap/slide behavior.
+- Test:
+  - Extended `scripts/check_debug_gap_and_collision.ps1` to require `SetCustomCollisionCheck(true)`, a `ShouldCollide` hook named `BMB_SoftEntityCollision`, centralized `ShouldDisableBMBHardEntityCollision`, and `return false` for player/BMB hard collision pairs.
+  - Verified red before code: missing custom collision check, hook, and centralized rule.
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - Added `DisableHardEntityCollision = true`.
+  - `BaseInitialize` now calls `SetCustomCollisionCheck(true)` and `CollisionRulesChanged()` after setting collision group.
+  - Added `BMB.ShouldDisableBMBHardEntityCollision(ent1, ent2)`: returns true for player↔BMB mob and BMB mob↔BMB mob pairs, unless the mob opts out via `DisableHardEntityCollision=false`.
+  - Added `hook.Add("ShouldCollide", "BMB_SoftEntityCollision", ...)` returning `false` for those pairs.
+  - Prop/world collision is not touched; soft separation still handles horizontal push as the final velocity overlay.
+- Docs/tests:
+  - `CLAUDE.md` updated: collision group is insufficient; hard support must be disabled through custom collision + `ShouldCollide`, then soft separation handles horizontal overlap.
+  - `docs/STATE.md`, task_plan/progress/findings/status_summary updated to third-first round.
+
+## 2026-06-13 Third 31st round - collision plan rollback, keep GMod feel
+
+- User retest:
+  - `debug_no_progress` fix is confirmed good.
+  - The collision experiment broke core GMod interactions:
+    - Physgun can no longer pick up the mob.
+    - Bullets/gun damage no longer damages the mob.
+    - The custom collision path conflicts with prop physics damage semantics.
+  - User decision: delete the MC-like collision plan and keep GMod feel.
+- Root cause / conclusion:
+  - Entity collision is not isolated from trace/physgun/damage in this setup. Changing collision group or `ShouldCollide` affects more than player body support.
+  - Soft separation adds another velocity path that can interfere with damage/physics behavior. This is not worth pursuing for now.
+  - Keep the already-verified debug gap no-progress fix; roll back only the collision plan.
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - Restored `self:SetCollisionGroup(COLLISION_GROUP_NPC)`.
+  - Removed `MobCollisionGroup`, `DisableHardEntityCollision`, all `SoftSeparation*` parameters.
+  - Removed `GetBMBMobCollisionGroup`.
+  - Removed `SetCustomCollisionCheck(true)` / `CollisionRulesChanged()`.
+  - Removed `NextSoftSeparationAt` init and `self:ApplyBMBSoftSeparation()` from `Think`.
+  - Removed `BMB.ShouldDisableBMBHardEntityCollision` and `hook.Add("ShouldCollide", "BMB_SoftEntityCollision", ...)`.
+  - Removed soft separation helper functions and velocity overlay.
+- `scripts/check_debug_gap_and_collision.ps1`
+  - Now asserts debug gap no-progress remains.
+  - Now asserts GMod default collision remains: `SetCollisionGroup(COLLISION_GROUP_NPC)` present and no `COLLISION_GROUP_PLAYER`, custom collision, `ShouldCollide`, or soft separation code remains.
+- Docs:
+  - `CLAUDE.md` changed to explicit rule: preserve GMod/NextBot default collision feel; do not reintroduce player-like collision group, `ShouldCollide`, or soft separation without a separate design that proves physgun/trace/damage isolation.
+  - `docs/STATE.md` and planning files mark the MC-like collision plan as rolled back.
+
+## 2026-06-13 Second 32nd round - Flee speed/activity stability
+
+- User report:
+  - Flee state speed is visibly unstable.
+  - This will look bad after sheep skin/model animation is added.
+  - Because BMB Base will be reused by future NPCs, this needs to be fixed at Base level, not just sheep-specific tuning.
+- Root cause:
+  - Flee calls `MoveToWorldPosition(destination, mob.RunSpeed, ...)`, but `MoveAlongPath` uses the shared `path_corner` controller.
+  - `path_corner` reduces transient `pathSpeed` to `desiredSpeed * PathCornerSpeedScale` (sheep: `90 * 0.55 = 49.5`), below sheep's run activity threshold `(WalkSpeed + RunSpeed) / 2 = 80`.
+  - Before this round, `BMBDesiredSpeed` served both as loco command speed and animation/activity intent speed. Therefore corner slowdown during panic could make activity selection and HUD target speed oscillate between run/walk semantics.
+- Design:
+  - Split speed into two layers:
+    - `BMBDesiredSpeed`: current loco command speed, may change per tick due to cornering/drop/local control.
+    - `BMBActivitySpeed`: behavior/animation intent speed, stable across a movement segment unless the behavior intent changes.
+  - Flee should preserve run intent for the whole panic segment while still allowing path following to steer/corner.
+  - Clamp Flee corner slowdowns above run threshold via `minPathSpeed`, without accelerating above the requested `RunSpeed`.
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - Added NW float `BMBActivitySpeed`.
+  - Added `GetBMBRunActivityThreshold()`.
+  - `UpdateMoveActivity(speed, activitySpeed)` and `MaintainBMBMoveSpeed(speed, activitySpeed)` now accept an optional stable intent speed.
+  - `UpdateBMBActivityFromLocomotion()` uses `BMBActivitySpeed` rather than only transient `BMBDesiredSpeed`.
+  - `MoveAlongPath()` reads `options.moveIntentSpeed` and `options.minPathSpeed`; after corner control, it clamps `pathSpeed = max(pathSpeed, min(desiredSpeed, minPathSpeed))`; per-tick speed maintenance passes `moveIntentSpeed`.
+- `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - Flee computes `fleeMinPathSpeed` from `mob:GetBMBRunActivityThreshold() + padding`, capped by `mob.RunSpeed`.
+  - Flee calls `MoveToWorldPosition(..., { moveIntentSpeed = mob.RunSpeed, minPathSpeed = fleeMinPathSpeed, allowPartial = false })`.
+- Tests/docs:
+  - Added `scripts/check_flee_speed_stability.ps1`; verified red before implementation and green after.
+  - `CLAUDE.md` and `docs/STATE.md` document the intent-vs-command speed split.
+
+## 2026-06-13 Third 33rd round - MC-like hurt flash, iframes, knockback, and flee rehit stability
+
+- User request:
+  - Restore Minecraft-like hurt feedback before moving to the next mob/base milestone.
+  - Accepted hits should flash red, create a short invulnerability window, and knock the mob away from the attack source.
+  - Knockback must only happen on accepted non-invulnerable hits.
+  - Do not implement fall damage yet; only record it as later work.
+  - Extra flee bug: if a sheep is already fleeing, repeated hits should not constantly interrupt the current flee segment and make it stand around re-deciding where to run.
+- Source/reference check:
+  - Local MC source `LivingEntity.java` shows `hurtDuration = 10; hurtTime = hurtDuration;` and `invulnerableTime = 20` on full accepted damage.
+  - `dealDefaultKnockback` uses horizontal source/projectile direction; physics/fall sources should stay separate.
+- Test:
+  - Added `scripts/check_damage_iframes_knockback.ps1`.
+  - Verified red before implementation: base had no hurt flash/invulnerability/knockback helpers, sheep did not prioritize knockback, docs did not record fall damage as pending.
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - Added `HurtFlashTime = 0.5` and `DamageInvulnerabilityTime = 1.0`.
+  - Added client `ENT:Draw()` red tint using `BMBHurtFlashUntil` / `BMBHurtFlashDuration`; this does not permanently change entity color or material.
+  - Added invulnerability tracking (`BMBDamageInvulnerableUntil`, `BMBInvulnerableUntil` NW).
+  - `OnTakeDamage` now ignores hits during invulnerability with `return 0`; ignored hits do not deduct health, refresh flee, flash, or knock back.
+  - Added source-aware `GetBMBKnockbackDirection`: blast damage prefers damage position, attacker hits use attacker center, fallback uses damage position / force.
+  - Added first-class knockback state: `StartBMBKnockback`, `IsBMBKnockbackActive`, `RunBMBKnockback`; speed is reset to a capped horizontal velocity instead of stacking.
+  - Normal movement entry points reject new steering while knockback is active.
+  - `DMG_CRUSH` prop/physics damage remains identifiable and does not get the BMB knockback overlay, preserving the GMod/prop damage feel.
+- `gmod_addon/lua/entities\bmb_sheep.lua`
+  - Scheduler priority now checks held -> knockback -> debug -> stranded -> flee.
+  - `OnBMBInjured(damageInfo, wasFleeing)` refreshes panic threat/window, but does not call `InterruptBMBMovement` again when the hit happened during an active flee segment.
+- `gmod_addon/lua\bmb\sv_behaviors.lua`
+  - Flee exits promptly if knockback becomes active, so the behavior scheduler can run the knockback state instead of staying inside the flee loop.
+- Docs:
+  - `CLAUDE.md`, `docs/STATE.md`, task_plan/findings/status_summary updated.
+  - Fall damage recorded as pending and explicitly separate from knockback.
+
+## 2026-06-13 Fourth 34th round - fix hurt flash `vel:70/0` freeze and missing knockback
+
+- User retest:
+  - Hurt flash works.
+  - Invulnerability frames work.
+  - Two regressions:
+    - Every flash makes the mob stop; HUD shows examples like `vel:70/0`.
+    - No visible knockback effect.
+- Root cause:
+  - `cl_debug.lua` line 2 is current 2D velocity / `BMBDesiredSpeed`, not a separate maxspeed field.
+  - `StartBMBHurtFlash()` is clean: it only writes `BMBHurtFlashDuration` and `BMBHurtFlashUntil`; it does not touch movement/loco/velocity.
+  - The `0` was written by `RunBMBKnockback()` via `MaintainBMBMoveSpeed(0)`.
+  - That made the public movement/animation intent `BMBDesiredSpeed=0`, producing HUD `70/0`, and likely caused the loco desired-speed budget to swallow the horizontal `SetVelocity` knockback.
+- Test:
+  - Extended `scripts/check_damage_iframes_knockback.ps1`.
+  - Verified red before code: missing `BMBKnockbackDesiredSpeed`; `RunBMBKnockback()` still contained `MaintainBMBMoveSpeed(0)`.
+  - New checks:
+    - `StartBMBHurtFlash` must not contain movement/loco/velocity/desired-speed writes.
+    - `RunBMBKnockback` must not call `MaintainBMBMoveSpeed(0)` or `SetDesiredSpeed(0)`.
+- Fix:
+  - `StartBMBKnockback` now snapshots:
+    - `BMBKnockbackDesiredSpeed`
+    - `BMBKnockbackActivitySpeed`
+    - `BMBKnockbackLocoSpeed`
+  - Added `MaintainBMBKnockbackSpeedBudget()`:
+    - Keeps networked `BMBDesiredSpeed` / `BMBActivitySpeed` at the pre-hit non-zero movement intent for HUD/animation.
+    - Sets loco's internal desired speed to a high enough knockback budget so direct horizontal `SetVelocity` can take effect.
+  - Removed `MaintainBMBMoveSpeed(0)` from `RunBMBKnockback`.
+  - `StartBMBKnockback` now applies one immediate horizontal velocity write in the damage tick, so visible push does not wait for the next behavior scheduler iteration.
+- Verification:
+  - `scripts/check_damage_iframes_knockback.ps1`
+  - `scripts/check_flee_speed_stability.ps1`
+  - `scripts/check_debug_gap_and_collision.ps1`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `scripts/check_drop_debug_spawn_perf.ps1`
+  - `scripts/check_movement_recovery_and_scaling.ps1`
+  - `scripts/check_stranded_recovery.ps1`
+  - `scripts/check_block_size_parameterization.ps1`
+  - `glualint` on changed Lua files.
+
+## 2026-06-13 Fifth 35th round - MC knockback lift, 0.5s damage cooldown, airborne flee resume
+
+- User retest:
+  - `vel` no longer becomes `.../0`.
+  - Still sees the mob stop after being hit.
+  - Damage cooldown feels too long; user checked current MC and expects about 0.5s.
+  - MC mobs continue trying to flee while airborne after getting hit.
+  - Knockback exists after the second hit but is too flat/weak; the first hit after spawning only flashes/damages, with no visible knockback.
+- Source check:
+  - `LivingEntity.hurt` sets `invulnerableTime = 20`, but the cooldown branch only ignores same/lower damage while `invulnerableTime > 10`.
+  - Effective same-damage invulnerability/cooldown is therefore the first 10 ticks = 0.5s, not a full 1.0s.
+  - MC knockback sets vertical motion when grounded: `onGround ? min(0.4, y/2 + power) : y`, so grounded hits should have a small lift, airborne hits keep current vertical motion.
+- Test:
+  - Extended `scripts/check_damage_iframes_knockback.ps1` and verified red before code.
+  - New checks require:
+    - `DamageInvulnerabilityTime = 0.5`.
+    - Short `KnockbackDuration = 0.12`.
+    - `KnockbackVerticalSpeedScale` and `GetBMBKnockbackVerticalVelocity`.
+    - Grounded knockback calls `self.loco:Jump()` before applying vertical lift.
+    - Flee detects `airborneStart` and passes `allowStrandedStart = airborneStart`.
+- `gmod_addon/lua/entities/bmb_base_mob.lua`
+  - Changed `DamageInvulnerabilityTime` from 1.0 to 0.5.
+  - Changed `KnockbackDuration` from 0.35 to 0.12. This keeps a short arbitration window to protect the initial impulse, then lets flee/airborne movement resume.
+  - Added vertical lift settings: `KnockbackVerticalSpeedScale = 6`, min 170u/s, max 240u/s.
+  - Added `GetBMBKnockbackVerticalVelocity(currentVelocity)`:
+    - Grounded: returns clamped vertical lift.
+    - Airborne: preserves current z velocity.
+  - `StartBMBKnockback` now stores `BMBKnockbackVerticalSpeed`, calls `self.loco:Jump()` when applying lift from ground, and immediately writes horizontal + vertical velocity in the damage tick.
+- `gmod_addon/lua/bmb/sv_behaviors.lua`
+  - Flee now computes `airborneStart = mob.IsBMBOnGround and not mob:IsBMBOnGround() or false`.
+  - Flee passes `allowStrandedStart = airborneStart` so a mob knocked airborne can still try to pick/follow a flee path instead of waiting frozen for ground contact.
+- Verification:
+  - Damage/knockback script.
+  - Flee speed script.
+  - Debug gap/collision rollback script.
+  - Hop/debug/gap script.
+  - Drop/debug/spawn/perf script.
+  - Movement recovery/scaling script.
+  - Stranded recovery script.
+  - Block-size parameterization script.
+  - glualint on changed Lua files.
