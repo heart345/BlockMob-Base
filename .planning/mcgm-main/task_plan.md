@@ -135,7 +135,13 @@ Phase 2
 - [x] Zombie Phase 2 hotfix 2：近身重叠命中缓存 chase/attack 方向，击退下一 tick 只补缺失水平/竖直速度；`IsMovementTargetSafe` 在 Source trace 后增加 MC 方块 standable 采样，只在 MC 支撑附近启用，避免直追绕过 A* 从 MCSWEP 方块边缘掉下去，同时不把 prop 顶面当 BMB 地形
 - [x] Zombie Phase 2 hotfix 3：玩家受击改为 3 tick/0.03s 多 tick 缺口补偿，避免 Source 地面/重叠偶尔吞掉水平击退和 z 击飞；实际命中玩家加轻微 `ViewPunch` / screen shake
 - [x] Zombie Phase 2 hotfix 4：玩家深贴 Zombie hull 时先做 trace 保护的 6u separation nudge，再写击退；新增 `bmb_debug_melee_knockback` 可选日志；screen shake / view punch 小幅上调
-- [ ] 复测 Zombie Phase 2：进范围第一下立刻扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退不再过强且不再时好时坏；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；旧追击、hop、stranded、受击不回归
+- [x] Zombie Phase 2 hotfix 5：MC 方块直追安全采样改用 lifted foot sample（约 `0.12*BS` 且至少 4u），避免完整方块顶面/边界被 `WorldToBlock` 量化到 solid cell 后误报 `chase_repath_cliff`
+- [x] Zombie Phase 2 hotfix 6：玩家击飞改为确定速度写入（先 `SetGroundEntity(NULL)`，再 `SetVelocity(-velocityBefore)` 抵消残留，最后一次性写水平+z），删除旧 correction/nudge；新增 `bmb_melee_knockback_debug 1/0` 日志开关
+- [x] Zombie Phase 2 hotfix 7：修 `ApplyTargetKnockback` 把 normalized 单位方向 `LengthSqr()==1` 当无效方向早退；方向验证统一改 epsilon，并记录 `direction_nil/direction_invalid`
+- [x] Zombie Phase 2 hotfix 8：手感细调——Zombie 索敌范围扩到 `TargetRange=1350` / `TargetLoseRange=1725`，同层攻击距离调到 `AttackRange=60`，水平击退降到 `AttackKnockback=210`；共享 `MeleeAttack` 新增可选窄竖直重叠命中，Zombie 用 `AttackVerticalOverlapRange=86` + `AttackVerticalOverlapFlatRange=24` 解决玩家踩头不挨打，同时保持普通 `AttackVerticalRange=28` 防止高一格平台误攻击
+- [x] Zombie Phase 2 hotfix 9：击退距离继续收敛——用户复测 210 水平击退配合 190z 滞空会推出约 4-5 格，目标是 2-3 格；Zombie `AttackKnockback` 改为 150，竖直击飞保持 155 / grounded 190
+- [ ] 复测 Zombie Phase 2：约 1350u 内应能发现玩家；同层约 60u 第一时间扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退约 2-3 格且不再时好时坏；玩家直接踩头会被打，但站高一格平台/隔块目标仍走 chase/path；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；完整 MCSWEP 方块平地/平台中间追击不应显示 `*_cliff` 停住；旧追击、hop、stranded、受击不回归
+- [ ] 重新设计低顶/头顶方块坏 hop：A* hop-edge clearance 方案已撤回（会导致正常 hop 不触发），后续改用更局部的失败记忆/绕路目标或精确分诊
 - [x] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准（本轮确认 Zombie ambient 走通用 `Mob` 80 tick 递增概率；攻击节奏按用户 Phase 2 手感最终取 1.0s）
 - [ ] 加入日光燃烧、门/障碍交互策略
 - **Status:** in_progress

@@ -1134,6 +1134,36 @@
   - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
   - glualint on changed Lua files.
 
+## 2026-06-14 Zombie Phase 2 range/head-overlap tuning
+
+- User retest confirmed deterministic melee launch is fixed.
+- Requested feel tweaks:
+  - Lower Zombie horizontal knockback a bit.
+  - Increase player acquisition range by 1.5x.
+  - Slightly widen attack distance.
+  - Allow Zombie to hit a player standing directly on its head.
+- Implemented:
+  - Zombie `TargetRange` changed from 900 to 1350 and `TargetLoseRange` from 1150 to 1725.
+  - Zombie same-level `AttackRange` changed from 52 to 60.
+  - Zombie `AttackKnockback` changed from 240 to 210 while keeping vertical lift at 155 / grounded 190.
+  - Shared `MeleeAttack.IsInRange` now supports optional narrow vertical-overlap hits via `AttackVerticalOverlapRange` and `AttackVerticalOverlapFlatRange`.
+  - Zombie sets overlap range to 86u vertical and 24u flat, so standing on its head can be hit without widening normal `AttackVerticalRange=28`.
+- Tests:
+  - Extended `scripts/check_zombie_phase2_attack_audio.ps1` to guard the new tuning and overlap branch.
+
+## 2026-06-14 Zombie Phase 2 knockback distance retune
+
+- User retest found:
+  - `AttackKnockback=210` still sends the player about 4-5 blocks when combined with the stable grounded z launch.
+  - Desired total travel is closer to 2-3 blocks.
+  - Manual file edits appeared to have no effect, likely because GMod was reading the synced addon copy and/or already-spawned entities still had old Lua values.
+- Implemented:
+  - Reduced Zombie horizontal `AttackKnockback` from 210 to 150.
+  - Kept `AttackVerticalKnockback=155` and `AttackGroundedVerticalKnockback=190` unchanged so the fixed launch does not regress.
+  - Updated phase 1/phase 2 static checks to guard the new 150 horizontal tuning.
+- Retest note:
+  - Sync `gmod_addon/` into the Garry's Mod addon folder and respawn the Zombie after changing tuning values.
+
 ## 2026-06-14 Hop vertical reach hotfix
 
 - User rolled back later chase experiments and retested hop first. One-block hop still showed `path_hop` followed by `debug_repath`; HUD could report a normal manual hop apex, so A* and the two-stage lift were not the primary failure.
@@ -1312,6 +1342,68 @@
   - Increased Zombie hit feedback slightly: stronger but still mild `ViewPunch` and `ScreenShake`.
 - Checks:
   - Updated `scripts/check_zombie_phase2_attack_audio.ps1` to guard the nudge and log cvar.
+
+## 2026-06-14 Zombie Phase 2 deterministic player launch hotfix
+
+- User report:
+  - The previous melee knockback log was hard to enable/find.
+  - Zombie horizontal knockback mostly exists, but vertical lift/launch remains intermittent.
+  - 4.8 pointed out the key Source behavior: `Player:SetVelocity` adds to current velocity; it does not set absolute velocity.
+- Diagnosis:
+  - If the player is squeezed against a hull / being categorized on ground during the hit tick, they can carry downward residual z velocity.
+  - Adding `Vector(0,0,190)` to a residual `-100z` leaves only about `90z`, below Source's grounded-player non-jump threshold, so the next tick snaps the player back to ground.
+  - The old 3-tick correction and trace-protected nudge were trying to fight that timing problem after the fact.
+- Fix:
+  - Player melee knockback now detaches ground, captures `velocityBefore`, calls `SetVelocity(-velocityBefore)` to cancel residual velocity, then calls `SetVelocity(desiredVelocity)` once.
+  - Removed `NudgeTargetForKnockback`, multi-tick correction loops, and Zombie correction/nudge params.
+  - Kept stable knockback direction caching and the 240 horizontal / 190 grounded vertical tuning.
+  - Added `bmb_melee_knockback_debug 1/0` as a user-friendly server command that toggles `bmb_debug_melee_knockback`.
+- Checks:
+  - Updated `scripts/check_zombie_phase2_attack_audio.ps1` to require deterministic player velocity writes and forbid stale nudge/correction code.
+
+## 2026-06-14 Zombie Phase 2 knockback direction epsilon hotfix
+
+- User retest:
+  - Five attacks all produced `try=ok` and `resolve=hit`, but none produced `knockback apply`.
+  - Therefore attack/cooldown/range were not the blocker; `ApplyTargetKnockback` was returning before logging.
+- Diagnosis:
+  - `ApplyTargetKnockback` normalized the direction, then checked `direction:LengthSqr() <= 1`.
+  - A normalized direction has length squared 1, so it was rejected as invalid every time.
+  - Cached direction and `mob:GetForward()` fallback also used `> 1`, rejecting normalized vectors.
+- Fix:
+  - Added `MIN_VALID_DIRECTION_SQR = 0.0001`.
+  - Cached/fallback directions now accept vectors above epsilon.
+  - `ApplyTargetKnockback` now rejects only near-zero directions and logs `direction_nil` / `direction_invalid` if that ever happens again.
+- Checks:
+  - Extended `scripts/check_zombie_phase2_attack_audio.ps1` to prevent unit-vector threshold regressions.
+
+## 2026-06-14 Zombie Phase 2 MC flat-ground cliff false positive
+
+- User retest:
+  - On a flat MCSWEP block plane, Zombie HUD can show `state=chase mode=chase_repath_cliff vel=0/115` and refuse to move.
+  - This is not a real cliff; it happens on full MC grass/oak block ground.
+- Diagnosis:
+  - The MC-grid direct safety added for block cliffs sampled the exact foot/ground position.
+  - At full-block top faces or boundaries, `MC.WorldToCell` / `WorldToBlock` can resolve that exact point into the solid block under the mob instead of the air foot cell above it.
+  - `IsBMBHullClearAtPosition` / `Pathfinder.IsStandablePosition` then see solid/not-standable and report `cliff` even on flat ground.
+- Fix:
+  - Added `GetBMBGridFootSample`, `IsBMBGridFootHullClear`, and `IsBMBGridFootStandable` in BaseMob.
+  - Runtime grid safety and carrot grid visibility now check a lifted foot sample (`max(4u, 0.12*BS)`) for hull/standable queries.
+  - `IsBMBCurrentPositionStandable` also uses the lifted foot sample so StrandedRecovery does not misclassify full-block top faces.
+  - Actual MC block edges still fail standable because the lifted sample maps to an air cell with no support.
+- Checks:
+  - Extended `scripts/check_zombie_phase2_attack_audio.ps1` to guard lifted-foot grid safety sampling.
+
+## 2026-06-14 Revert low-ceiling hop edge pruning attempt
+
+- User retest:
+  - The A* hop-edge clearance attempt caused a broad hop regression: ordinary hop no longer triggered.
+- Action:
+  - Reverted the new `isHopEdgeClear` pathfinder gate and BaseMob `IsBMBPathHopEdgeClear` helpers.
+  - Removed the regression-script assertions and docs that claimed low-ceiling hop should be pruned in A*.
+  - Kept the previous lifted-foot MC flat-ground cliff fix, because user confirmed cliff behavior is OK.
+- Follow-up:
+  - Low-ceiling/head-blocked hop still needs a different design. Do not reintroduce broad A* hop-edge pruning without a much more precise proof/test.
 
 ## 2026-06-13 Zombie phase 1 direct chase / high-target stalk
 

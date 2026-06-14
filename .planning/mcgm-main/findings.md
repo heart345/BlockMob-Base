@@ -536,17 +536,29 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 ## 2026-06-14: Point-blank melee direction and MC block direct-cliff safety
 
 - **近战击退方向要在接近过程中缓存，不能等命中帧现场猜**：贴脸 `dist:0.0` 时，`target:GetPos() - mob:GetPos()` 退化成零向量，mob forward 又可能被转向/碰撞扰动，表现为击退时有时无。共享 `MeleeAttack` 应在 chase/attack 阶段缓存最后一次有效的水平目标方向，命中、DamageForce、SetVelocity 共用这条方向。
-- **下一 tick 兜底应补“缺口”，不是再打一拳**：地面玩家/重叠碰撞会吞掉部分水平或竖直速度。修法是记录目标方向，下一 tick 看当前速度在该方向上的投影和 z 速度，只补到最低保留值；不要重复完整水平击退，否则又回到 330 版那种强拉扯。
+- **方向缓存仍然必要，但不是击飞飘的根因**：贴脸 `dist:0.0` 会让方向退化，缓存解决水平方向不稳定；竖直击飞时好时坏另有根因，见下面的 `Player:SetVelocity` 叠加语义。
 - **direct chase 的 cliff safety 有两种世界模型**：Source trace 能保护地图边缘和 prop 顶面，但 MCSWEP 方块的合法性还要看 BMB standable 语义。`IsMovementTargetSafe` 先跑 Source wall/ground，再在“当前/前方附近确实是 MC 方块支撑”时沿线采样 BMB standable；纯 Source/prop 支撑不启用这层，避免把 prop 顶面写进 A* 地形。
 
-## 2026-06-14: Player melee impulse can be swallowed for more than one tick
+## 2026-06-14: MC top-face boundary is not a cliff
 
-- **“水平击退和 z 击飞一起消失”不是方向问题**：如果方向错，通常会表现为推错方向或水平弱，但 z 仍有机会出现；两者同时没了，说明 Source 玩家 movement/ground/overlap 解算把冲量吞掉。
-- **单个 `timer.Simple(0)` 仍不够稳**：站地面、贴近 NPC hull、玩家输入和服务器 tick 时序叠在一起时，立即 `SetVelocity` 和下一 tick 补偿都可能被吃掉。玩家命中应有一个极短 correction window（当前 3 次、0.03s 间隔），每次只补缺口。
+- **BMB standable 查询不能直接吃精确脚底点**：MCSWEP 完整方块顶面/边界上的 world 坐标可能被 `WorldToBlock` 量化到脚下 full-cube solid cell，而不是脚所在的空气 cell。把这个结果直接交给 `IsStandablePosition` 会把完整平地误判为 `not passable/not standable`，HUD 表现为 `chase_repath_cliff`。
+- **运行时安全层要采“略高于脚底”的 foot sample**：直追/attack_ready 的 MC grid safety 不是 A* cell 枚举，它在连续 world 坐标上采样，所以应先把样本抬高一个很小的量（当前 `max(4u, 0.12*BS)`）再做 hull/standable 查询。这个高度远低于半砖，不会把真实边缘变成可走；边缘外的 lifted foot cell 仍然没有 support。
+- **同一 helper 应覆盖 carrot 视线和 stranded 当前点**：如果 path/carrot visibility 用精确脚底点，可能把合法方块路径误判不可见；如果 current standable 用精确脚底点，可能错误进入 StrandedRecovery。Base 统一用 `GetBMBGridFootSample` 兜住这些边界。
+
+## 2026-06-14: Player:SetVelocity is additive, so launch must cancel residual velocity first
+
+- **玩家击飞时好时坏的根因不是 z 数值太低，而是叠加语义**：`Player:SetVelocity(v)` 会把 `v` 加到当前速度上。命中瞬间玩家被 hull/地面挤压时可能带 `vel.z=-100` 之类残留，直接加 `190z` 只剩约 `90z`；低于 Source 的 grounded-player 脱地阈值后，下一 tick 会重新着地并夹掉 z。
+- **稳定写法是“抵消当前速度 → 写目标速度”**：先 `SetGroundEntity(NULL)`，记录 `velocityBefore`，再 `SetVelocity(-velocityBefore)` 抵消所有残留，最后 `SetVelocity(direction * horizontal + Vector(0,0,launchZ))`。这样叠加 API 被转换成确定速度写入，launchZ 不再被残留 z 污染。
+- **旧的多 tick correction / SetPos nudge 已撤掉**：它们是在跟玩家 movement 抢帧，容易让问题更随机；一次干净的速度写入更可预测。调试入口保留为 `bmb_melee_knockback_debug 1/0`，只打印本次应用的 before/desired 信息。
 - **屏幕反馈必须挂在实际命中后**：轻微 `ViewPunch` / `ScreenShake` 应在 `OnBMBMeleeHit` 里触发，miss、冷却中挥手、目标离开 hit slop 都不能晃屏。
 
-## 2026-06-14: Deep overlap may need a tiny separation nudge before player knockback
+## 2026-06-14: Head-standing melee is overlap, not general vertical reach
 
-- **玩家深贴 NPC hull 时，速度入口本身可能被吃掉**：多 tick correction 仍偶发全无，说明不是“只补一次太少”，而是冲量写入前玩家仍被碰撞/地面解算压住。先用玩家 hull trace 沿击退方向做 6u 级别的安全 separation nudge，可以让后续 `SetVelocity` 有空间生效。
-- **nudge 必须 trace 保护且很小**：只过滤玩家和攻击者本体，目标点被世界/实体挡住就不移动；不要把它写成无条件 `SetPos`，否则会出现穿墙/越边这类比击退偶发更糟的问题。
-- **保留可开关日志**：`bmb_debug_melee_knockback 1` 是下一轮排查入口。坏样本要看 start/correct 的 `vel`、`missH`、`missZ`、`nudge`、`onGround`，判断是 nudge 失败、velocity 被持续吞、还是玩家输入/墙体反向抵消。
+- **不要为“玩家踩在头上”拉高普通 `AttackVerticalRange`**：Zombie 之前把普通垂直攻击范围压到 28u，是为了让高一格平台/隔层目标继续 chase/path，而不是在脚下挠空气。如果直接把它调到 70u 以上，这个旧 bug 会回归。
+- **踩头应建模成窄重叠命中**：当目标在 mob 上方、水平距离极近时，说明两个 hull 已经发生了垂直重叠/堆叠，这时可以用单独的 `AttackVerticalOverlapRange` + `AttackVerticalOverlapFlatRange` 放行。这个分支不影响普通高差目标。
+- **参数仍属于怪物实体，不属于 base 特判**：共享 `MeleeAttack` 只识别可选字段；Zombie 当前用 86u vertical / 24u flat。后续体型更高/更矮的怪只改自己的参数，不写 `if zombie`。
+
+## 2026-06-14: Melee travel distance is horizontal speed times airtime
+
+- **z 击飞稳定后，水平击退会被滞空时间放大**：`AttackKnockback=210` 单看速度不夸张，但配合 grounded `launchZ=190` 的空中时间，实际能把玩家带出 4-5 格。
+- **先调水平，不轻易动 z**：z 参数刚用于跨过 Source grounded-player 阈值，动低容易让“击飞时有时无”回归。要把总位移从 4-5 格收回 2-3 格，优先把水平值降到约 150。

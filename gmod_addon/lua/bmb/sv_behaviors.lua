@@ -8,12 +8,24 @@ BMB.Behaviors.SeekTarget = BMB.Behaviors.SeekTarget or {}
 BMB.Behaviors.Chase = BMB.Behaviors.Chase or {}
 BMB.Behaviors.MeleeAttack = BMB.Behaviors.MeleeAttack or {}
 
+local MIN_VALID_DIRECTION_SQR = 0.0001
+
 local function blockSize()
     return BMB.GetBlockSize and BMB.GetBlockSize() or (BMB.BS or 36.5)
 end
 
 if SERVER and not GetConVar("bmb_debug_melee_knockback") then
     CreateConVar("bmb_debug_melee_knockback", "0", FCVAR_ARCHIVE, "Print BMB melee knockback diagnostics.")
+end
+
+if SERVER then
+    concommand.Add("bmb_melee_knockback_debug", function(ply, _, args)
+        if IsValid(ply) and not ply:IsAdmin() then return end
+
+        local enabled = tostring(args and args[1] or "1") ~= "0"
+        RunConsoleCommand("bmb_debug_melee_knockback", enabled and "1" or "0")
+        print("[BMB] melee knockback debug " .. (enabled and "enabled" or "disabled"))
+    end)
 end
 
 local function shouldLogMeleeKnockback()
@@ -234,10 +246,44 @@ local function normalizedFlatDirection(fromPos, toPos)
     local direction = toPos - fromPos
     direction.z = 0
 
-    if direction:LengthSqr() <= 1 then return nil end
+    if direction:LengthSqr() <= MIN_VALID_DIRECTION_SQR then return nil end
 
     direction:Normalize()
     return direction
+end
+
+local function logMeleeDebug(mob, target, phase, detail, range, verticalRange, throttleKey)
+    if not shouldLogMeleeKnockback() then return end
+    if not IsValid(mob) then return end
+
+    if throttleKey then
+        mob.BMBMeleeDebugNextLog = mob.BMBMeleeDebugNextLog or {}
+        local now = CurTime()
+        if now < (mob.BMBMeleeDebugNextLog[throttleKey] or 0) then return end
+        mob.BMBMeleeDebugNextLog[throttleKey] = now + (mob.MeleeDebugLogInterval or 0.25)
+    end
+
+    local flat = -1
+    local vertical = -1
+
+    if IsValid(target) then
+        flat = math.sqrt(targetFlatDistanceSqr(mob:GetPos(), target:GetPos()))
+        vertical = targetVerticalDistance(mob:GetPos(), target:GetPos())
+    end
+
+    print(string.format(
+        "[BMB] melee %s mob=%s target=%s detail=%s flat=%.1f vert=%.1f range=%.1f vRange=%.1f now=%.2f next=%.2f",
+        phase or "debug",
+        tostring(mob),
+        tostring(target),
+        tostring(detail or "ok"),
+        flat,
+        vertical,
+        range or -1,
+        verticalRange or -1,
+        CurTime(),
+        IsValid(mob) and (mob.NextMeleeAttackTime or 0) or 0
+    ))
 end
 
 function BMB.Behaviors.MeleeAttack.RememberTargetDirection(mob, target)
@@ -264,7 +310,7 @@ function BMB.Behaviors.MeleeAttack.GetTargetKnockbackDirection(mob, target)
         and mob.BMBLastMeleeDirection
         and CurTime() - (mob.BMBLastMeleeDirectionAt or 0) <= memoryTime then
         direction = Vector(mob.BMBLastMeleeDirection.x, mob.BMBLastMeleeDirection.y, 0)
-        if direction:LengthSqr() > 1 then
+        if direction:LengthSqr() > MIN_VALID_DIRECTION_SQR then
             direction:Normalize()
             return direction
         end
@@ -273,50 +319,13 @@ function BMB.Behaviors.MeleeAttack.GetTargetKnockbackDirection(mob, target)
     if mob.GetForward then
         direction = mob:GetForward()
         direction.z = 0
-        if direction:LengthSqr() > 1 then
+        if direction:LengthSqr() > MIN_VALID_DIRECTION_SQR then
             direction:Normalize()
             return direction
         end
     end
 
     return nil
-end
-
-function BMB.Behaviors.MeleeAttack.NudgeTargetForKnockback(mob, target, direction)
-    if not IsValid(mob) or not IsValid(target) or not target:IsPlayer() then return false end
-    if not direction or direction:LengthSqr() <= 1 then return false end
-
-    local distance = mob.AttackKnockbackSeparationDistance or mob.MeleeKnockbackSeparationDistance or 6
-    if distance <= 0 then return false end
-
-    local up = mob.AttackKnockbackSeparationUp or mob.MeleeKnockbackSeparationUp or 2
-    local current = target:GetPos()
-    local desired = current + direction * distance + Vector(0, 0, up)
-    local mins, maxs
-
-    if target.GetHull then
-        mins, maxs = target:GetHull()
-    end
-
-    mins = mins or target:OBBMins()
-    maxs = maxs or target:OBBMaxs()
-
-    local trace = util.TraceHull({
-        start = current,
-        endpos = desired,
-        mins = mins,
-        maxs = maxs,
-        filter = { target, mob },
-        mask = MASK_PLAYERSOLID or MASK_SOLID
-    })
-
-    if trace.StartSolid then return false end
-
-    local targetPos = trace.Hit and trace.HitPos or desired
-    if current:DistToSqr(targetPos) <= 1 then return false end
-
-    target:SetPos(targetPos)
-    return true
 end
 
 function BMB.Behaviors.SeekTarget.IsValid(mob, target, range)
@@ -523,10 +532,24 @@ function BMB.Behaviors.MeleeAttack.IsInRange(mob, target, rangeOverride, vertica
 
     local range = rangeOverride or mob.AttackRange or mob.MeleeRange or blockSize()
     local verticalRange = verticalRangeOverride or mob.AttackVerticalRange or mob.MeleeVerticalRange or range * 0.65
+    local mobPos = mob:GetPos()
+    local targetPos = target:GetPos()
+    local flatDistanceSqr = targetFlatDistanceSqr(mobPos, targetPos)
+    local verticalDistance = targetVerticalDistance(mobPos, targetPos)
 
-    if targetVerticalDistance(mob:GetPos(), target:GetPos()) > verticalRange then return false end
+    if verticalDistance <= verticalRange then
+        return flatDistanceSqr <= range * range
+    end
 
-    return targetFlatDistanceSqr(mob:GetPos(), target:GetPos()) <= range * range
+    local overlapVerticalRange = mob.AttackVerticalOverlapRange or mob.MeleeVerticalOverlapRange or 0
+    if overlapVerticalRange <= 0 or verticalDistance > overlapVerticalRange then return false end
+    if targetPos.z <= mobPos.z then return false end
+
+    local overlapFlatRange = mob.AttackVerticalOverlapFlatRange
+        or mob.MeleeVerticalOverlapFlatRange
+        or math.min(range, blockSize() * 0.65)
+
+    return flatDistanceSqr <= overlapFlatRange * overlapFlatRange
 end
 
 function BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target, direction)
@@ -537,10 +560,16 @@ function BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target, direction)
     if horizontal <= 0 and vertical <= 0 then return end
 
     direction = direction or BMB.Behaviors.MeleeAttack.GetTargetKnockbackDirection(mob, target)
-    if not direction then return end
+    if not direction then
+        logMeleeDebug(mob, target, "knockback", "direction_nil")
+        return
+    end
 
     direction = Vector(direction.x, direction.y, 0)
-    if direction:LengthSqr() <= 1 then return end
+    if direction:LengthSqr() <= MIN_VALID_DIRECTION_SQR then
+        logMeleeDebug(mob, target, "knockback", "direction_invalid")
+        return
+    end
     direction:Normalize()
 
     local groundedPlayer = target:IsPlayer() and target:IsOnGround()
@@ -553,82 +582,43 @@ function BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target, direction)
         end
     end
 
-    local didNudge = BMB.Behaviors.MeleeAttack.NudgeTargetForKnockback(mob, target, direction)
+    local velocityBefore = target:GetVelocity()
 
     if shouldLogMeleeKnockback() then
         print(string.format(
-            "[BMB] melee knockback start mob=%s target=%s dir=%s horiz=%.1f vert=%.1f grounded=%s nudge=%s velBefore=%s",
+            "[BMB] melee knockback apply mob=%s target=%s dir=%s horiz=%.1f vert=%.1f grounded=%s velBefore=%s",
             tostring(mob), tostring(target), formatVector2D(direction), horizontal, launchVertical,
-            tostring(groundedPlayer), tostring(didNudge), formatVector2D(target:GetVelocity())
+            tostring(groundedPlayer), formatVector2D(velocityBefore)
         ))
     end
 
-    target:SetVelocity(direction * horizontal + Vector(0, 0, launchVertical))
-
-    if target:IsPlayer() and (groundedPlayer or horizontal > 0 or launchVertical > 0) then
-        local stableDirection = Vector(direction.x, direction.y, 0)
-        local minHorizontal = horizontal * (mob.AttackKnockbackRetainScale or mob.MeleeKnockbackRetainScale or 0.5)
-        local correctionTicks = math.max(1, math.floor(
-            mob.AttackKnockbackCorrectionTicks or mob.MeleeKnockbackCorrectionTicks or 3
-        ))
-        local correctionInterval = mob.AttackKnockbackCorrectionInterval
-            or mob.MeleeKnockbackCorrectionInterval
-            or 0.03
-        local correctionNudged = didNudge
-
-        local function correctKnockback(attempt)
-            if not IsValid(target) then return end
-
-            if target.SetGroundEntity and target:IsOnGround() then
-                target:SetGroundEntity(NULL)
-            end
-
-            local currentVelocity = target:GetVelocity()
-            local horizontalVelocity = Vector(currentVelocity.x, currentVelocity.y, 0)
-            local missingHorizontal = minHorizontal - math.max(horizontalVelocity:Dot(stableDirection), 0)
-            local missingLift = launchVertical - math.max(currentVelocity.z, 0)
-            local impulse = Vector(0, 0, 0)
-            local nudgeNow = false
-
-            if not correctionNudged and (missingHorizontal > 8 or (launchVertical > 0 and missingLift > 8)) then
-                nudgeNow = BMB.Behaviors.MeleeAttack.NudgeTargetForKnockback(mob, target, stableDirection)
-                correctionNudged = nudgeNow
-            end
-
-            if missingHorizontal > 8 then
-                impulse = impulse + stableDirection * missingHorizontal
-            end
-
-            if launchVertical > 0 and missingLift > 8 then
-                impulse = impulse + Vector(0, 0, missingLift)
-            end
-
-            if impulse:LengthSqr() > 1 then
-                target:SetVelocity(impulse)
-            end
-
-            if shouldLogMeleeKnockback() then
-                print(string.format(
-                    "[BMB] melee knockback correct#%d target=%s vel=%s missH=%.1f missZ=%.1f impulse=%s nudge=%s onGround=%s",
-                    attempt or 0, tostring(target), formatVector2D(currentVelocity),
-                    missingHorizontal, missingLift, formatVector2D(impulse),
-                    tostring(nudgeNow), tostring(target:IsOnGround())
-                ))
-            end
+    local desiredVelocity = direction * horizontal + Vector(0, 0, launchVertical)
+    if target:IsPlayer() then
+        -- Player:SetVelocity adds to current velocity. Cancel residual shove/fall velocity first
+        -- so the launch z is deterministic and stays above Source's grounded-player threshold.
+        if target.SetGroundEntity then
+            target:SetGroundEntity(NULL)
         end
 
-        for i = 1, correctionTicks do
-            timer.Simple((i - 1) * correctionInterval, function()
-                correctKnockback(i)
-            end)
-        end
+        target:SetVelocity(-velocityBefore)
+        target:SetVelocity(desiredVelocity)
+    else
+        target:SetVelocity(desiredVelocity)
     end
 end
 
 function BMB.Behaviors.MeleeAttack.ResolveHit(mob, target, range, hitSlop)
     if not IsValid(mob) or mob.BMBDead then return false end
-    if not IsValid(target) then return false end
-    if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target, range + hitSlop) then return false end
+    if not IsValid(target) then
+        logMeleeDebug(mob, target, "resolve", "invalid_target", range, nil)
+        return false
+    end
+
+    local verticalRange = mob.AttackVerticalRange or mob.MeleeVerticalRange or (range or blockSize()) * 0.65
+    if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target, range + hitSlop) then
+        logMeleeDebug(mob, target, "resolve", "range_fail", range + hitSlop, verticalRange)
+        return false
+    end
 
     local direction = BMB.Behaviors.MeleeAttack.GetTargetKnockbackDirection(mob, target)
 
@@ -645,6 +635,7 @@ function BMB.Behaviors.MeleeAttack.ResolveHit(mob, target, range, hitSlop)
     end
 
     target:TakeDamageInfo(damageInfo)
+    logMeleeDebug(mob, target, "resolve", "hit", range + hitSlop, verticalRange)
     BMB.Behaviors.MeleeAttack.ApplyTargetKnockback(mob, target, direction)
 
     if mob.OnBMBMeleeHit then
@@ -655,20 +646,28 @@ function BMB.Behaviors.MeleeAttack.ResolveHit(mob, target, range, hitSlop)
 end
 
 function BMB.Behaviors.MeleeAttack.Try(mob, target)
-    if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target) then return false end
-
     local now = CurTime()
-    if now < (mob.NextMeleeAttackTime or 0) then return false end
-
     local cooldown = mob.AttackCooldown or mob.MeleeCooldown or 1.0
     local hitDelay = mob.AttackHitDelay or mob.MeleeHitDelay or 0.25
     local range = mob.AttackRange or mob.MeleeRange or blockSize()
     local hitSlop = mob.AttackHitSlop or mob.MeleeHitSlop or blockSize() * 0.35
+    local verticalRange = mob.AttackVerticalRange or mob.MeleeVerticalRange or range * 0.65
     local attackMoveSpeed = mob.AttackMoveSpeed or mob.MeleeMoveSpeed or mob.RunSpeed or mob.WalkSpeed
+
+    if not BMB.Behaviors.MeleeAttack.IsInRange(mob, target) then
+        logMeleeDebug(mob, target, "try", "range_blocked", range, verticalRange, "try_range")
+        return false
+    end
+
+    if now < (mob.NextMeleeAttackTime or 0) then
+        logMeleeDebug(mob, target, "try", "cooldown", range, verticalRange, "try_cooldown")
+        return false
+    end
 
     mob.NextMeleeAttackTime = now + cooldown
     mob.BMBMeleeAttackSerial = (mob.BMBMeleeAttackSerial or 0) + 1
     BMB.Behaviors.MeleeAttack.RememberTargetDirection(mob, target)
+    logMeleeDebug(mob, target, "try", "ok", range, verticalRange)
 
     if mob.SetBMBState then mob:SetBMBState("attack") end
     if mob.SetBMBMoveMode then mob:SetBMBMoveMode("attack") end
@@ -685,7 +684,10 @@ function BMB.Behaviors.MeleeAttack.Try(mob, target)
 
     local function resolveHit()
         if not IsValid(mob) or mob.BMBDead then return end
-        if mob.BMBMeleeAttackSerial ~= serial then return end
+        if mob.BMBMeleeAttackSerial ~= serial then
+            logMeleeDebug(mob, target, "resolve", "serial_stale", range + hitSlop, verticalRange)
+            return
+        end
         BMB.Behaviors.MeleeAttack.ResolveHit(mob, target, range, hitSlop)
     end
 

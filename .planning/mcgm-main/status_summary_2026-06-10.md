@@ -707,8 +707,7 @@
   - Attack interval should be 1s.
   - Player screen should shake very lightly on hit, weaker than HL2 Zombie.
 - Implemented:
-  - Player melee knockback correction now runs for 3 ticks at 0.03s intervals.
-  - Each correction checks current velocity and only tops up missing horizontal projection / missing z lift.
+  - Superseded by the deterministic velocity-write hotfix below: the 3-tick correction approach was removed.
   - Zombie `AttackCooldown` is now `1.0`.
   - Actual player hit now applies mild `ViewPunch` and small `util.ScreenShake` after the hit sound.
 - Next game retest:
@@ -724,12 +723,85 @@
   - Screen shake should be slightly stronger.
   - Knockback/lift is still intermittent.
 - Implemented:
-  - Added a tiny trace-protected player separation nudge before applying melee knockback.
-  - Zombie currently nudges 6u horizontally and 2u upward; blocked traces do not move the player.
-  - Correction ticks can retry one safe nudge if the initial nudge did not happen and velocity is still missing.
-  - Added `bmb_debug_melee_knockback 1` for opt-in logging of velocity, missing impulse, nudge, and on-ground state.
+  - Superseded by the deterministic velocity-write hotfix below: the trace-protected SetPos nudge and correction retries were removed.
+  - `bmb_debug_melee_knockback 1` still exists; `bmb_melee_knockback_debug 1/0` was added as an easier toggle.
   - Increased hit `ViewPunch` / `ScreenShake` slightly while keeping it below HL2 Zombie intensity.
 - Next game retest:
   1. Point-blank hits should consistently produce horizontal push and z lift.
-  2. If a bad hit still happens, enable `bmb_debug_melee_knockback 1` and capture the console lines.
+  2. If a bad hit still happens, enable `bmb_melee_knockback_debug 1` and capture the console lines.
   3. Shake should be noticeable but not disorienting.
+
+## 2026-06-14 Latest Status After Deterministic Player Launch Hotfix
+
+- User report:
+  - Previous melee debug was hard to enable/find.
+  - Horizontal knockback exists, but vertical launch still comes and goes.
+  - 4.8 notes `Player:SetVelocity` is additive, so residual downward velocity can erase the apparent z launch.
+- Implemented:
+  - Player melee knockback now detaches ground, captures current velocity, calls `SetVelocity(-velocityBefore)`, then applies one deterministic desired velocity.
+  - Removed stale multi-tick correction and SetPos nudge code/params.
+  - Added `bmb_melee_knockback_debug 1/0` to toggle the existing debug cvar from console.
+- Next game retest:
+  1. Grounded player hits should reliably show z lift, not only while jumping.
+  2. Horizontal push should remain around the current 240 tuning, not the old over-strong value.
+  3. Screen shake / hurt sound / 1s cadence / MC block cliff fix should remain green.
+
+## 2026-06-14 Latest Status After MC Flat-Ground Cliff False Positive Hotfix
+
+- User report:
+  - On a flat MCSWEP block plane, Zombie can show `chase_repath_cliff` and refuse to move even though there is no edge.
+  - Knockback debugging is lower priority for this turn.
+- Diagnosis:
+  - The MC block cliff guard sampled exact foot positions.
+  - Exact full-block top-face coordinates can quantize through `WorldToBlock` into the solid block below the mob, so the grid standable query reports not-passable/not-standable.
+- Implemented:
+  - Added lifted-foot helpers in BaseMob: `GetBMBGridFootSample`, `IsBMBGridFootHullClear`, `IsBMBGridFootStandable`.
+  - Grid movement safety, path/carrot grid visibility, and current-position stranded checks now query hull/standable using the lifted foot sample.
+  - The lift is `max(4u, 0.12*BS)`, enough to avoid top-face boundary quantization but still far below half-slab height.
+  - Real MCSWEP block edges should remain unsafe because the lifted sample maps to an air cell with no support.
+- Next game retest:
+  1. On a full MC grass/oak block plane, Zombie chase should move normally and should not show `*_cliff` while still on flat ground.
+  2. At real MC block edges / narrow bridge edges, direct chase should still stop with `*_cliff`.
+  3. Hop, stranded recovery, prop support, and carrot gap protection should not regress.
+
+## 2026-06-14 Latest Status After Low-Ceiling Hop Pruning Revert
+
+- User retest:
+  - Broad A* hop-edge clearance made hop regress badly; ordinary hop stopped triggering.
+- Reverted:
+  - Removed `sv_pathfinder` hop-edge clearance gate and BaseMob path-hop-edge clearance helpers.
+  - Removed static checks/docs that required pruning low-ceiling hop in A*.
+  - Kept the MC flat-ground lifted-foot cliff fix.
+- Current note:
+  - The low-ceiling/head-blocked hop scenario is still open, but the next approach should be local/failure-aware, not broad A* hop pruning.
+
+## 2026-06-14 Latest Status After Zombie Range/Head-Overlap Tuning
+
+- User retest:
+  - Deterministic player launch now works.
+  - Remaining feel issues: knockback is still a little strong, detection range feels too short, melee range can be slightly longer, and standing on the Zombie's head does not get hit.
+- Implemented:
+  - Zombie detection changed to `TargetRange=1350` and `TargetLoseRange=1725`.
+  - Same-level melee range changed to `AttackRange=60`.
+  - Horizontal push changed to `AttackKnockback=210`; vertical lift remains 155 / grounded 190.
+  - Shared melee range check now has optional narrow vertical-overlap support.
+  - Zombie uses `AttackVerticalOverlapRange=86` and `AttackVerticalOverlapFlatRange=24` so head-standing hits work without widening normal `AttackVerticalRange=28`.
+- Next game retest:
+  1. Zombie should acquire the player from about 1.5x farther away than before.
+  2. Same-level melee should land a little earlier, around 60u.
+  3. Standing directly on the Zombie's head should be hittable.
+  4. Standing on a high block/platform beside the Zombie should still route through chase/path, not attack through height.
+  5. Knockback should feel milder than the 240 tuning while retaining stable z lift.
+
+## 2026-06-14 Latest Status After Zombie Knockback Distance Retune
+
+- User retest:
+  - The 210 horizontal tuning still throws the player about 4-5 blocks once the z launch is included.
+  - Desired feel is roughly 2-3 blocks.
+  - Manual edits did not appear to affect the running game.
+- Implemented:
+  - Zombie `AttackKnockback` changed from 210 to 150.
+  - Vertical launch values remain 155 / grounded 190 to preserve the now-stable lift.
+  - Static checks updated to expect 150.
+- Operational note:
+  - Tuning changes must be synced to `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon`; existing spawned Zombies may need Lua refresh/respawn to use new ENT fields.

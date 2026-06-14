@@ -43,6 +43,8 @@ ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
 ENT.GridSafetyStepScale = 0.5
 ENT.GridSafetyMinStep = 8
+ENT.GridSafetyFootLiftScale = 0.12
+ENT.GridSafetyMinFootLift = 4
 -- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)
 -- while remaining below a full MC block.
 ENT.StepHeight = 28
@@ -929,7 +931,7 @@ function ENT:IsBMBCurrentPositionStandable()
         return true
     end
 
-    return BMB.Pathfinder.IsStandablePosition(self:GetPos(), { mob = self })
+    return BMB.Pathfinder.IsStandablePosition(self:GetBMBGridFootSample(self:GetPos()), { mob = self })
 end
 
 function ENT:IsBMBPropSupportEntity(ent)
@@ -1592,6 +1594,28 @@ function ENT:IsBMBHullClearAtPosition(pos)
     return true
 end
 
+function ENT:GetBMBGridSafetyFootLift()
+    return math.max(
+        self.GridSafetyMinFootLift or 4,
+        self:GetBMBBlockSize() * (self.GridSafetyFootLiftScale or 0.12)
+    )
+end
+
+function ENT:GetBMBGridFootSample(pos)
+    return pos + Vector(0, 0, self:GetBMBGridSafetyFootLift())
+end
+
+function ENT:IsBMBGridFootHullClear(pos)
+    return self:IsBMBHullClearAtPosition(self:GetBMBGridFootSample(pos))
+end
+
+function ENT:IsBMBGridFootStandable(pos, options)
+    if not BMB or not BMB.Pathfinder or not BMB.Pathfinder.IsStandablePosition then return true end
+
+    local standable = BMB.Pathfinder.IsStandablePosition(self:GetBMBGridFootSample(pos), options or { mob = self })
+    return standable == true
+end
+
 function ENT:IsBMBPathCellPassable(blockCoord)
     if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.BlockToWorld then return true end
 
@@ -1599,10 +1623,7 @@ function ENT:IsBMBPathCellPassable(blockCoord)
 end
 
 function ENT:IsBMBPathLineStandable(pos, options)
-    if not BMB or not BMB.Pathfinder or not BMB.Pathfinder.IsStandablePosition then return true end
-
-    local standable = BMB.Pathfinder.IsStandablePosition(pos, options or { mob = self })
-    return standable == true
+    return self:IsBMBGridFootStandable(pos, options)
 end
 
 function ENT:IsPathGridVisible(target, requireStandable)
@@ -1615,7 +1636,7 @@ function ENT:IsPathGridVisible(target, requireStandable)
 
     local distance = delta:Length2D()
     if distance <= 1 then return true end
-    if not self:IsBMBHullClearAtPosition(current) then return false end
+    if not self:IsBMBGridFootHullClear(current) then return false end
 
     delta:Normalize()
 
@@ -1625,7 +1646,7 @@ function ENT:IsPathGridVisible(target, requireStandable)
     for i = 1, samples do
         local sampleDistance = math.min(distance, i * step)
         local sample = current + delta * sampleDistance
-        if not self:IsBMBHullClearAtPosition(sample) then return false end
+        if not self:IsBMBGridFootHullClear(sample) then return false end
         if standableOptions and not self:IsBMBPathLineStandable(sample, standableOptions) then return false end
     end
 
@@ -1698,12 +1719,11 @@ function ENT:IsBMBGridMovementTargetSafe(target, probeDistance)
         local sampleDistance = math.min(probe, i * step)
         local sample = current + delta * sampleDistance
 
-        if not self:IsBMBHullClearAtPosition(sample) then
+        if not self:IsBMBGridFootHullClear(sample) then
             return false, "wall"
         end
 
-        local standable = BMB.Pathfinder.IsStandablePosition(sample, standableOptions)
-        if standable ~= true then
+        if not self:IsBMBGridFootStandable(sample, standableOptions) then
             return false, "cliff"
         end
     end
