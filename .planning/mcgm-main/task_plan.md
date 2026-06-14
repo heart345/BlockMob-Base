@@ -86,6 +86,8 @@ Phase 2
 - [ ] 复测第二十四轮：控制台确认 `MC.BS` 与 `BMB.BS` 都为 36.5；hop 一格稳定、两格不上；半砖/楼梯走上去；36.5 走廊双向通行；drop 3 格主动下、4 格拒绝；吃草链路和坐标往返正常；mock/real 尺度一致
 - [x] 第二十五轮：StrandedRecovery（非法起点恢复）——当前脚部 cell 非 standable 但物理上 onGround 时，本地 8 方向 bail-out；优先走到邻近合法 standable 点，否则侧向离开窄支撑并下落；普通 A* 仍不把玻璃板顶当合法目标
 - [ ] 复测第二十五轮：物理枪/工具把羊放玻璃板顶或挖掉脚下支撑后，`state=stranded` 后应进入 `mode=stranded_bail`，必要时 `stranded_fall`，不卡顿、不沿玻璃板网络当路走，落到合法地面后恢复 wander；普通 wander 不主动规划到玻璃板顶；旧 hop/drop/走廊/物理枪不回归
+- [x] 第二十五轮 prop 支撑补丁：站在 GMod prop / `func_physbox` 等 Source 实体支撑上不触发 `stranded_no_escape`；A* 仍不把 prop 当支撑，当前步只用 `prop_direct` + `IsMovementTargetSafe` 兜底，边缘继续按 Source `cliff` 拦
+- [ ] 复测 prop 支撑补丁：把 sheep/zombie 直接放到 `prop_physics` 顶面，应不进入 `state=stranded` / `mode=stranded_no_escape`；debug/wander/chase 可短距离移动，走到 prop 边缘应被 cliff safety 拦住或按允许落差下去；玻璃板/栅栏 StrandedRecovery 不回归
 - [x] 第二十六轮：移动/性能收口——Stranded bail-out 撞障碍后记录失败方向并 `stranded_bail_retry` 换方向；drop 空中保持朝向不回头；BlockHop 起跳前按 lateral tolerance 对齐 launch/backoff；非 held Think 维护节流；新增 `scripts/check_movement_recovery_and_scaling.ps1`
 - [x] 复测第二十六轮：用户确认玻璃板撞障碍不再永久卡住 ✅；高处 drop 不空中回头 ✅；复杂台阶 hop 先对准再跳 ✅；遗留 drop 水平惯性、debug partial/hop 早停、新出生立刻 wander、20+ sheep FPS 低
 - [x] 第二十七轮：drop 空中水平速度钳制但不反向 steering；debug path 在到达/过期前持续 replan，partial/dead-end 进入 `debug_repath`；sheep 新生成 idle 4~9s；A* yield budget、wander attempts/failure pause、Think/physics impact 间隔和错峰做多 mob 峰值优化；新增 `scripts/check_drop_debug_spawn_perf.ps1`
@@ -123,6 +125,11 @@ Phase 2
 - [x] 第三十九轮：修 Zombie 三轮实测问题——`ChaseSegmentTimeout=2.0`、`ChaseFailureRepathDelay=0.05`、`TurnInPlaceAngle=170` 降低远距离追击停顿；`chase_repath` 期间继续 `SteerTowards`/`BodyMoveXY`；Base 增加 `BlockHopAllowCloseLaunch`，Zombie 开启贴脸 `close_lift` hop 兜底
 - [x] 第四十轮：修 Zombie 追击策略——看得到目标且前方安全时优先 `chase_direct` 直盯玩家推进；墙/悬崖/迷宫/视线断开时回到 BMB A*；A* 失败且玩家近处高处不可达时进入 `chase_stalk` 贴底等待，保持 target 不清空、不对零向量 chase_repath
 - [ ] 复测第四十轮：开阔地 HUD 主要显示 `chase_direct` 且不再远距离走走停停/平地乱拐；迷宫/绕墙仍能 `path_carrot/path_hop/path_drop` 绕路；高两格近处不可达显示 `chase_stalk`，不清目标长 idle
+- [x] 第四十轮后 hotfix：修 Sheep 一格 hop 后 `path_hop` / `debug_repath` 来回切——`IsBMBVerticalPathNodeReached` 不再依赖 `WorldToBlock` z equality，改为落地后实际脚底 z 接近目标 foot z；`bmb_debug_hop_log 1` 增加 setup/velocity/reach 日志，用于确认一格空间是否退不到理想 face/backoff
+- [x] 第四十轮后 hotfix 2：用户日志确认一格狭窄空间失败在 `reason=face_close face≈20-22 < minFace≈27.4` 且 backoff hull 不通；Base 新增受保护 `blocked_close_lift`（横向对准、`face>=0.52*BS`、backoff blocked 时才近距起跳），并让 drop completion 使用非对称高度容差
+- [x] 第四十轮后 hotfix 3：用户确认普通一格 hop 通过，但低顶多级台阶里理想 backoff 点能站却会撞头；Base 新增 hop launch ceiling clearance 检查，`ready/close_lift/blocked_close_lift` 需 `currentLiftClear=true`，`backoffLift=false` 也算 backoff blocked，并优先用较近 lift-clear launch 点
+- [x] 第四十轮后 hotfix 4：修低顶 hop 在 `face_close/lift_blocked` 间来回摆——`backoffLift=false` 时有效近距起跳门槛降到 `0.48*BS` 并记录 `effClose`；hop grounded 且水平贴近节点时允许约一格向上 overshoot 算进展，避免 debug_repath
+- [ ] 复测 hop hotfix 4：低顶台阶 `face≈18.x currentLift=true` 应直接 `blocked_close_lift` 起跳，不再转几圈；落到目标上方一格应推进路径；一格狭窄/开阔 backoff/过贴脸拒跳/两格 hop/debug gap/carrot 防跨洞不回归
 - [ ] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准
 - [ ] 加入日光燃烧、门/障碍交互策略
 - **Status:** in_progress

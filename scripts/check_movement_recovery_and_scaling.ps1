@@ -47,7 +47,8 @@ Assert-Contains $base "activeAction\s*==\s*""drop""[\s\S]*MaintainBMBDropAir" "d
 Assert-Contains $base "BlockHopLaunchLateralToleranceScale" "hop launch must define a lateral alignment tolerance"
 Assert-Contains $base "lateralOffset" "hop launch must measure lateral offset from the intended launch line"
 Assert-Contains $base "reason\s*=\s*""align""" "hop launch must steer to alignment before jumping"
-Assert-Contains $base "distance\s*>\s*maxDistance[\s\S]*steerTarget\s*=\s*backoff" "far hop approach should aim at launch/backoff point, not the block face"
+Assert-Contains $base "local\s+setupTarget\s*=\s*backoff" "hop setup target should default to the launch/backoff point"
+Assert-Contains $base "distance\s*>\s*maxDistance[\s\S]*steerTarget\s*=\s*setupTarget" "far hop approach should aim at launch/setup point, not the block face"
 
 Assert-Contains $base "NextThink\(CurTime\(\)\)" "entity Think must stay every tick for smooth nextbot movement"
 Assert-NotContains $base "NextThink\(CurTime\(\)\s*\+\s*\(self\.ThinkInterval" "many-mob scaling must not throttle the whole entity Think"

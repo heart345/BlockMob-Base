@@ -38,6 +38,9 @@ Assert-Contains "gmod_addon\lua\bmb\sv_pathfinder.lua" "function\s+pathfinder\.I
 Assert-Contains "gmod_addon\lua\bmb\sv_pathfinder.lua" "function\s+pathfinder\.FindNearestStandable\s*\(" "Pathfinder must expose nearest standable-cell search for recovery targets"
 Assert-Contains "gmod_addon\lua\bmb\sv_pathfinder.lua" "allowUnsupportedWalk" "Recovery paths must be able to leave an unsupported but passable start"
 Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:ShouldRunBMBStrandedRecovery\s*\(" "BaseMob must detect illegal current support"
+Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:IsBMBOnPropSupport\s*\(" "BaseMob must distinguish GMod prop support from illegal BMB-grid support"
+Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:IsBMBPropSupportEntity\s*\(" "Prop support detection should stay local to current physical support, not A* support"
+Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "prop_direct" "Mob standing on a prop should use Source-safety direct fallback instead of stranded recovery"
 Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:HasBMBPhysicalGroundAt\s*\(" "Recovery must be able to distinguish narrow physical support from open fall space"
 Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:FindBMBStrandedEscapePoint\s*\(" "Recovery must use local bail-out sampling instead of a wide grid search on panes"
 Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "function\s+ENT:MoveBMBStrandedBailOut\s*\(" "BaseMob must provide short bail-out steering for illegal-grid recovery"
@@ -46,7 +49,9 @@ Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "MoveBMBStrandedBailO
 Assert-Contains "gmod_addon\lua\entities\bmb_base_mob.lua" "stranded_bail" "HUD mode must expose bail-out recovery"
 Assert-Contains "gmod_addon\lua\entities\bmb_sheep.lua" "RunBMBStrandedRecovery" "Sheep state machine must try stranded recovery before normal goals"
 Assert-Contains "docs\STATE.md" "StrandedRecovery" "STATE.md must record the stranded recovery behavior"
+Assert-Contains "docs\STATE.md" "prop_direct" "STATE.md must document the prop-support stranded bypass"
 Assert-Contains "CLAUDE.md" "StrandedRecovery" "CLAUDE.md must document the stranded recovery rule"
+Assert-Contains "CLAUDE.md" "prop" "CLAUDE.md must preserve prop-support vs BMB-grid support separation"
 Assert-NotContains "gmod_addon\lua\entities\bmb_base_mob.lua" "ENT\.StrandedRecoveryRadiusCells\s*=\s*16" "Default stranded recovery must not run wide grid searches every retry"
 
 if ($failures.Count -gt 0) {

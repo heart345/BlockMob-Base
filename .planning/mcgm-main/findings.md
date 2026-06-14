@@ -494,3 +494,32 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **直追不是绕过安全层**：`chase_direct` 必须同时满足 line of sight 和短距离 `IsMovementTargetSafe`，否则会把“看得到玩家”误写成“可以冲下悬崖/撞墙”。安全探测失败、视线断开、迷宫转弯时，立即回到 `MoveToWorldPosition`。
 - **旧 `mcgm_zombie` 的手感可参考，架构不能复用**：它直盯玩家的追击观感是对的，但 `Path("Follow")` / navmesh / 旧避障不适合动态方块世界。BMB 的版本只借“视线段直压”这个策略，不借实现。
 - **高处不可达目标要保持仇恨，不要伪移动**：玩家在正上方时水平向量接近 0，`SteerTowards(target)` 没有实际方向；反复 `chase_repath` 会在 HUD 上像追击，实际不动。A* 失败且目标近处高于攻击范围时用 `chase_stalk`：保留 target、面向玩家、短周期重查，表现为贴底等待。
+
+## 2026-06-14: Hop completion should trust foot height, not cell equality
+
+- **`WorldToBlock` / `MC.WorldToCell` 的 z equality 在台面边界不可靠**：Source bot 脚底落在方块顶面时，位置可能是 `top - epsilon` 或物理解算一帧内略低，`floor(pos.z / BS)` 会给低一格。用它要求 `currentCell.z == node.coord.z` 会把已落地的一格 hop 判成未到达，表现为 `path_hop` / `debug_repath` 来回切。
+- **第 38 轮的“不能只看 2D”方向是对的，但 cell equality 过严**：正确的垂直动作完成条件是“已落地 + 实际脚底 z 接近目标 foot z”。没跳上去时差一整格，不会误通过；真落到上层时即使 cell floor 抖动，也能推进节点。
+
+## 2026-06-14: Hop cramped backoff cannot be mandatory
+
+- **`face_close` 不一定代表应该继续后退**：第 29 轮加 face-distance gate 是为了防贴脸硬跳；但新日志显示一格狭窄空间里 ideal backoff 点本身 hull 不通，实体既退不到 `minFace`，又因为没到 `minFace` 不起跳，形成 `path_hop` / `debug_repath` 循环。
+- **近距离起跳必须有“退路被堵”这个前提**：不能把 `BlockHopAllowCloseLaunch` 全局开给羊/Base，否则会回到旧贴墙乱跳。Base 现在只在 `backoffBlocked=true`、横向对准、`face >= 0.52*BS` 时用 `blocked_close_lift`，保留可退就退、过贴脸不跳的约束。
+- **drop 的脚底高度容差应与 hop 分开**：hop 需要严格确认上台；drop 落地时 Source 解算可能让脚底比目标 foot z 高 8u 以上但已经在地面，单一 `abs(deltaZ)<=8` 会误报未完成。drop 用稍大的上容差，不放宽 hop。
+
+## 2026-06-14: Hop launch points need overhead lift clearance
+
+- **standable 不是 launchable**：A* / `IsBMBHullClearAtPosition` 能证明一个点站得下，但 BlockHop 两段式弹道还要求起跳点上方有一段净空。低顶台阶里，理想 backoff 点可能 `hull=true`，但第一段竖直 lift 立刻撞头，表现为 `vz≈330` 正常、`apex≈10-15` 异常低。
+- **backoffBlocked 要包含 lift clearance**：理想 backoff 点如果 `backoffLift=false`，就应该和 hull/safety blocked 一样触发近距 launch 逻辑，而不是继续把实体拉到低顶下面起跳。
+- **调试日志要区分三类堵点**：`backoffHull=false` 是方块/身体空间不够；`backoffSafe=false` 是 Source safety 不安全；`backoffLift=false` 是能站但不能从这里跳。三者的修法不同，不能都混成 `face_close`。
+
+## 2026-06-14: Low-ceiling hop needs hysteresis
+
+- **低顶安全窗口会非常窄**：`log2` 显示 `backoffLift=false` 时，`face≈18.x` 往往 `currentLift=true`，但 `face≈21.x` 就 `currentLift=false`。如果 close threshold 正好是 19.0，实体会因为运动惯性在“没到阈值”和“撞头”之间来回摆，表现为 path_hop/debug_repath/转圈。
+- **低顶场景的 close threshold 应有单独有效值**：普通 blocked close 仍需要保守的 `0.52*BS`；但 `backoffLift=false` 时，把 `effClose` 降到 `0.48*BS` 能扩大可跳窗口，且仍不放开真正贴墙（0~10u）硬跳。
+- **一格 upward overshoot 是进展，不该马上重算**：低顶/复杂碰撞偶发把实体落到目标节点上方一格。只要已经 grounded 且 XY 贴近当前节点，这比“没跳上去”更接近目标，应推进路径；否则 debug 会把一次有效上升洗成失败 replan。
+
+## 2026-06-14: Prop support is not stranded support
+
+- **GMod prop 顶面不是 A* 支撑，但也不是 StrandedRecovery 目标**：`HasSupport` 忽略 prop 是正确的，否则 A* 会把玩家摆的 prop 当稳定地形来规划；但实体已经站在 prop 上时，`IsOnGround` 表示 Source 物理当前能托住它，不应进入玻璃板/栅栏那套非法网格逃生。
+- **prop 上的边缘判断应交给 Source safety**：从 prop 顶面移动时，当前步用 `IsMovementTargetSafe` / `path_cliff` 的 hull + ground trace 判断墙和边缘，不能用 BMB standable 语义判“脚下没有 MC 支撑所以搁浅”。
+- **兜底必须是当前位置局部的**：`prop_direct` 只在 A* 从 prop-supported 起点失败时短时间直线 steering，并且仍保留 cliff/wall safety；它不是把 prop 写进 `IBlockWorld.HasSupport`，也不是恢复沿玻璃板网络走远点的旧方案。

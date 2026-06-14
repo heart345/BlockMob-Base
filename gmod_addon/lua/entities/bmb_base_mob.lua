@@ -53,6 +53,11 @@ ENT.BlockHopLaunchMaxDistanceScale = 1.4
 ENT.BlockHopLaunchMinFaceDistanceScale = 0.75
 ENT.BlockHopLaunchIdealFaceDistanceScale = 0.85
 ENT.BlockHopLaunchLateralToleranceScale = 0.35
+ENT.BlockHopAllowBlockedCloseLaunch = true
+ENT.BlockHopBlockedCloseMinFaceDistanceScale = 0.52
+ENT.BlockHopCeilingBlockedCloseMinFaceDistanceScale = 0.48
+ENT.BlockHopLaunchCeilingClearanceScale = 0.95
+ENT.BlockHopVerticalOvershootToleranceScale = 1.25
 ENT.BlockHopMinLaunchSpeedScale = 0.6
 ENT.BlockHopRequireLaunchSpeed = false
 ENT.BlockHopManualHorizontalMinSpeed = 32
@@ -70,6 +75,7 @@ ENT.BlockHopMaxAttempts = 3
 ENT.MaxPathDropCells = 3
 -- 必须 > 一格，且 < 两格：MC 生物下一格台阶是日常移动，太小会把"从方块地板走下来"判成悬崖。
 ENT.MaxStepDownScale = 1.1
+ENT.DropVerticalReachUpToleranceScale = 0.35
 ENT.TurnRate = 400
 ENT.TurnInPlaceAngle = 110
 ENT.UseSourcePathFollower = true
@@ -109,6 +115,9 @@ ENT.StrandedRecoveryBlockedDirectionCooldown = 1.2
 ENT.StrandedRecoveryLocalStepScale = 0.75
 ENT.StrandedRecoveryBailDuration = 0.55
 ENT.StrandedRecoveryFallTimeout = 2.0
+ENT.PropSupportDirectTimeoutScale = 1.25
+ENT.PropSupportDirectTimeoutBase = 0.15
+ENT.PropSupportDirectTimeoutMax = 1.5
 ENT.PhysicsImpactRadius = 44
 ENT.PhysicsImpactInterval = 0.3
 ENT.PhysicsImpactCooldown = 0.22
@@ -148,6 +157,10 @@ end
 
 local function copyVector(vec)
     return Vector(vec.x, vec.y, vec.z)
+end
+
+local function startsWith(text, prefix)
+    return string.sub(text or "", 1, #prefix) == prefix
 end
 
 local strandedEscapeDirections = {
@@ -913,10 +926,39 @@ function ENT:IsBMBCurrentPositionStandable()
     return BMB.Pathfinder.IsStandablePosition(self:GetPos(), { mob = self })
 end
 
+function ENT:IsBMBPropSupportEntity(ent)
+    if not IsValid(ent) then return false end
+    if ent:IsWorld() or ent:IsPlayer() or ent:IsNPC() or ent:IsNextBot() then return false end
+
+    local class = string.lower(ent:GetClass() or "")
+    if startsWith(class, "mc_") or startsWith(class, "mcswep") or string.find(class, "minecraft", 1, true) then
+        return false
+    end
+
+    if startsWith(class, "prop_") or class == "func_physbox" or class == "func_physbox_multiplayer" then
+        return true
+    end
+
+    return ent.GetMoveType and ent:GetMoveType() == MOVETYPE_VPHYSICS
+end
+
+function ENT:IsBMBOnPropSupport()
+    if not self:IsBMBOnGround() then return false end
+
+    local hasGround, trace = self:HasBMBPhysicalGroundAt(self:GetPos())
+    if not hasGround or not trace or trace.HitWorld then return false end
+
+    return self:IsBMBPropSupportEntity(trace.Entity)
+end
+
 function ENT:ShouldRunBMBStrandedRecovery()
     if self.BMBHeld then return false end
     if self:IsBMBKnockbackActive() then return false end
     if not self:IsBMBOnGround() then return false end
+    if self:IsBMBOnPropSupport() then
+        self.BMBStrandedCell = nil
+        return false
+    end
 
     local standable, cell = self:IsBMBCurrentPositionStandable()
     if standable then
@@ -1030,7 +1072,7 @@ function ENT:MoveBMBStrandedBailOut(destination, speed, options)
     while CurTime() < fallUntil do
         if self.BMBMoveInterrupt then return false end
 
-        if self:IsBMBOnGround() and self:IsBMBCurrentPositionStandable() then
+        if self:IsBMBOnGround() and (self:IsBMBCurrentPositionStandable() or self:IsBMBOnPropSupport()) then
             self.BMBStrandedCell = nil
             self:SetBMBMoveMode("idle")
             self:UpdateBMBApproachDebug(nil, 0)
@@ -1075,7 +1117,7 @@ function ENT:MoveBMBStrandedBailOut(destination, speed, options)
         coroutine.yield()
     end
 
-    return self:IsBMBOnGround() and self:IsBMBCurrentPositionStandable()
+    return self:IsBMBOnGround() and (self:IsBMBCurrentPositionStandable() or self:IsBMBOnPropSupport())
 end
 
 function ENT:RunBMBStrandedRecovery()
@@ -1289,6 +1331,37 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         self:ClearBMBMovementInterrupt()
     end
 
+    local propSupportFallback = options.allowPropSupportFallback
+
+    local function shouldUsePropSupportFallback()
+        if propSupportFallback ~= nil then return propSupportFallback end
+        return self:IsBMBOnPropSupport()
+    end
+
+    local function runDirectFallback()
+        if options.allowDirectFallback then
+            return self:MoveDirectFallback(destination, speed, options)
+        end
+
+        if not shouldUsePropSupportFallback() then return false end
+
+        local directOptions = {}
+        for key, value in pairs(options) do
+            directOptions[key] = value
+        end
+
+        local distance = flatDistance(self:GetPos(), destination)
+        directOptions.moveMode = directOptions.moveMode or "prop_direct"
+        directOptions.acceptPartial = true
+        directOptions.duration = directOptions.duration or self:GetBMBMoveTimeoutForDistance(distance, desiredSpeed, {
+            timeoutScale = self.PropSupportDirectTimeoutScale or 1.25,
+            timeoutBase = self.PropSupportDirectTimeoutBase or 0.15,
+            timeoutMax = self.PropSupportDirectTimeoutMax or 1.5
+        })
+
+        return self:MoveDirectFallback(destination, speed, directOptions)
+    end
+
     if self:ShouldUseSourcePath() and not options.skipSourcePath then
         if self:MoveWithSourcePath(destination, desiredSpeed, options) then return true end
         if self.BMBMoveInterrupt then return false end
@@ -1300,21 +1373,13 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         allowUnsupportedWalk = options.allowUnsupportedWalk or options.allowStrandedStart
     })
     if not waypoints or #waypoints == 0 then
-        if options.allowDirectFallback then
-            return self:MoveDirectFallback(destination, speed, options)
-        end
-
-        return false
+        return runDirectFallback()
     end
 
     if self:MoveAlongPath(waypoints, desiredSpeed, options) then return true end
     if self.BMBMoveInterrupt then return false end
 
-    if options.allowDirectFallback then
-        return self:MoveDirectFallback(destination, speed, options)
-    end
-
-    return false
+    return runDirectFallback()
 end
 
 function ENT:MoveWithSourcePath(destination, speed, options)
@@ -1789,13 +1854,30 @@ end
 function ENT:IsBMBVerticalPathNodeReached(node)
     if not node then return false end
     if not self:IsBMBOnGround() then return false end
-    if not self:IsBMBPathActionAtTargetLevel(node) then return false end
     if not node.z then return true end
 
     local targetFootZ = node.z - self:GetBMBBlockSize() * 0.5 + (self.BlockHopLandingLift or 2)
-    local tolerance = self.VerticalPathReachZTolerance or 8
+    local downTolerance = self.VerticalPathReachZTolerance or 8
+    local upTolerance = downTolerance
+    if node.action == "drop" then
+        upTolerance = self.DropVerticalReachUpTolerance
+            or self:GetBMBBlockSize() * (self.DropVerticalReachUpToleranceScale or 0.35)
+    elseif node.action == "hop" then
+        upTolerance = math.max(
+            upTolerance,
+            self.BlockHopVerticalOvershootTolerance
+                or self:GetBMBBlockSize() * (self.BlockHopVerticalOvershootToleranceScale or 1.25)
+        )
+    end
 
-    return self:GetPos().z >= targetFootZ - tolerance
+    local deltaZ = self:GetPos().z - targetFootZ
+    local reached = deltaZ >= -downTolerance and deltaZ <= upTolerance
+
+    -- MC cell conversion floors at block boundaries; a bot standing exactly on a top face can
+    -- quantize to the lower cell for a tick. Trust the actual settled foot height instead.
+    self:LogBMBVerticalReach(node, targetFootZ, deltaZ, reached, downTolerance, upTolerance)
+
+    return reached
 end
 
 function ENT:ShouldAdvanceBMBPathNode(node, action, nodeDistance, nodeTolerance)
@@ -1853,6 +1935,48 @@ function ENT:GetBMBHopForward(current, target, previousNode)
     return forward
 end
 
+function ENT:GetBMBHopLaunchCeilingClearance()
+    local blockSize = self:GetBMBBlockSize()
+    local liftStart = blockSize * (self.BlockHopManualForwardStartHeightScale or 0.8)
+    local configured = self.BlockHopLaunchCeilingClearance
+
+    if configured then return configured end
+
+    return math.max(liftStart + 6, blockSize * (self.BlockHopLaunchCeilingClearanceScale or 0.95))
+end
+
+function ENT:IsBMBHopLaunchCeilingClear(pos)
+    if not pos then return true, "ok" end
+
+    local clearance = self:GetBMBHopLaunchCeilingClearance()
+    local traceFilter = function(ent)
+        return self:ShouldSafetyTraceHit(ent)
+    end
+
+    local trace = util.TraceHull({
+        start = pos + Vector(0, 0, 1),
+        endpos = pos + Vector(0, 0, clearance),
+        mins = self.CollisionMins,
+        maxs = self.CollisionMaxs,
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    if trace.StartSolid then return false, "ceiling_startsolid" end
+    if trace.Hit then return false, "ceiling_trace" end
+
+    local step = math.max(self:GetBMBBlockSize() * 0.25, 6)
+    local samples = math.max(1, math.ceil(clearance / step))
+    for i = 0, samples do
+        local sample = pos + Vector(0, 0, math.min(clearance, i * step))
+        if not self:IsBMBHullClearAtPosition(sample) then
+            return false, "ceiling_grid"
+        end
+    end
+
+    return true, "ok"
+end
+
 function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     local blockSize = self:GetBMBBlockSize()
     local distance = flatDistance(current, target)
@@ -1886,9 +2010,49 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     local approach = Vector(target.x, target.y, current.z)
     local needsSpeed = self.BlockHopRequireLaunchSpeed == true
     local allowCloseLaunch = self.BlockHopAllowCloseLaunch == true
+    local allowBlockedCloseLaunch = self.BlockHopAllowBlockedCloseLaunch ~= false
+    local blockedCloseMinFaceDistance = self.BlockHopBlockedCloseMinFaceDistance
+        or blockSize * (self.BlockHopBlockedCloseMinFaceDistanceScale or 0.52)
+    local ceilingBlockedCloseMinFaceDistance = self.BlockHopCeilingBlockedCloseMinFaceDistance
+        or blockSize * (self.BlockHopCeilingBlockedCloseMinFaceDistanceScale or 0.48)
+    local blockedCloseDistance = blockSize * 0.5 + blockedCloseMinFaceDistance
+    local blockedCloseBackoff = Vector(target.x - forward.x * blockedCloseDistance, target.y - forward.y * blockedCloseDistance, current.z)
+    local backoffHullClear = true
+    if self.IsBMBHullClearAtPosition then
+        backoffHullClear = self:IsBMBHullClearAtPosition(backoff)
+    end
+
+    local currentLiftClear, currentLiftReason = self:IsBMBHopLaunchCeilingClear(current)
+    local backoffLiftClear, backoffLiftReason = self:IsBMBHopLaunchCeilingClear(backoff)
+    local blockedCloseBackoffLiftClear, blockedCloseBackoffLiftReason = self:IsBMBHopLaunchCeilingClear(blockedCloseBackoff)
+    local backoffSafe, backoffSafeReason = true, "ok"
+    if self.IsPathSourceTargetSafe then
+        backoffSafe, backoffSafeReason = self:IsPathSourceTargetSafe(backoff)
+    end
+
+    local backoffBlocked = backoffHullClear ~= true or backoffSafe ~= true or backoffLiftClear ~= true
+    local effectiveBlockedCloseMinFaceDistance = blockedCloseMinFaceDistance
+    if backoffLiftClear ~= true then
+        effectiveBlockedCloseMinFaceDistance = math.min(effectiveBlockedCloseMinFaceDistance, ceilingBlockedCloseMinFaceDistance)
+    end
+
+    local setupTarget = backoff
+    if backoffLiftClear ~= true and blockedCloseBackoffLiftClear == true then
+        setupTarget = blockedCloseBackoff
+    end
+
+    local canBlockedCloseLaunch = allowBlockedCloseLaunch
+        and backoffBlocked
+        and currentLiftClear == true
+        and distance <= maxDistance
+        and faceDistance >= effectiveBlockedCloseMinFaceDistance
+        and faceDistance < minFaceDistance
+        and lateralOffset <= lateralTolerance
+        and (not needsSpeed or speedAlong >= minSpeed)
     local ready = distance >= minDistance and distance <= maxDistance
         and faceDistance >= minFaceDistance
         and lateralOffset <= lateralTolerance
+        and currentLiftClear == true
         and (not needsSpeed or speedAlong >= minSpeed)
     local steerTarget = approach
     local reason = "approach"
@@ -1896,23 +2060,30 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
     if allowCloseLaunch and distance <= maxDistance
         and faceDistance < minFaceDistance
         and lateralOffset <= lateralTolerance
+        and currentLiftClear == true
         and (not needsSpeed or speedAlong >= minSpeed) then
         ready = true
         reason = "close_lift"
+    elseif canBlockedCloseLaunch then
+        ready = true
+        reason = "blocked_close_lift"
+    elseif currentLiftClear ~= true and distance <= maxDistance then
+        steerTarget = setupTarget
+        reason = "lift_blocked"
     elseif lateralOffset > lateralTolerance then
-        steerTarget = backoff
+        steerTarget = setupTarget
         reason = "align"
     elseif faceDistance < minFaceDistance then
-        steerTarget = backoff
+        steerTarget = setupTarget
         reason = "face_close"
     elseif distance < minDistance then
-        steerTarget = backoff
+        steerTarget = setupTarget
         reason = "close"
     elseif needsSpeed and speedAlong < minSpeed then
-        steerTarget = distance < idealDistance and backoff or approach
+        steerTarget = distance < idealDistance and setupTarget or approach
         reason = "slow"
     elseif distance > maxDistance then
-        steerTarget = backoff
+        steerTarget = setupTarget
         reason = "far"
     else
         reason = "ready"
@@ -1928,7 +2099,21 @@ function ENT:GetBMBHopLaunchControl(current, target, speed, previousNode)
         minFaceDistance = minFaceDistance,
         lateralOffset = lateralOffset,
         speed2D = speed2D,
-        speedAlong = speedAlong
+        speedAlong = speedAlong,
+        minSpeed = minSpeed,
+        backoff = backoff,
+        backoffBlocked = backoffBlocked,
+        backoffHullClear = backoffHullClear,
+        backoffSafe = backoffSafe,
+        backoffSafeReason = backoffSafeReason,
+        currentLiftClear = currentLiftClear,
+        currentLiftReason = currentLiftReason,
+        backoffLiftClear = backoffLiftClear,
+        backoffLiftReason = backoffLiftReason,
+        blockedCloseBackoffLiftClear = blockedCloseBackoffLiftClear,
+        blockedCloseBackoffLiftReason = blockedCloseBackoffLiftReason,
+        blockedCloseMinFaceDistance = blockedCloseMinFaceDistance,
+        effectiveBlockedCloseMinFaceDistance = effectiveBlockedCloseMinFaceDistance
     }
 end
 
@@ -1937,11 +2122,82 @@ function ENT:ShouldLogBMBHop()
     return convar and convar:GetBool()
 end
 
+function ENT:FormatBMBHopVector(pos)
+    if not pos then return "nil" end
+
+    return string.format("(%.1f,%.1f,%.1f)", pos.x or 0, pos.y or 0, pos.z or 0)
+end
+
+function ENT:LogBMBHopSetup(nodeIndex, launch, current, target)
+    if not self:ShouldLogBMBHop() or not launch then return end
+
+    local now = CurTime()
+    local key = tostring(nodeIndex or 0) .. ":" .. tostring(launch.reason) .. ":" .. tostring(launch.ready)
+    if self.BMBLastHopSetupLogKey == key and now < (self.BMBNextHopSetupLogAt or 0) then return end
+
+    self.BMBLastHopSetupLogKey = key
+    self.BMBNextHopSetupLogAt = now + (self.BlockHopSetupLogInterval or 0.25)
+
+    local setupSafe, setupReason = true, "ok"
+    if self.IsPathSourceTargetSafe and launch.target then
+        setupSafe, setupReason = self:IsPathSourceTargetSafe(launch.target)
+    end
+
+    local hullClear = true
+    if self.IsBMBHullClearAtPosition and launch.target then
+        hullClear = self:IsBMBHullClearAtPosition(launch.target)
+    end
+
+    print(string.format(
+        "[BMB] hop setup ent=%s node=%d ready=%s reason=%s dist=%.1f face=%.1f minFace=%.1f closeMin=%.1f effClose=%.1f lateral=%.1f speed=%.1f minSpeed=%.1f safe=%s safeReason=%s hull=%s currentLift=%s currentLiftReason=%s backoffBlocked=%s backoffHull=%s backoffSafe=%s backoffReason=%s backoffLift=%s backoffLiftReason=%s closeLift=%s closeLiftReason=%s pos=%s target=%s steer=%s",
+        tostring(self), nodeIndex or 0, tostring(launch.ready == true), tostring(launch.reason),
+        launch.distance or 0, launch.faceDistance or 0, launch.minFaceDistance or 0,
+        launch.blockedCloseMinFaceDistance or 0, launch.effectiveBlockedCloseMinFaceDistance or launch.blockedCloseMinFaceDistance or 0,
+        launch.lateralOffset or 0, launch.speedAlong or 0, launch.minSpeed or 0,
+        tostring(setupSafe == true), tostring(setupReason or "ok"), tostring(hullClear == true),
+        tostring(launch.currentLiftClear == true), tostring(launch.currentLiftReason or "ok"),
+        tostring(launch.backoffBlocked == true), tostring(launch.backoffHullClear == true),
+        tostring(launch.backoffSafe == true), tostring(launch.backoffSafeReason or "ok"),
+        tostring(launch.backoffLiftClear == true), tostring(launch.backoffLiftReason or "ok"),
+        tostring(launch.blockedCloseBackoffLiftClear == true), tostring(launch.blockedCloseBackoffLiftReason or "ok"),
+        self:FormatBMBHopVector(current), self:FormatBMBHopVector(target), self:FormatBMBHopVector(launch.target)
+    ))
+end
+
+function ENT:LogBMBVerticalReach(node, targetFootZ, deltaZ, reached, downTolerance, upTolerance)
+    if not self:ShouldLogBMBHop() or not node then return end
+
+    local now = CurTime()
+    local key = tostring(node.action or "vertical") .. ":" .. tostring(node.coord and node.coord.z or node.z or 0) .. ":" .. tostring(reached)
+    if self.BMBLastVerticalReachLogKey == key and now < (self.BMBNextVerticalReachLogAt or 0) then return end
+
+    self.BMBLastVerticalReachLogKey = key
+    self.BMBNextVerticalReachLogAt = now + (self.BlockHopReachLogInterval or 0.25)
+
+    local cellZ = "nil"
+    if BMB and BMB.BlockWorld and BMB.BlockWorld.WorldToBlock then
+        local cell = BMB.BlockWorld.WorldToBlock(self:GetPos())
+        cellZ = tostring(cell and cell.z)
+    end
+
+    downTolerance = downTolerance or self.VerticalPathReachZTolerance or 8
+    upTolerance = upTolerance or downTolerance
+
+    print(string.format(
+        "[BMB] vertical reach ent=%s action=%s reached=%s posZ=%.2f targetFootZ=%.2f dz=%.2f tolDown=%.1f tolUp=%.1f cellZ=%s nodeZ=%s dist=%.1f onGround=%s",
+        tostring(self), tostring(node.action or "vertical"), tostring(reached == true),
+        self:GetPos().z, targetFootZ or 0, deltaZ or 0, downTolerance, upTolerance,
+        cellZ, tostring(node.coord and node.coord.z or node.z), flatDistance(self:GetPos(), node),
+        tostring(self:IsBMBOnGround())
+    ))
+end
+
 function ENT:BeginBMBHopDebug(nodeIndex, target, launch, native)
     self.BMBHopAttemptCount = (self.BMBHopAttemptCount or 0) + 1
     self.BMBHopDebug = {
         attempt = self.BMBHopAttemptCount,
         nodeIndex = nodeIndex or 0,
+        target = target,
         launchZ = self:GetPos().z,
         maxZ = self:GetPos().z,
         distance = launch and launch.distance or flatDistance(self:GetPos(), target),
@@ -1961,9 +2217,10 @@ function ENT:BeginBMBHopDebug(nodeIndex, target, launch, native)
     self:SetNWFloat("BMBHopDebugUntil", CurTime() + 5)
 
     if self:ShouldLogBMBHop() then
-        print(string.format("[BMB] hop start ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f target=%s",
+        print(string.format("[BMB] hop start ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f target=%s pos=%s",
             tostring(self), self.BMBHopAttemptCount, nodeIndex or 0, tostring(native == true),
-            self.BMBHopDebug.distance, self.BMBHopDebug.faceDistance, self.BMBHopDebug.speed, tostring(target)))
+            self.BMBHopDebug.distance, self.BMBHopDebug.faceDistance, self.BMBHopDebug.speed,
+            self:FormatBMBHopVector(target), self:FormatBMBHopVector(self:GetPos())))
     end
 end
 
@@ -1996,10 +2253,15 @@ function ENT:FinishBMBHopDebug(result)
     self:SetNWFloat("BMBHopDebugUntil", CurTime() + 5)
 
     if self:ShouldLogBMBHop() then
-        print(string.format("[BMB] hop %s ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f apex=%.1f",
+        local target = debugData.target
+        local targetFootZ = target and (target.z - self:GetBMBBlockSize() * 0.5 + (self.BlockHopLandingLift or 2)) or 0
+
+        print(string.format("[BMB] hop %s ent=%s attempt=%d node=%d native=%s dist=%.1f face=%.1f speed=%.1f apex=%.1f pos=%s target=%s targetFootZ=%.2f dz=%.2f onGround=%s",
             result or "retry", tostring(self), debugData.attempt or 0, debugData.nodeIndex or 0,
             tostring(debugData.native == true), debugData.distance or 0, debugData.faceDistance or 0,
-            debugData.speed or 0, self:GetNWFloat("BMBHopApex", 0)))
+            debugData.speed or 0, self:GetNWFloat("BMBHopApex", 0),
+            self:FormatBMBHopVector(self:GetPos()), self:FormatBMBHopVector(target),
+            targetFootZ, self:GetPos().z - targetFootZ, tostring(self:IsBMBOnGround())))
     end
 
     self.BMBHopDebug = nil
@@ -2070,9 +2332,13 @@ function ENT:ApplyBMBPendingBlockHop()
     self.BMBBlockHopAirControlUntil = now + controlTime
 
     if self:ShouldLogBMBHop() then
-        print(string.format("[BMB] hop velocity ent=%s vx=%.1f vy=%.1f vz=%.1f flight=%.2f lift=%.2f target=%s",
+        local target = pending.target
+        local targetFootZ = target and (target.z - blockSize * 0.5 + (self.BlockHopLandingLift or 2)) or 0
+
+        print(string.format("[BMB] hop velocity ent=%s vx=%.1f vy=%.1f vz=%.1f flight=%.2f lift=%.2f target=%s targetFootZ=%.2f startZ=%.2f",
             tostring(self), pending.velocity.x, pending.velocity.y, pending.velocity.z,
-            pending.flightTime or 0, self.BlockHopManualLiftTime or 0.16, tostring(pending.target)))
+            pending.flightTime or 0, self.BlockHopManualLiftTime or 0.16,
+            self:FormatBMBHopVector(target), targetFootZ, self:GetPos().z))
     end
 end
 
@@ -2399,6 +2665,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                 and flatDistance(current, actionNode) <= triggerDistance then
                 local launch = self:GetBMBHopLaunchControl(current, actionNode, pathSpeed, waypoints[nodeIndex - 1])
                 launch.nodeIndex = nodeIndex
+                self:LogBMBHopSetup(nodeIndex, launch, current, actionNode)
 
                 if launch.ready then
                     hopNative[nodeIndex] = self:StartBMBBlockHop(actionNode, pathSpeed, launch)
@@ -2485,11 +2752,12 @@ function ENT:MoveDirectFallback(destination, speed, options)
     local duration = options.duration or 0.55
     local timeout = CurTime() + duration
     local target = Vector(destination.x, destination.y, self:GetPos().z)
+    local goalTolerance = options.goalTolerance or self:GetBMBDefaultGoalTolerance()
 
     self:ClearBMBMovementInterrupt()
     self:MaintainBMBMoveSpeed(desiredSpeed)
     self:UpdateMoveActivity(desiredSpeed)
-    self:SetBMBMoveMode("direct")
+    self:SetBMBMoveMode(options.moveMode or "direct")
 
     local progressWatch = self:StartBMBMoveProgressWatch()
 
@@ -2497,6 +2765,7 @@ function ENT:MoveDirectFallback(destination, speed, options)
         if self.BMBMoveInterrupt then return false end
 
         target.z = self:GetPos().z
+        if flatDistance(self:GetPos(), destination) <= goalTolerance then return true end
 
         local safe, blockReason = self:IsMovementTargetSafe(target, self:GetBMBTickSafetyProbe(options.safetyProbe))
         if not safe then
@@ -2518,7 +2787,7 @@ function ENT:MoveDirectFallback(destination, speed, options)
         coroutine.yield()
     end
 
-    return true
+    return options.acceptPartial or flatDistance(self:GetPos(), destination) <= goalTolerance
 end
 
 function ENT:MoveAlongDirection(direction, speed, options)

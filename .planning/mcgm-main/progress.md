@@ -1134,6 +1134,92 @@
   - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
   - glualint on changed Lua files.
 
+## 2026-06-14 Hop vertical reach hotfix
+
+- User rolled back later chase experiments and retested hop first. One-block hop still showed `path_hop` followed by `debug_repath`; HUD could report a normal manual hop apex, so A* and the two-stage lift were not the primary failure.
+- Log review: after Round 29 the hop trajectory itself was mostly unchanged. Round 38 added `IsBMBVerticalPathNodeReached` for final hop/drop correctness and included a `WorldToBlock(self:GetPos()).z == node.coord.z` level equality check.
+- Diagnosis: `MC.WorldToCell` floors positions. A bot settled on a block top can sit exactly on the boundary or a hair below it for a tick, quantizing to the lower cell even though the physical foot height is correct. That makes successful hop landings fail node advancement and fall into debug replan.
+- Fix:
+  - `IsBMBVerticalPathNodeReached` now requires ground contact and compares actual foot `pos.z` to the target foot z within `VerticalPathReachZTolerance`.
+  - It no longer depends on block-cell z equality for vertical action completion.
+- Checks:
+  - glualint on `bmb_base_mob.lua`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `scripts/check_block_size_parameterization.ps1`
+  - `scripts/check_debug_gap_and_collision.ps1`
+
+## 2026-06-14 Hop blocked-backoff launch hotfix
+
+- User compared two `bmb_debug_hop_log 1` traces:
+  - Successful first jump: `ready=true reason=ready face≈29 minFace≈27.4`.
+  - Failing cramped one-block jump: repeated `ready=false reason=face_close face≈20-22 minFace≈27.4`, while the intended backoff/steer point was hull-blocked.
+- Diagnosis:
+  - The two-stage manual hop still works when it launches.
+  - The failure is launch admission: the bot wants to retreat to the ideal face-distance, but cramped geometry makes that backoff point invalid. It then refuses to hard jump, so `path_hop` / `debug_repath` loops.
+- Fix:
+  - Base hop launch now has guarded `blocked_close_lift`.
+  - It only fires when the bot is laterally aligned, still within hop range, not extremely face-stuck (`face >= 0.52*BS`), and the ideal backoff point is blocked by hull/safety.
+  - Ordinary `face_close` behavior is unchanged when backoff is available, preserving the Round 29 fix against random贴脸硬跳.
+  - `hop setup` logs now include `closeMin`, `backoffBlocked`, `backoffHull`, `backoffSafe`, and `backoffReason`.
+  - Drop vertical completion uses separate down/up tolerances so a grounded drop that settles slightly above the exact target foot z is not misread as unfinished.
+- Checks:
+  - glualint on `bmb_base_mob.lua`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `scripts/check_block_size_parameterization.ps1`
+
+## 2026-06-14 Hop launch ceiling-clearance hotfix
+
+- User retested after blocked-close fix:
+  - Ordinary one-block hop now works.
+  - In a stricter multi-step/low-overhead setup, the bot succeeds for a few hops, then backs up for the next hop and clips into a block above/behind its head.
+  - Log signature at the failing hop: it backs from `face≈16` to an ideal `face≈31`, starts the hop with normal `vz≈330`, but HUD/log only reaches low apex (`≈14`) before failing. The backoff point was `hull=true` and `backoffBlocked=false`, so the old check proved it could stand there, not that it could lift from there.
+- Diagnosis:
+  - Two-stage manual hop has a first vertical lift segment before horizontal travel.
+  - A launch point needs overhead lift clearance, not just standable/hull clearance.
+  - If ideal backoff has a low ceiling, the bot should launch from a nearer face-distance point that still has lift clearance, instead of backing under the ceiling.
+- Fix:
+  - Added `IsBMBHopLaunchCeilingClear`: Source `TraceHull` plus BMB hull samples over roughly `0.95*BS` vertical clearance.
+  - `ready`, `close_lift`, and `blocked_close_lift` now require `currentLiftClear`.
+  - The ideal backoff is considered blocked when `backoffLiftClear=false`; if a closer blocked-close launch point has lift clearance, setup steering uses that point instead of the full ideal backoff.
+  - Hop setup logs now include `currentLift/currentLiftReason`, `backoffLift/backoffLiftReason`, and `closeLift/closeLiftReason`.
+- Checks:
+  - glualint on `bmb_base_mob.lua`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `scripts/check_block_size_parameterization.ps1`
+
+## 2026-06-14 Hop low-ceiling oscillation hotfix
+
+- User retested with `log1fail` and `log2`:
+  - `log1fail` uses the pre-`currentLift/backoffLift` log format, so treat it as an old/stale sample.
+  - `log2` is current. It shows the bot eventually completes, but sometimes spins/repaths: low-ceiling setup has `backoffLift=false`; at `face≈18.x` the current launch point is clear, but the old `closeMin≈19.0` rejects launch; continuing movement pushes it to `face≈21.x`, where `currentLift=false`, so it bounces between `face_close` and `lift_blocked`.
+  - The first hop in the log also landed grounded about one block above the requested hop node (`dz≈34.5`), which was treated as a failed hop and forced debug replan even though the bot had clearly made vertical progress.
+- Fix:
+  - Added `BlockHopCeilingBlockedCloseMinFaceDistanceScale=0.48`.
+  - `GetBMBHopLaunchControl` now computes `effectiveBlockedCloseMinFaceDistance`: normal blocked close still uses `0.52*BS`, but when `backoffLift=false`, the effective low-ceiling launch threshold drops to `0.48*BS`.
+  - Hop setup logs now include `effClose` so `face < closeMin` launches are explainable in low-ceiling cases.
+  - Hop vertical completion now uses `BlockHopVerticalOvershootToleranceScale=1.25`: if the bot is grounded, horizontally at the node, and up to about one block above the target foot z, it counts as progress instead of triggering debug replan.
+- Checks:
+  - glualint on `bmb_base_mob.lua`
+  - `scripts/check_hop_debug_gap_regressions.ps1`
+  - `scripts/check_block_size_parameterization.ps1`
+
+## 2026-06-14 Prop support stranded bypass
+
+- User found a new movement-layer bug:
+  - When a mob stands on a normal GMod prop, the current BMB grid cell is not standable because `HasSupport` intentionally ignores props.
+  - `ShouldRunBMBStrandedRecovery` therefore enters `state=stranded`, but local bail-out cannot find an escape on the prop top and HUD can settle on `stranded_no_escape`.
+- Diagnosis:
+  - Prop support and glass-pane/invalid-grid support are different cases.
+  - A* must still not treat props as terrain, because it cannot plan prop topology and should not choose prop tops as ordinary nodes.
+  - If the entity is already physically standing on a prop, the current-step edge/wall decision should be Source safety (`IsMovementTargetSafe` / `path_cliff`), not BMB standable semantics.
+- Fix:
+  - Added `IsBMBPropSupportEntity` / `IsBMBOnPropSupport`.
+  - `ShouldRunBMBStrandedRecovery` now bypasses recovery when current physical support is a GMod prop / `func_physbox` / VPhysics entity, while keeping world/brush support under normal standable rules and excluding players/NPCs/NextBots.
+  - If `MoveToWorldPosition` cannot get a BMB A* path from a prop-supported start, it uses short `prop_direct` fallback with normal Source hull/ground safety; cliff/wall checks still stop unsafe edges.
+  - Stranded bail-out also exits if it lands on prop support, avoiding stale stranded state after recovery movement.
+- Checks:
+  - `scripts/check_stranded_recovery.ps1` now guards the prop-support bypass and `prop_direct` mode.
+
 ## 2026-06-13 Zombie phase 1 direct chase / high-target stalk
 
 - User retest found:
