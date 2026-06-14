@@ -130,7 +130,13 @@ Phase 2
 - [x] 第四十轮后 hotfix 3：用户确认普通一格 hop 通过，但低顶多级台阶里理想 backoff 点能站却会撞头；Base 新增 hop launch ceiling clearance 检查，`ready/close_lift/blocked_close_lift` 需 `currentLiftClear=true`，`backoffLift=false` 也算 backoff blocked，并优先用较近 lift-clear launch 点
 - [x] 第四十轮后 hotfix 4：修低顶 hop 在 `face_close/lift_blocked` 间来回摆——`backoffLift=false` 时有效近距起跳门槛降到 `0.48*BS` 并记录 `effClose`；hop grounded 且水平贴近节点时允许约一格向上 overshoot 算进展，避免 debug_repath
 - [ ] 复测 hop hotfix 4：低顶台阶 `face≈18.x currentLift=true` 应直接 `blocked_close_lift` 起跳，不再转几圈；落到目标上方一格应推进路径；一格狭窄/开阔 backoff/过贴脸拒跳/两格 hop/debug gap/carrot 防跨洞不回归
-- [ ] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准
+- [x] Zombie Phase 2：攻击进入范围立即同帧命中（`AttackHitDelay=0`），攻击间隔改为 `AttackCooldown=1.0`；命中玩家播放受伤音效，并给较克制水平击退（`AttackKnockback=240`）+ 竖直击飞；地面玩家先 `SetGroundEntity(NULL)` 并用 `AttackGroundedVerticalKnockback=190` 跨过 Source ground movement 阈值；ambient 叫声按 MC `Mob#getAmbientSoundInterval()=80 tick` + `random.nextInt(1000) < ambientSoundTime++` 模型，Base `Think` 任意状态检查
+- [x] Zombie Phase 2 断崖 hotfix：`chase_direct` / `attack_ready` / `chase_repath` 统一走 `Chase.ApplySafePressure`，直线压迫前对实际 steering target 跑 `IsMovementTargetSafe`，遇到 cliff 发布 `*_cliff` 并压掉水平速度，避免无视 Source 断崖掉下去
+- [x] Zombie Phase 2 hotfix 2：近身重叠命中缓存 chase/attack 方向，击退下一 tick 只补缺失水平/竖直速度；`IsMovementTargetSafe` 在 Source trace 后增加 MC 方块 standable 采样，只在 MC 支撑附近启用，避免直追绕过 A* 从 MCSWEP 方块边缘掉下去，同时不把 prop 顶面当 BMB 地形
+- [x] Zombie Phase 2 hotfix 3：玩家受击改为 3 tick/0.03s 多 tick 缺口补偿，避免 Source 地面/重叠偶尔吞掉水平击退和 z 击飞；实际命中玩家加轻微 `ViewPunch` / screen shake
+- [x] Zombie Phase 2 hotfix 4：玩家深贴 Zombie hull 时先做 trace 保护的 6u separation nudge，再写击退；新增 `bmb_debug_melee_knockback` 可选日志；screen shake / view punch 小幅上调
+- [ ] 复测 Zombie Phase 2：进范围第一下立刻扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退不再过强且不再时好时坏；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；旧追击、hop、stranded、受击不回归
+- [x] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准（本轮确认 Zombie ambient 走通用 `Mob` 80 tick 递增概率；攻击节奏按用户 Phase 2 手感最终取 1.0s）
 - [ ] 加入日光燃烧、门/障碍交互策略
 - **Status:** in_progress
 

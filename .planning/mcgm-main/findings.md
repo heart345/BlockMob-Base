@@ -523,3 +523,30 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **GMod prop 顶面不是 A* 支撑，但也不是 StrandedRecovery 目标**：`HasSupport` 忽略 prop 是正确的，否则 A* 会把玩家摆的 prop 当稳定地形来规划；但实体已经站在 prop 上时，`IsOnGround` 表示 Source 物理当前能托住它，不应进入玻璃板/栅栏那套非法网格逃生。
 - **prop 上的边缘判断应交给 Source safety**：从 prop 顶面移动时，当前步用 `IsMovementTargetSafe` / `path_cliff` 的 hull + ground trace 判断墙和边缘，不能用 BMB standable 语义判“脚下没有 MC 支撑所以搁浅”。
 - **兜底必须是当前位置局部的**：`prop_direct` 只在 A* 从 prop-supported 起点失败时短时间直线 steering，并且仍保留 cliff/wall safety；它不是把 prop 写进 `IBlockWorld.HasSupport`，也不是恢复沿玻璃板网络走远点的旧方案。
+
+## 2026-06-14: Zombie Phase 2 instant melee and ambient sound
+
+- **“进入攻击范围就出手”应由共享 melee 支持，不该写进 Zombie 状态机**：`AttackHitDelay=0` 是参数，`MeleeAttack.Try` 负责同帧 `ResolveHit`；非零 delay 仍保留给有 windup 的未来怪物。这样 Phase 2 Zombie 是一个参数化用例，不是分叉实现。
+- **命中反馈只有实际命中后才播**：玩家受伤音效挂在 `OnBMBMeleeHit`，而不是挥手开始时；miss / cooldown / 目标离开 range 不应播受伤音。
+- **贴身重叠需要击退方向兜底**：玩家和 Zombie 水平位置非常近时，`target - mob` 可能接近零向量。用 mob forward 作为 fallback 可以避免“咬到了但没有推开”的手感断层。
+- **地面玩家的 z 击飞有 Source 阈值/地面状态问题**：直接 `Player:SetVelocity(Vector(0,0,z))` 在玩家站地面时可能被 ground movement 同帧吃掉，玩家跳起时才明显。近战击飞需要先 `SetGroundEntity(NULL)`，并给地面玩家单独最小 z 阈值；下一 tick 只补缺失 z，避免水平击退叠两次。
+- **直追/攻击准备也是移动入口，必须做 cliff safety**：`path_cliff` 只能保护 `MoveAlongPath`。Zombie 的 `chase_direct`、`attack_ready`、`chase_repath` 直接 `SteerTowards(player)`，如果不复查实际 steering target，就会绕过 A* 和 path safety 从 Source 高台边缘走下去。所有直线压迫应先走共享 `ApplySafePressure`，不安全时停在边缘并杀水平动量。
+- **MC ambient 不是固定随机区间**：源码 `Mob#getAmbientSoundInterval() = 80`，`baseTick` 用 `random.nextInt(1000) < ambientSoundTime++` 播放，播放后 `ambientSoundTime=-80`。BMB 需要模拟 20Hz tick 概率，并从 Base `Think` 驱动；只在行为协程顶部检查会被长 chase/debug/stranded 阻塞。
+
+## 2026-06-14: Point-blank melee direction and MC block direct-cliff safety
+
+- **近战击退方向要在接近过程中缓存，不能等命中帧现场猜**：贴脸 `dist:0.0` 时，`target:GetPos() - mob:GetPos()` 退化成零向量，mob forward 又可能被转向/碰撞扰动，表现为击退时有时无。共享 `MeleeAttack` 应在 chase/attack 阶段缓存最后一次有效的水平目标方向，命中、DamageForce、SetVelocity 共用这条方向。
+- **下一 tick 兜底应补“缺口”，不是再打一拳**：地面玩家/重叠碰撞会吞掉部分水平或竖直速度。修法是记录目标方向，下一 tick 看当前速度在该方向上的投影和 z 速度，只补到最低保留值；不要重复完整水平击退，否则又回到 330 版那种强拉扯。
+- **direct chase 的 cliff safety 有两种世界模型**：Source trace 能保护地图边缘和 prop 顶面，但 MCSWEP 方块的合法性还要看 BMB standable 语义。`IsMovementTargetSafe` 先跑 Source wall/ground，再在“当前/前方附近确实是 MC 方块支撑”时沿线采样 BMB standable；纯 Source/prop 支撑不启用这层，避免把 prop 顶面写进 A* 地形。
+
+## 2026-06-14: Player melee impulse can be swallowed for more than one tick
+
+- **“水平击退和 z 击飞一起消失”不是方向问题**：如果方向错，通常会表现为推错方向或水平弱，但 z 仍有机会出现；两者同时没了，说明 Source 玩家 movement/ground/overlap 解算把冲量吞掉。
+- **单个 `timer.Simple(0)` 仍不够稳**：站地面、贴近 NPC hull、玩家输入和服务器 tick 时序叠在一起时，立即 `SetVelocity` 和下一 tick 补偿都可能被吃掉。玩家命中应有一个极短 correction window（当前 3 次、0.03s 间隔），每次只补缺口。
+- **屏幕反馈必须挂在实际命中后**：轻微 `ViewPunch` / `ScreenShake` 应在 `OnBMBMeleeHit` 里触发，miss、冷却中挥手、目标离开 hit slop 都不能晃屏。
+
+## 2026-06-14: Deep overlap may need a tiny separation nudge before player knockback
+
+- **玩家深贴 NPC hull 时，速度入口本身可能被吃掉**：多 tick correction 仍偶发全无，说明不是“只补一次太少”，而是冲量写入前玩家仍被碰撞/地面解算压住。先用玩家 hull trace 沿击退方向做 6u 级别的安全 separation nudge，可以让后续 `SetVelocity` 有空间生效。
+- **nudge 必须 trace 保护且很小**：只过滤玩家和攻击者本体，目标点被世界/实体挡住就不移动；不要把它写成无条件 `SetPos`，否则会出现穿墙/越边这类比击退偶发更糟的问题。
+- **保留可开关日志**：`bmb_debug_melee_knockback 1` 是下一轮排查入口。坏样本要看 start/correct 的 `vel`、`missH`、`missZ`、`nudge`、`onGround`，判断是 nudge 失败、velocity 被持续吞、还是玩家输入/墙体反向抵消。

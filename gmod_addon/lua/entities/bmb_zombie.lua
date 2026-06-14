@@ -36,12 +36,27 @@ ENT.WanderFailurePauseMax = 0.8
 ENT.AttackRange = 52
 ENT.AttackVerticalRange = 28
 ENT.AttackDamage = 10
-ENT.AttackCooldown = 0.8
-ENT.AttackHitDelay = 0.28
+ENT.AttackCooldown = 1.0
+ENT.AttackHitDelay = 0
 ENT.AttackMoveSpeed = 92
 ENT.AttackHitSlop = 16
-ENT.AttackKnockback = 260
-ENT.AttackVerticalKnockback = 120
+ENT.AttackKnockback = 240
+ENT.AttackVerticalKnockback = 155
+ENT.AttackGroundedVerticalKnockback = 190
+ENT.AttackKnockbackCorrectionTicks = 3
+ENT.AttackKnockbackCorrectionInterval = 0.03
+ENT.AttackKnockbackSeparationDistance = 6
+ENT.AttackKnockbackSeparationUp = 2
+ENT.HitViewPunchPitch = -0.85
+ENT.HitViewPunchYaw = 0.38
+ENT.HitScreenShakeAmplitude = 0.85
+ENT.HitScreenShakeFrequency = 12
+ENT.HitScreenShakeDuration = 0.11
+ENT.HitScreenShakeRadius = 96
+ENT.AmbientSoundIntervalTicks = 80
+ENT.AmbientSoundChanceDenominator = 1000
+ENT.AmbientSoundTickRate = 20
+ENT.AmbientSoundMaxCatchupTicks = 4
 ENT.CollisionMins = Vector(-11, -11, 0)
 ENT.CollisionMaxs = Vector(11, 11, 72)
 -- Classic zombie model has a reliable walk sequence; ACT_RUN can freeze its legs on some installs.
@@ -94,13 +109,12 @@ function ENT:Initialize()
     self.TargetEntity = nil
     self.NextTargetScanTime = 0
     self.NextMeleeAttackTime = 0
-    self.NextIdleSoundTime = CurTime() + math.Rand(3.0, 8.0)
+    self:ResetBMBAmbientSoundTime()
+    self.BMBNextAmbientSoundTickAt = CurTime() + math.Rand(0, 1 / (self.AmbientSoundTickRate or 20))
 end
 
 function ENT:RunBehaviour()
     while true do
-        self:MaybePlayIdleSound()
-
         if self.BMBHeld then
             self:SetBMBState("held")
             coroutine.wait(0.2)
@@ -140,10 +154,18 @@ function ENT:RunBMBZombieAI()
 
             self:SetBMBState("chase")
             self:SetBMBMoveMode("chase_repath")
-            self:MaintainBMBMoveSpeed(self.RunSpeed, self.RunSpeed)
-            self:SteerTowards(self.TargetEntity:GetPos())
-            self:BodyMoveXY()
-            self:MaybePlayStep()
+            if BMB.Behaviors.Chase.ApplySafePressure then
+                BMB.Behaviors.Chase.ApplySafePressure(
+                    self,
+                    self.TargetEntity,
+                    self.RunSpeed,
+                    "chase_repath",
+                    self.ChaseRepathProbeDistance or self:GetBMBBlockSize() * 1.5
+                )
+            else
+                self:MaintainBMBMoveSpeed(self.RunSpeed, self.RunSpeed)
+                self:FaceTarget(self.TargetEntity:GetPos())
+            end
             coroutine.wait(self.ChaseFailureRepathDelay or 0.08)
         else
             self.TargetEntity = nil
@@ -160,10 +182,36 @@ function ENT:PlayBMBMeleeGesture(_)
     self:RestartGesture(ACT_MELEE_ATTACK1)
 end
 
-function ENT:OnBMBMeleeHit(target, _)
-    if IsValid(target) and self.Sounds and self.Sounds.Hit then
-        target:EmitSound(randomSound(self.Sounds.Hit), 72, math.random(96, 104), 0.65)
+function ENT:ApplyBMBPlayerHitFeedback(target)
+    if not IsValid(target) or not target:IsPlayer() then return end
+
+    if target.ViewPunch then
+        local pitch = self.HitViewPunchPitch or -0.55
+        local yaw = self.HitViewPunchYaw or 0.28
+        target:ViewPunch(Angle(pitch, math.Rand(-yaw, yaw), 0))
     end
+
+    local shakeAmplitude = self.HitScreenShakeAmplitude or 0
+    if shakeAmplitude > 0 and util and util.ScreenShake then
+        util.ScreenShake(
+            target:GetPos(),
+            shakeAmplitude,
+            self.HitScreenShakeFrequency or 10,
+            self.HitScreenShakeDuration or 0.08,
+            self.HitScreenShakeRadius or 96,
+            true
+        )
+    end
+end
+
+function ENT:OnBMBMeleeHit(target, _)
+    if not IsValid(target) then return end
+
+    if self.Sounds and self.Sounds.Hit then
+        target:EmitSound(randomSound(self.Sounds.Hit), 74, math.random(96, 104), 0.75)
+    end
+
+    self:ApplyBMBPlayerHitFeedback(target)
 end
 
 function ENT:OnBMBInjured(damageInfo, _)
@@ -190,10 +238,40 @@ function ENT:OnKilled(damageInfo)
     self:BecomeRagdoll(damageInfo)
 end
 
+function ENT:ResetBMBAmbientSoundTime()
+    self.BMBAmbientSoundTime = -(self.AmbientSoundIntervalTicks or 80)
+end
+
 function ENT:MaybePlayIdleSound()
-    if CurTime() < (self.NextIdleSoundTime or 0) then return end
     if not self.Sounds or not self.Sounds.Idle then return end
 
-    self:EmitSound(randomSound(self.Sounds.Idle), 72, math.random(92, 108), 0.65)
-    self.NextIdleSoundTime = CurTime() + math.Rand(5.0, 12.0)
+    local now = CurTime()
+    local tickRate = self.AmbientSoundTickRate or 20
+    local tickInterval = 1 / tickRate
+    local nextTick = self.BMBNextAmbientSoundTickAt or now
+
+    if now < nextTick then return end
+
+    local ticks = math.floor((now - nextTick) / tickInterval) + 1
+    ticks = math.Clamp(ticks, 1, self.AmbientSoundMaxCatchupTicks or 4)
+
+    for _ = 1, ticks do
+        local soundTime = self.BMBAmbientSoundTime
+        if soundTime == nil then
+            soundTime = -(self.AmbientSoundIntervalTicks or 80)
+        end
+
+        if math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
+            self:EmitSound(randomSound(self.Sounds.Idle), 72, math.random(92, 108), 0.65)
+            self:ResetBMBAmbientSoundTime()
+            break
+        end
+
+        self.BMBAmbientSoundTime = soundTime + 1
+    end
+
+    self.BMBNextAmbientSoundTickAt = nextTick + ticks * tickInterval
+    if self.BMBNextAmbientSoundTickAt < now - tickInterval then
+        self.BMBNextAmbientSoundTickAt = now + tickInterval
+    end
 end

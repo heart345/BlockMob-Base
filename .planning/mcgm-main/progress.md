@@ -1220,6 +1220,99 @@
 - Checks:
   - `scripts/check_stranded_recovery.ps1` now guards the prop-support bypass and `prop_direct` mode.
 
+## 2026-06-14 Zombie Phase 2 attack/audio
+
+- User moved Zombie into Phase 2 tuning:
+  - Melee should hit immediately when the player enters attack range.
+  - Attack interval should be about 0.75s.
+  - Each hit should knock the player back, lift them slightly, and play a player hurt sound.
+  - Zombie should make ambient sounds in any state; if MC's exact interval is available, use it.
+- MC source check:
+  - `Zombie#getAmbientSound()` returns `SoundEvents.ZOMBIE_AMBIENT`.
+  - `Mob#getAmbientSoundInterval()` returns `80`.
+  - `Mob#baseTick()` plays ambient when `random.nextInt(1000) < ambientSoundTime++`, then resets `ambientSoundTime = -getAmbientSoundInterval()`.
+  - So the interval is not a simple fixed 8-20s random range; it is 80 ticks minimum plus an increasing per-tick chance.
+- Implemented:
+  - Shared `MeleeAttack` now has `ResolveHit`, keeping damage, `DamageInfo`, knockback, and hit sound in one path.
+  - `AttackHitDelay <= 0` resolves the hit immediately; non-zero delay still uses `timer.Simple` for future mobs with windup.
+  - Knockback direction now falls back to the attacker's forward vector when the target is overlapping, so close melee does not lose pushback.
+  - Zombie params changed to `AttackCooldown=0.75`, `AttackHitDelay=0`, `AttackKnockback=330`, `AttackVerticalKnockback=155`.
+  - Zombie ambient sound now simulates the MC 20Hz tick/chance model, and BaseMob `Think` calls optional `MaybePlayIdleSound` so held/debug/stranded/chase/wander states do not suppress ambient sounds.
+- User retested:
+  - Attack interval, immediate attack, and sounds are OK.
+  - Horizontal knockback works.
+  - Vertical lift only appears if the player is already jumping; grounded player hits do not visibly lift.
+- Follow-up fix:
+  - Grounded player vertical knockback now detaches the player from Source ground movement with `SetGroundEntity(NULL)` before applying velocity.
+  - Added `AttackGroundedVerticalKnockback=190` as a grounded-player minimum lift threshold while keeping airborne `AttackVerticalKnockback=155`.
+  - A next-tick correction only tops up missing z velocity if Source ground movement still swallowed the first lift; it does not repeat horizontal knockback.
+- Second user retest:
+  - Vertical lift is now visible and old bugs did not return.
+  - Horizontal knockback is too strong at 330.
+  - In Source cliff / narrow bridge situations, Zombie can bypass normal path cliff safety and walk off the edge while directly chasing/pressing the player.
+- Second follow-up fix:
+  - Reduced Zombie horizontal `AttackKnockback` from 330 to 240 while keeping grounded vertical lift.
+  - Added shared `Chase.ApplySafePressure` / `IsSteerTargetSafe`.
+  - `chase_direct`, `attack_ready`, and Zombie `chase_repath` now re-check `IsMovementTargetSafe` against the actual steering target before applying direct pressure.
+  - Unsafe direct pressure publishes `*_cliff`, faces the player, and damps horizontal velocity so previous momentum does not carry the Zombie off the edge.
+- Checks:
+  - Added `scripts/check_zombie_phase2_attack_audio.ps1`.
+
+## 2026-06-14 Zombie Phase 2 knockback/grid-cliff hotfix
+
+- User retest:
+  - Zombie melee knockback is now visible, but feels inconsistent at point blank.
+  - Screenshot HUD often showed `dist:0.0`, meaning player and Zombie horizontal positions overlap during hit resolution.
+  - Source map cliff and prop cliff safety now work (`chase_repath_cliff`), but MCSWEP block edges can still bypass the direct-pressure safety.
+- Root causes:
+  - `MeleeAttack.ApplyTargetKnockback` recomputed direction from `target:GetPos() - mob:GetPos()` at hit time. In overlap, that vector can be near zero and fallback to a possibly stale mob forward direction.
+  - Direct chase safety was trace-first. It catches Source world/prop ground, but direct pressure can still bypass BMB's MC block standable semantics.
+- Fix:
+  - `MeleeAttack` now caches the last valid horizontal target direction during chase/attack (`BMBLastMeleeDirection`) and reuses it in `ResolveHit` and `ApplyTargetKnockback`.
+  - Player knockback still applies one full horizontal + vertical impulse immediately; the next tick only tops up missing horizontal/vertical components if Source ground movement or overlap swallowed them.
+  - Added `HasBMBGridBlockSupportAt` / `IsBMBGridMovementTargetSafe` in BaseMob.
+  - `IsMovementTargetSafe` still runs Source wall/ground trace first; if current/forward samples are on or near MC block support, it then samples along the direct movement line using BMB standable semantics.
+  - Prop support explicitly bypasses the MC grid layer so the previous prop-stranded fix does not regress.
+- Checks:
+  - glualint on `sv_behaviors.lua`.
+  - glualint on `bmb_base_mob.lua`.
+  - `scripts/check_zombie_phase2_attack_audio.ps1`.
+
+## 2026-06-14 Zombie Phase 2 melee feel hotfix
+
+- User retest:
+  - MCSWEP block cliff issue is solved.
+  - Zombie melee knockback is still intermittent: when it fails, horizontal knockback and vertical lift both disappear.
+  - User asked to change attack interval to 1s and add a very light screen shake on player hit, much weaker than HL2 Zombie.
+- Diagnosis:
+  - Direction caching fixed the zero-vector case, but the all-or-nothing failure means Source player ground/overlap movement can still swallow both the immediate impulse and the single next-tick correction.
+- Fix:
+  - `MeleeAttack.ApplyTargetKnockback` now runs a tiny correction window for player hits: default 3 ticks, 0.03s apart.
+  - Each correction only tops up missing horizontal projection and missing z velocity; it does not reapply the whole 240u horizontal knockback if the first impulse already worked.
+  - Zombie `AttackCooldown` changed from 0.75 to 1.0.
+  - Zombie actual hit feedback now adds mild `ViewPunch` and small `util.ScreenShake` after the hit sound.
+- Checks:
+  - Updated `scripts/check_zombie_phase1.ps1`.
+  - Updated `scripts/check_zombie_phase2_attack_audio.ps1`.
+
+## 2026-06-14 Zombie Phase 2 point-blank knockback nudge/log hotfix
+
+- User retest:
+  - 1s attack interval is OK.
+  - Screen shake should be slightly stronger.
+  - Knockback/lift still sometimes fail completely.
+- Diagnosis:
+  - Because horizontal and vertical both disappear together, this is no longer likely to be a stale direction problem.
+  - The remaining signature points at the player being too deeply overlapped with the Zombie hull / Source ground solver, so player movement swallows the impulse path itself.
+- Fix:
+  - Added `bmb_debug_melee_knockback` server convar. When enabled, it logs direction, horizontal/vertical target, player velocity before/after correction, missing horizontal/z, nudge result, and on-ground state.
+  - Added `MeleeAttack.NudgeTargetForKnockback`: before applying player knockback, do a small trace-protected separation nudge along the stable knockback direction.
+  - Zombie nudge params are 6u horizontal and 2u up; if the trace is blocked or starts solid, no teleport is performed.
+  - If the initial nudge did not happen and correction ticks still see a missing impulse, correction tries one more safe nudge.
+  - Increased Zombie hit feedback slightly: stronger but still mild `ViewPunch` and `ScreenShake`.
+- Checks:
+  - Updated `scripts/check_zombie_phase2_attack_audio.ps1` to guard the nudge and log cvar.
+
 ## 2026-06-13 Zombie phase 1 direct chase / high-target stalk
 
 - User retest found:

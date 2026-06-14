@@ -41,6 +41,8 @@ ENT.ForwardSafetyDistance = 48
 ENT.SafetyProbeSpeedScale = 0.45
 ENT.SafetyHullScale = 0.65
 ENT.WallStopDistance = 20
+ENT.GridSafetyStepScale = 0.5
+ENT.GridSafetyMinStep = 8
 -- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)
 -- while remaining below a full MC block.
 ENT.StepHeight = 28
@@ -644,6 +646,10 @@ function ENT:Think()
             self.loco:SetVelocity(vector_origin)
         else
             self:CheckPhysicsImpacts()
+        end
+
+        if not self.BMBDead and self.MaybePlayIdleSound then
+            self:MaybePlayIdleSound()
         end
 
         self:UpdateBMBActivityFromLocomotion()
@@ -1626,6 +1632,85 @@ function ENT:IsPathGridVisible(target, requireStandable)
     return true
 end
 
+function ENT:HasBMBGridBlockSupportAt(pos)
+    if not BMB or not BMB.BlockWorld then return false end
+
+    local blockWorld = BMB.BlockWorld
+    if blockWorld.SupportsVerticalPath == false then return false end
+    if not blockWorld.WorldToBlock or not blockWorld.IsSolid then return false end
+
+    local radius = math.min(self:GetBMBPathHullRadius() * 0.55, self:GetBMBBlockSize() * 0.35)
+    local samples = {
+        Vector(0, 0, 0),
+        Vector(radius, 0, 0),
+        Vector(-radius, 0, 0),
+        Vector(0, radius, 0),
+        Vector(0, -radius, 0)
+    }
+
+    for _, offset in ipairs(samples) do
+        local cell = blockWorld.WorldToBlock(pos + offset)
+        local below = {
+            x = cell.x,
+            y = cell.y,
+            z = (cell.z or 0) - 1
+        }
+
+        if blockWorld.IsSolid(cell) then return true end
+        if blockWorld.IsSolid(below) then return true end
+    end
+
+    return false
+end
+
+function ENT:IsBMBGridMovementTargetSafe(target, probeDistance)
+    if self:IsBMBOnPropSupport() then return true end
+    if not BMB or not BMB.BlockWorld or not BMB.Pathfinder then return true end
+    if BMB.BlockWorld.SupportsVerticalPath == false then return true end
+    if not BMB.Pathfinder.IsStandablePosition then return true end
+
+    local current = self:GetPos()
+    local delta = target - current
+    delta.z = 0
+
+    local distance = delta:Length2D()
+    if distance <= 1 then return true end
+
+    delta:Normalize()
+
+    local probe = math.min(distance, probeDistance or distance)
+    local forwardTarget = current + delta * probe
+
+    -- Only enable the grid layer when this movement is actually on/near MC blocks.
+    -- Pure Source ground and prop support keep using the trace-based safety above.
+    if not self:HasBMBGridBlockSupportAt(current) and not self:HasBMBGridBlockSupportAt(forwardTarget) then
+        return true
+    end
+
+    local step = math.max(
+        self:GetBMBBlockSize() * (self.GridSafetyStepScale or 0.5),
+        self.GridSafetyMinStep or 8
+    )
+    local samples = math.max(1, math.ceil(probe / step))
+    local standableOptions = { mob = self }
+
+    for i = 1, samples do
+        local sampleDistance = math.min(probe, i * step)
+        local sample = current + delta * sampleDistance
+
+        if not self:IsBMBHullClearAtPosition(sample) then
+            return false, "wall"
+        end
+
+        local standable = BMB.Pathfinder.IsStandablePosition(sample, standableOptions)
+        if standable ~= true then
+            return false, "cliff"
+        end
+    end
+
+    return true
+end
+
 function ENT:GetPathCarrot(waypoints, startIndex, carrotDistance)
     local cursor, segmentIndex = self:GetClosestPathCursor(waypoints, startIndex)
     if not cursor then return nil end
@@ -1799,6 +1884,9 @@ function ENT:IsPathSourceTargetSafe(target, probeDistance)
     if not groundTrace.Hit then return false, "cliff" end
     if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
     if current.z - groundTrace.HitPos.z > self:GetBMBMaxStepDown() then return false, "cliff" end
+
+    local gridSafe, gridReason = self:IsBMBGridMovementTargetSafe(forwardTarget, probe)
+    if not gridSafe then return false, gridReason or "cliff" end
 
     return true
 end
@@ -2982,6 +3070,9 @@ function ENT:IsMovementTargetSafe(target, probeDistance)
     if not groundTrace.Hit then return false, "cliff" end
     if groundTrace.HitNormal.z < 0.65 then return false, "cliff" end
     if current.z - groundTrace.HitPos.z > self:GetBMBMaxStepDown() then return false, "cliff" end
+
+    local gridSafe, gridReason = self:IsBMBGridMovementTargetSafe(forwardTarget, probe)
+    if not gridSafe then return false, gridReason or "cliff" end
 
     return true
 end
