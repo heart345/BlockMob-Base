@@ -568,3 +568,10 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **HUD 里的 `81/90` 不是随机速度源**：旧 sheep `WalkSpeed=70`、`RunSpeed=90`，Flee 的 `minPathSpeed` 用 run activity threshold `((walk+run)/2)+padding`，所以过弯/局部控制时会显示约 `81`，直线段显示 `90`。
 - **这条下限原本是保护动画，不是速度手感**：第三十二轮把 `BMBActivitySpeed` 和 `BMBDesiredSpeed` 分开后，阈值下限主要用于避免跑步动作被 path corner 降速切成 walk。套羊模型后，用户更在意 panic HUD/实际目标速度稳定满速，因此需要一个 mob 级开关，而不是全局改 path corner。
 - **`FleeKeepFullSpeed` 是 opt-in**：sheep 开 `FleeKeepFullSpeed=true` 后，Flee 的 corner min speed 直接等于 `RunSpeed`；未来其它 mob 如果还想保留 corner slow 但不掉到 walk，只要不设该字段，就继续走旧阈值语义。
+
+## 2026-06-14: Model sequences are aliases, not ACT guesses
+
+- **BMB 不应该猜 Source ACT 到 MC 模型动画的映射**：转换器会按 entity.json 动画别名原样导出 `$sequence`（如 `walk`），所以 BMB 侧只需要消费这些确定名字。`ACT_WALK/ACT_RUN` 仍作为旧模型 fallback。
+- **每只怪自己声明逻辑动作映射**：`AnimationSequences` 是 per-mob opt-in 表，把 `idle/walk/run/jump/attack/hurt/death/eat_grass` 这类逻辑动作映射到模型 sequence 别名。比如 MC 模型只有一个移动循环时，`walk="walk", run="walk"` 即可。
+- **缺序列必须温和降级**：`LookupSequence(alias) == -1` 时不能硬播无效序列；先回退 idle，idle 也没有才交回旧 Activity 层。这样模型和代码可以分步接入，不会因为少一个 attack/death sequence 把实体动画打坏。
+- **移动循环用当前速度缩放 playback rate**：walk/run 的 `SetPlaybackRate` 默认按水平速度除以参考速度（默认 `WalkSpeed`）计算，让同一个 walk loop 跟随 chase/flee/path_corner 的实际速度变化，减少腿部打滑。

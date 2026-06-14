@@ -162,6 +162,14 @@ ENT.IdleActivity = ACT_IDLE
 ENT.WalkActivity = ACT_WALK
 ENT.RunActivity = ACT_RUN
 ENT.JumpActivity = ACT_JUMP
+-- Optional model sequence adapter. Per mob, set e.g.
+-- AnimationSequences = { idle = "idle", walk = "walk", run = "walk", attack = "attack", death = "death" }.
+-- Missing aliases or missing model sequences fall back to idle, then to the legacy Activity layer.
+ENT.AnimationSequences = nil
+ENT.AnimationMovePlaybackRateMin = 0
+ENT.AnimationMovePlaybackRateMax = 2.5
+ENT.AnimationPlaybackRateMin = 0.05
+ENT.AnimationPlaybackRateMax = 2.5
 
 local function flatDistance(a, b)
     local dx = a.x - b.x
@@ -347,6 +355,150 @@ function ENT:GetBMBMoveActivityForSpeed(speed)
     return speed >= self:GetBMBRunActivityThreshold() and self:GetBMBRunActivity() or self:GetBMBWalkActivity()
 end
 
+function ENT:UsesBMBSequenceAnimation()
+    return type(self.AnimationSequences) == "table"
+end
+
+function ENT:GetBMBSequenceCache()
+    local model = self:GetModel() or ""
+    if self.BMBSequenceCache and self.BMBSequenceCache.model == model then
+        return self.BMBSequenceCache
+    end
+
+    self.BMBSequenceCache = {
+        model = model,
+        sequences = {}
+    }
+
+    return self.BMBSequenceCache
+end
+
+function ENT:LookupBMBAnimationSequence(sequenceName)
+    if not sequenceName or sequenceName == "" then return -1 end
+
+    local cache = self:GetBMBSequenceCache()
+    if cache.sequences[sequenceName] == nil then
+        cache.sequences[sequenceName] = self:LookupSequence(sequenceName) or -1
+    end
+
+    return cache.sequences[sequenceName]
+end
+
+function ENT:GetBMBAnimationSequenceAlias(action)
+    local sequences = self.AnimationSequences
+    if type(sequences) ~= "table" then return nil end
+
+    local alias = sequences[action]
+    if (not alias or alias == "") and action == "run" then
+        alias = sequences.walk
+    end
+
+    if (not alias or alias == "") and action ~= "idle" then
+        alias = sequences.idle
+    end
+
+    if type(alias) ~= "string" then return nil end
+    return alias
+end
+
+function ENT:ResolveBMBAnimationSequence(action)
+    if not self:UsesBMBSequenceAnimation() then return nil end
+
+    local sequenceName = self:GetBMBAnimationSequenceAlias(action)
+    local sequenceId = self:LookupBMBAnimationSequence(sequenceName)
+    if sequenceId and sequenceId >= 0 then
+        return sequenceId, sequenceName, action
+    end
+
+    if action ~= "idle" then
+        local idleName = self:GetBMBAnimationSequenceAlias("idle")
+        local idleId = self:LookupBMBAnimationSequence(idleName)
+        if idleId and idleId >= 0 then
+            return idleId, idleName, "idle"
+        end
+    end
+
+    return nil
+end
+
+function ENT:GetBMBAnimationAction()
+    local state = self:GetNWString("BMBState", self.State or "idle")
+
+    if self.BMBDead or state == "dead" then return "death" end
+    if state == "eat_grass" then return "eat_grass" end
+    if state == "attack" then return "attack" end
+    if state == "knockback" then return "hurt" end
+    if self.BMBHeld or state == "held" then return "idle" end
+
+    local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
+    local onGround = self:IsBMBOnGround()
+
+    if jumping or not onGround then return "jump" end
+
+    local speed2D = self:GetVelocity():Length2D()
+    local desiredSpeed = self:GetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
+    local activitySpeed = self:GetNWFloat("BMBActivitySpeed", desiredSpeed)
+    local mode = self:GetNWString("BMBMoveMode", "idle")
+
+    if mode == "idle" and speed2D < 8 then return "idle" end
+    if desiredSpeed <= 1 and speed2D < 8 then return "idle" end
+
+    return math.max(activitySpeed, speed2D) >= self:GetBMBRunActivityThreshold() and "run" or "walk"
+end
+
+function ENT:GetBMBAnimationPlaybackRate(action, sequenceName, speed2D)
+    local rates = self.AnimationPlaybackRates
+    if type(rates) == "table" then
+        local rate = rates[action] or rates[sequenceName]
+        if rate then
+            return math.Clamp(rate, self.AnimationPlaybackRateMin or 0.05, self.AnimationPlaybackRateMax or 2.5)
+        end
+    end
+
+    if action == "walk" or action == "run" then
+        local referenceSpeeds = self.AnimationReferenceSpeeds
+        local referenceSpeed
+
+        if type(referenceSpeeds) == "table" then
+            referenceSpeed = referenceSpeeds[action] or referenceSpeeds[sequenceName]
+        end
+
+        referenceSpeed = referenceSpeed or self.AnimationMoveReferenceSpeed or self.WalkSpeed or 1
+
+        local rate = (speed2D or 0) / math.max(1, referenceSpeed)
+        return math.Clamp(rate, self.AnimationMovePlaybackRateMin or 0, self.AnimationMovePlaybackRateMax or 2.5)
+    end
+
+    return 1
+end
+
+function ENT:UpdateBMBSequenceAnimation(action, speed2D)
+    if not self:UsesBMBSequenceAnimation() then return false end
+
+    action = action or self:GetBMBAnimationAction()
+    speed2D = speed2D or self:GetVelocity():Length2D()
+
+    local sequenceId, sequenceName, resolvedAction = self:ResolveBMBAnimationSequence(action)
+    if not sequenceId then return false end
+
+    if self.BMBCurrentSequenceId ~= sequenceId then
+        self:ResetSequence(sequenceId)
+        self:SetCycle(0)
+        self.BMBCurrentSequenceId = sequenceId
+        self.BMBCurrentSequenceName = sequenceName
+    end
+
+    self.BMBCurrentAnimationAction = resolvedAction
+    self:SetPlaybackRate(self:GetBMBAnimationPlaybackRate(resolvedAction, sequenceName, speed2D))
+    self:FrameAdvance(FrameTime())
+    return true
+end
+
+function ENT:UpdateBMBSequenceAnimationFromState()
+    if not self:UsesBMBSequenceAnimation() then return false end
+    return self:UpdateBMBSequenceAnimation(self:GetBMBAnimationAction(), self:GetVelocity():Length2D())
+end
+
 function ENT:UpdateMoveActivity(speed, activitySpeed)
     local commandSpeed = speed or self.WalkSpeed
     local intentSpeed = activitySpeed or commandSpeed
@@ -501,6 +653,8 @@ function ENT:StartBMBIdleActivity()
 end
 
 function ENT:UpdateBMBActivityFromLocomotion()
+    if self:UpdateBMBSequenceAnimationFromState() then return end
+
     if self.BMBHeld then
         self:StartBMBIdleActivity()
         return
@@ -676,6 +830,7 @@ function ENT:Think()
 
     if SERVER then
         if self.BMBDead then
+            self:UpdateBMBSequenceAnimationFromState()
             self:NextThink(CurTime())
             return true
         end

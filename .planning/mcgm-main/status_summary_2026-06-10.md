@@ -824,3 +824,17 @@
   1. Hit a sheep and check that HUD target speed stays `100` through corners.
   2. Confirm Flee feels longer, then returns to wander/idle after the panic window.
   3. Confirm previous Flee no-path give-up, cliff/wall safety, hop/drop, and debug-gap behavior still pass.
+
+## 2026-06-14 Latest Status After BMB Sequence Animation Adapter
+
+- Coordination note:
+  - Converter will export `$sequence` names from entity.json animation aliases verbatim.
+  - BMB only consumes those names; target-driven clips such as look_at_target remain out of this movement sequence pass.
+- Implemented:
+  - BaseMob optional `AnimationSequences` table maps logical actions to model sequence aliases.
+  - Entities without `AnimationSequences` keep the old Activity-based behavior.
+  - BMB caches `LookupSequence`, resets sequence only on change, and scales walk/run playback rate from current horizontal speed.
+  - Missing aliases or missing model sequences fall back to idle; if idle is missing, BaseMob falls back to the legacy Activity layer.
+- First model setup:
+  - Add something like `AnimationSequences = { idle="idle", walk="walk", run="walk", attack="attack", hurt="hurt", death="death" }` to the entity.
+  - Match aliases exactly to the converter's printed export list.

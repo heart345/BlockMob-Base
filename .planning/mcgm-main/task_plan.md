@@ -158,6 +158,7 @@ Phase 2
 ### Phase 5: 模型和动画管线
 
 - [ ] 确定 Blockbench/Crowbar/StudioMDL 流程
+- [x] BMB 侧 sequence adapter：BaseMob 新增 opt-in `AnimationSequences`，按逻辑动作映射到模型 `$sequence` 别名；缺序列回退 idle；walk/run playback rate 按当前速度缩放；新增 `scripts/check_sequence_animation_adapter.ps1`
 - [ ] 做第一只 Minecraft 风格 Zombie 模型
 - [ ] 做 idle/walk/attack/hurt/death 动画
 - [ ] 让脚步声和动画帧同步

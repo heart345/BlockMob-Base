@@ -1156,6 +1156,25 @@
   2. Confirm Flee lasts longer than the old 2s window, then naturally returns to normal behavior.
   3. Confirm enclosed/no-path Flee give-up, cliff/wall safety, hop/drop, and debug-gap behavior still hold.
 
+## 2026-06-14 BMB sequence animation adapter
+
+- User coordination:
+  - Converter side will export `$sequence` names from entity.json animation aliases verbatim, e.g. `walk`.
+  - Converter will only bake movement loops such as walk/swim/fly and skip target-driven clips such as look_at_target.
+  - BMB only needs to consume the exported sequence names.
+- Implemented:
+  - BaseMob now has optional `AnimationSequences` per entity class, mapping logical actions to model sequence aliases.
+  - If no `AnimationSequences` table is present, legacy `StartActivity` behavior is unchanged.
+  - `LookupSequence` results are cached per model.
+  - Missing action aliases or missing model sequences fall back to idle; if idle is also missing, BaseMob falls back to the old Activity layer.
+  - Sequence changes use `ResetSequence` / `SetCycle(0)`.
+  - walk/run playback rate is `current horizontal speed / reference speed`, clamped by per-mob tunables, so a fixed walk loop can track actual movement speed.
+- New guard:
+  - Added `scripts/check_sequence_animation_adapter.ps1`.
+- First model note:
+  - A mob can opt in with e.g. `AnimationSequences = { idle = "idle", walk = "walk", run = "walk", attack = "attack", hurt = "hurt", death = "death" }`.
+  - Sequence names should match the converter's printed export list exactly.
+
 ## 2026-06-14 Zombie Phase 2 range/head-overlap tuning
 
 - User retest confirmed deterministic melee launch is fixed.
