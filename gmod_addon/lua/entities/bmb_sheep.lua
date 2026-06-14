@@ -8,11 +8,22 @@ ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
-ENT.Model = "models/kleiner.mdl"
+ENT.Model = "models/mcgm/sheep/sheep.mdl"
 ENT.StartHealth = 20
+ENT.UsePhysicsCorpseOnDeath = true
+ENT.DeathCorpseRightPushSpeed = 70
+ENT.DeathCorpseRollVelocity = 35
+ENT.DeathCorpseRightForce = 0
+ENT.DeathCorpseRightRollVelocity = 95
+ENT.DeathPoofParticleCountMin = 5
+ENT.DeathPoofParticleCountMax = 8
+ENT.DeathPoofRadiusScale = 50
+ENT.EatGrassAnimationDuration = 1.05
+ENT.EatGrassBiteDelay = 0.42
 ENT.WalkSpeed = 70
--- MC PanicGoal 速度倍率：羊/猪 1.25×走速（牛 2.0×、兔 2.2×，做新怪时参考源码各自的 addGoal）
-ENT.RunSpeed = 90
+-- 当前先按 GMod/MC 模型手感调到 100u/s；FleeKeepFullSpeed 防止拐弯时 HUD 目标速度掉到跑步阈值。
+ENT.RunSpeed = 100
+ENT.FleeKeepFullSpeed = true
 ENT.Acceleration = 240
 ENT.Deceleration = 260
 ENT.WanderDistanceMinCells = 3  -- 单段游荡 3~8 格
@@ -24,15 +35,233 @@ ENT.WanderFailurePauseMin = 0.8
 ENT.WanderFailurePauseMax = 1.8
 ENT.InitialIdleMin = 4.0
 ENT.InitialIdleMax = 9.0
--- MC 恐慌窗口 = lastDamageSource 有效期 40 tick（2s），每次受击刷新；窗口内一段接一段跑，
--- 窗口过了跑完当前段就停，所以原版友好生物受击后跑不远
-ENT.FleeDurationMin = 2.0
-ENT.FleeDurationMax = 2.5
+-- 比 MC 40 tick 稍长一点，避免 GMod 场景里受击后刚起跑就结束。
+ENT.FleeDurationMin = 3.5
+ENT.FleeDurationMax = 5.0
 ENT.FleePanicRadiusCells = 5    -- 恐慌单段目标 ±5 格（MC DefaultRandomPos.getPos(mob, 5, 4)）
 ENT.FleePanicMinDistanceCells = 1
 ENT.FleeGiveUpFailures = 4       -- 连续 4 次选不出点/起步即被挡 → 认定无路可逃，放弃恐慌
 ENT.CollisionMins = Vector(-16, -16, 0) -- MC 成年羊宽 0.9 格 ~= 32.4u；保持略小于 36u 一格走廊
 ENT.CollisionMaxs = Vector(16, 16, 44)
+
+if CLIENT then
+    local zeroAngle = Angle(0, 0, 0)
+    local zeroVector = Vector(0, 0, 0)
+    local previewPose = CreateClientConVar("bmb_sheep_pose_preview", "0", true, false, "Preview sheep bone transforms live.")
+    local previewKeyTime = CreateClientConVar("bmb_sheep_pose_key_time", "0", true, false, "Printed sheep keyframe time.")
+
+    local sheepBoneNames = { "head", "leg0", "leg1", "leg2", "leg3" }
+
+    local sheepAnimations = {
+        eat_grass = {
+            duration = 1.05,
+            frames = {
+                { time = 0.00, bones = { head = { angle = Angle(0, 0, 0), pos = Vector(0, 0, 0) } } },
+                { time = 0.18, bones = { head = { angle = Angle(0, 0, 30), pos = Vector(0, -1.5, -2.5) } } },
+                { time = 0.42, bones = { head = { angle = Angle(0, 0, 66), pos = Vector(0, -4.0, -7.0) } } },
+                { time = 0.62, bones = { head = { angle = Angle(0, 0, 58), pos = Vector(0, -4.0, -6.0) } } },
+                { time = 0.82, bones = { head = { angle = Angle(0, 0, 66), pos = Vector(0, -4.0, -7.0) } } },
+                { time = 1.05, bones = { head = { angle = Angle(0, 0, 0), pos = Vector(0, 0, 0) } } }
+            }
+        }
+    }
+
+    local function createAxisConVars(prefix, description)
+        return {
+            x = CreateClientConVar(prefix .. "_x", "0", true, false, description .. " X."),
+            y = CreateClientConVar(prefix .. "_y", "0", true, false, description .. " Y."),
+            z = CreateClientConVar(prefix .. "_z", "0", true, false, description .. " Z.")
+        }
+    end
+
+    local previewHeadRot = createAxisConVars("bmb_sheep_pose_head_rot", "Preview sheep head rotation")
+    local previewHeadPos = createAxisConVars("bmb_sheep_pose_head_pos", "Preview sheep head position")
+    local previewLegRot = {}
+
+    for index = 0, 3 do
+        previewLegRot[index] = createAxisConVars("bmb_sheep_pose_leg" .. index .. "_rot", "Preview sheep leg" .. index .. " rotation")
+    end
+
+    local function angleFromConVars(convars)
+        return Angle(convars.x:GetFloat(), convars.y:GetFloat(), convars.z:GetFloat())
+    end
+
+    local function vectorFromConVars(convars)
+        return Vector(convars.x:GetFloat(), convars.y:GetFloat(), convars.z:GetFloat())
+    end
+
+    local function lerpAngle(fromAngle, toAngle, fraction)
+        return Angle(
+            Lerp(fraction, fromAngle.p, toAngle.p),
+            Lerp(fraction, fromAngle.y, toAngle.y),
+            Lerp(fraction, fromAngle.r, toAngle.r)
+        )
+    end
+
+    local function lerpVector(fromVector, toVector, fraction)
+        return Vector(
+            Lerp(fraction, fromVector.x, toVector.x),
+            Lerp(fraction, fromVector.y, toVector.y),
+            Lerp(fraction, fromVector.z, toVector.z)
+        )
+    end
+
+    local function setBoneAngle(ent, boneId, angle)
+        if not boneId then return end
+        ent:ManipulateBoneAngles(boneId, angle or zeroAngle)
+    end
+
+    local function setBonePosition(ent, boneId, position)
+        if not boneId then return end
+        ent:ManipulateBonePosition(boneId, position or zeroVector)
+    end
+
+    local function applySheepPose(ent, bones, pose)
+        pose = pose or {}
+
+        for _, boneName in ipairs(sheepBoneNames) do
+            local bonePose = pose[boneName] or {}
+
+            setBoneAngle(ent, bones[boneName], bonePose.angle or zeroAngle)
+
+            if boneName == "head" then
+                setBonePosition(ent, bones[boneName], bonePose.pos or zeroVector)
+            end
+        end
+    end
+
+    local function sampleSheepAnimation(animation, elapsed)
+        local frames = animation.frames
+        if not frames or #frames == 0 then return nil end
+        if elapsed <= frames[1].time then return frames[1].bones end
+
+        for index = 1, #frames - 1 do
+            local currentFrame = frames[index]
+            local nextFrame = frames[index + 1]
+
+            if elapsed <= nextFrame.time then
+                local span = math.max(0.001, nextFrame.time - currentFrame.time)
+                local fraction = math.Clamp((elapsed - currentFrame.time) / span, 0, 1)
+                local pose = {}
+
+                for _, boneName in ipairs(sheepBoneNames) do
+                    local currentPose = (currentFrame.bones and currentFrame.bones[boneName]) or {}
+                    local nextPose = (nextFrame.bones and nextFrame.bones[boneName]) or {}
+
+                    if currentPose.angle or nextPose.angle or currentPose.pos or nextPose.pos then
+                        pose[boneName] = {
+                            angle = lerpAngle(currentPose.angle or zeroAngle, nextPose.angle or zeroAngle, fraction),
+                            pos = lerpVector(currentPose.pos or zeroVector, nextPose.pos or zeroVector, fraction)
+                        }
+                    end
+                end
+
+                return pose
+            end
+        end
+
+        return frames[#frames].bones
+    end
+
+    local function formatNumber(value)
+        return string.format("%.2f", value or 0)
+    end
+
+    local function formatAngle(angle)
+        return "Angle(" .. formatNumber(angle.p) .. ", " .. formatNumber(angle.y) .. ", " .. formatNumber(angle.r) .. ")"
+    end
+
+    local function formatVector(vec)
+        return "Vector(" .. formatNumber(vec.x) .. ", " .. formatNumber(vec.y) .. ", " .. formatNumber(vec.z) .. ")"
+    end
+
+    concommand.Add("bmb_sheep_pose_print_keyframe", function()
+        print("{ time = " .. formatNumber(previewKeyTime:GetFloat()) .. ", bones = {")
+        print("    head = { angle = " .. formatAngle(angleFromConVars(previewHeadRot)) .. ", pos = " .. formatVector(vectorFromConVars(previewHeadPos)) .. " },")
+
+        for index = 0, 3 do
+            print("    leg" .. index .. " = { angle = " .. formatAngle(angleFromConVars(previewLegRot[index])) .. " },")
+        end
+
+        print("} },")
+    end)
+
+    local function resetSheepBones(ent, bones)
+        applySheepPose(ent, bones, nil)
+    end
+
+    function ENT:CacheBMBSheepBones()
+        local model = self:GetModel()
+        if self.BMBSheepBoneCache and self.BMBSheepBoneCache.model == model then
+            return self.BMBSheepBoneCache
+        end
+
+        self.BMBSheepBoneCache = {
+            model = model,
+            head = self:LookupBone("head"),
+            leg0 = self:LookupBone("leg0"),
+            leg1 = self:LookupBone("leg1"),
+            leg2 = self:LookupBone("leg2"),
+            leg3 = self:LookupBone("leg3")
+        }
+
+        return self.BMBSheepBoneCache
+    end
+
+    function ENT:UpdateBMBVisualBones()
+        local bones = self:CacheBMBSheepBones()
+        if not bones then return end
+
+        local state = self:GetNWString("BMBState", "idle")
+        if previewPose:GetBool() then
+            setBoneAngle(self, bones.head, angleFromConVars(previewHeadRot))
+            setBonePosition(self, bones.head, vectorFromConVars(previewHeadPos))
+            setBoneAngle(self, bones.leg0, angleFromConVars(previewLegRot[0]))
+            setBoneAngle(self, bones.leg1, angleFromConVars(previewLegRot[1]))
+            setBoneAngle(self, bones.leg2, angleFromConVars(previewLegRot[2]))
+            setBoneAngle(self, bones.leg3, angleFromConVars(previewLegRot[3]))
+            return
+        end
+
+        if state == "dead" or self:GetNWBool("BMBDead", false) then
+            resetSheepBones(self, bones)
+            return
+        end
+
+        local speed = self:GetVelocity():Length2D()
+
+        if state == "eat_grass" then
+            local animation = sheepAnimations.eat_grass
+            local startedAt = self:GetNWFloat("BMBEatGrassStartedAt", self:GetNWFloat("BMBStateStartedAt", CurTime()))
+            local elapsed = math.Clamp(CurTime() - startedAt, 0, animation.duration)
+
+            applySheepPose(self, bones, sampleSheepAnimation(animation, elapsed))
+            return
+        end
+
+        setBonePosition(self, bones.head, zeroVector)
+
+        if speed > 8 then
+            local rate = math.Clamp(speed / 48.0, 1.1, 2.8)
+            local swing = math.sin(CurTime() * rate * math.pi * 2.0) * 24.0
+            local headBob = math.sin(CurTime() * rate * math.pi) * 2.0
+
+            setBoneAngle(self, bones.head, Angle(0, 0, headBob))
+            setBoneAngle(self, bones.leg0, Angle(0, 0, swing))
+            setBoneAngle(self, bones.leg3, Angle(0, 0, swing))
+            setBoneAngle(self, bones.leg1, Angle(0, 0, -swing))
+            setBoneAngle(self, bones.leg2, Angle(0, 0, -swing))
+            return
+        end
+
+        local idleHead = math.sin(CurTime() * 1.2) * 1.5
+        setBoneAngle(self, bones.head, Angle(0, 0, idleHead))
+        setBoneAngle(self, bones.leg0, zeroAngle)
+        setBoneAngle(self, bones.leg1, zeroAngle)
+        setBoneAngle(self, bones.leg2, zeroAngle)
+        setBoneAngle(self, bones.leg3, zeroAngle)
+    end
+end
 
 function ENT:Initialize()
     if CLIENT then return end
@@ -48,6 +277,8 @@ end
 
 function ENT:RunBehaviour()
     while true do
+        if self.BMBDead then return end
+
         local fleeThreat = IsValid(self.FleeThreat) and self.FleeThreat or self.FleeThreatPosition
 
         if self.BMBHeld then
@@ -97,7 +328,7 @@ function ENT:OnBMBInjured(damageInfo, wasFleeing)
     end
 
     if self.FleeThreatPosition then
-        self.FleeUntil = CurTime() + math.Rand(self.FleeDurationMin or 3.5, self.FleeDurationMax or 6.0)
+        self.FleeUntil = CurTime() + math.Rand(self.FleeDurationMin or 3.5, self.FleeDurationMax or 5.0)
     end
 
     if not wasFleeing and self.InterruptBMBMovement then

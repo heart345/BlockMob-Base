@@ -1,4 +1,4 @@
-BMB = BMB or {}
+﻿BMB = BMB or {}
 BMB.Behaviors = BMB.Behaviors or {}
 
 BMB.Behaviors.Wander = BMB.Behaviors.Wander or {}
@@ -38,11 +38,10 @@ local function formatVector2D(vec)
     return string.format("(%.1f,%.1f,%.1f)", vec.x or 0, vec.y or 0, vec.z or 0)
 end
 
--- 游荡 = 选一个随机可走点，沿 A* 路径完整走到，到达后按 MC 节奏停顿一下再选下一个。
--- 不要在途中按固定时长切段：那会变成"走一会-刹停-换向"的节奏（已踩过坑）。
--- 途中的转向全部由 MoveAlongPath 的 carrot point 平滑完成。
+-- 娓歌崱 = 閫変竴涓殢鏈哄彲璧扮偣锛屾部 A* 璺緞瀹屾暣璧板埌锛屽埌杈惧悗鎸?MC 鑺傚鍋滈】涓€涓嬪啀閫変笅涓€涓€?-- 涓嶈鍦ㄩ€斾腑鎸夊浐瀹氭椂闀垮垏娈碉細閭ｄ細鍙樻垚"璧颁竴浼?鍒瑰仠-鎹㈠悜"鐨勮妭濂忥紙宸茶俯杩囧潙锛夈€?
+-- 閫斾腑鐨勮浆鍚戝叏閮ㄧ敱 MoveAlongPath 鐨?carrot point 骞虫粦瀹屾垚銆?
 function BMB.Behaviors.Wander.Run(mob)
-    -- 单段行程的距离范围：MC 式短途散步（2~5 格），不跨半张地图
+    -- 鍗曟琛岀▼鐨勮窛绂昏寖鍥达細MC 寮忕煭閫旀暎姝ワ紙2~5 鏍硷級锛屼笉璺ㄥ崐寮犲湴鍥?
     local size = blockSize()
     local minDistance = mob.WanderDistanceMin or size * (mob.WanderDistanceMinCells or 2)
     local maxDistance = mob.WanderDistanceMax or mob.WanderRadius or size * (mob.WanderDistanceMaxCells or 5)
@@ -59,29 +58,29 @@ function BMB.Behaviors.Wander.Run(mob)
 
         if distance >= minDistance and distance <= maxDistance then
             if mob:MoveToWorldPosition(destination, mob.WalkSpeed, { skipSourcePath = true }) then
-                -- 原版 MC 游荡是"站很久、偶尔走一段"：到站后长停顿，站立才是常态
+                -- 鍘熺増 MC 娓歌崱鏄?绔欏緢涔呫€佸伓灏旇蛋涓€娈?锛氬埌绔欏悗闀垮仠椤匡紝绔欑珛鎵嶆槸甯告€?
                 mob:InterruptibleWait(math.Rand(mob.WanderPauseMin or 6.0, mob.WanderPauseMax or 14.0))
                 return
             end
 
-            -- 走不通（路径失败/被挡）直接换个目标点重试，不插入停顿，保持移动连贯
+            -- 璧颁笉閫氾紙璺緞澶辫触/琚尅锛夌洿鎺ユ崲涓洰鏍囩偣閲嶈瘯锛屼笉鎻掑叆鍋滈】锛屼繚鎸佺Щ鍔ㄨ繛璐?
             if mob.BMBMoveInterrupt then return end
             coroutine.yield()
         end
     end
 
-    -- 候选点全部失败，歇一拍避免多只 mob 在同一帧连续刷 A*。
+    -- 鍊欓€夌偣鍏ㄩ儴澶辫触锛屾瓏涓€鎷嶉伩鍏嶅鍙?mob 鍦ㄥ悓涓€甯ц繛缁埛 A*銆?
     mob:InterruptibleWait(math.Rand(mob.WanderFailurePauseMin or 0.8, mob.WanderFailurePauseMax or 1.8))
 end
 
--- Flee = MC 的 PanicGoal（参考 net/minecraft/world/entity/ai/goal/PanicGoal.java +
--- ai/util/DefaultRandomPos.java / RandomPos.java，源码在用户本地）：
--- 恐慌**不是**朝伤害反方向跑，而是反复"随机选一个可达的近点（±5 格）→ 全速跑过去"，
--- 跑完一段还在恐慌窗口内就再选下一段——大平地的观感就是随机乱跑、且跑不远。
--- 候选点全部不可达（MC：10 次全过不了寻路校验 → canUse false）= 没地方跑，站住不恐慌。
+-- Flee = MC 鐨?PanicGoal锛堝弬鑰?net/minecraft/world/entity/ai/goal/PanicGoal.java +
+-- ai/util/DefaultRandomPos.java / RandomPos.java锛屾簮鐮佸湪鐢ㄦ埛鏈湴锛夛細
+-- 鎭愭厡**涓嶆槸**鏈濅激瀹冲弽鏂瑰悜璺戯紝鑰屾槸鍙嶅"闅忔満閫変竴涓彲杈剧殑杩戠偣锛埪? 鏍硷級鈫?鍏ㄩ€熻窇杩囧幓"锛?
+-- 璺戝畬涓€娈佃繕鍦ㄦ亹鎱岀獥鍙ｅ唴灏卞啀閫変笅涓€娈碘€斺€斿ぇ骞冲湴鐨勮鎰熷氨鏄殢鏈轰贡璺戙€佷笖璺戜笉杩溿€?
+-- 鍊欓€夌偣鍏ㄩ儴涓嶅彲杈撅紙MC锛?0 娆″叏杩囦笉浜嗗璺牎楠?鈫?canUse false锛? 娌″湴鏂硅窇锛岀珯浣忎笉鎭愭厡銆?
 
 local function pickPanicDestination(mob)
-    -- MC DefaultRandomPos.getPos(mob, 5, 4)：水平 ±5 格随机；RANDOM_POS_ATTEMPTS = 10
+    -- MC DefaultRandomPos.getPos(mob, 5, 4)锛氭按骞?卤5 鏍奸殢鏈猴紱RANDOM_POS_ATTEMPTS = 10
     local size = blockSize()
     local radius = mob.FleePanicRadius or size * (mob.FleePanicRadiusCells or 5)
     local minDistance = mob.FleePanicMinDistance or size * (mob.FleePanicMinDistanceCells or 1)
@@ -96,8 +95,8 @@ local function pickPanicDestination(mob)
         if distance >= minDistance and distance <= radius then
             offset:Normalize()
 
-            -- MC 用寻路 malus 校验候选点可达；BMB 的方块 A* 看不到 prop 和 Source 平台边缘，
-            -- 改用前向安全探测代替：朝候选点的第一段必须能走（挡掉悬崖外、prop 正后方的点）
+            -- MC 鐢ㄥ璺?malus 鏍￠獙鍊欓€夌偣鍙揪锛汢MB 鐨勬柟鍧?A* 鐪嬩笉鍒?prop 鍜?Source 骞冲彴杈圭紭锛?
+            -- 鏀圭敤鍓嶅悜瀹夊叏鎺㈡祴浠ｆ浛锛氭湞鍊欓€夌偣鐨勭涓€娈靛繀椤昏兘璧帮紙鎸℃帀鎮礀澶栥€乸rop 姝ｅ悗鏂圭殑鐐癸級
             local probe = math.min(distance, 110)
             local probeTarget = mob:GetPos() + offset * probe
             probeTarget.z = mob:GetPos().z
@@ -112,8 +111,8 @@ local function pickPanicDestination(mob)
 end
 
 function BMB.Behaviors.Flee.Run(mob)
-    -- 连续失败（选不出候选点 / 起步即被挡）达到上限 = 确认无路可逃，提前结束恐慌。
-    -- 对齐 MC 实测：被围在小台子上的友好生物冲几下就站住，不会无限乱撞绕圈
+    -- 杩炵画澶辫触锛堥€変笉鍑哄€欓€夌偣 / 璧锋鍗宠鎸★級杈惧埌涓婇檺 = 纭鏃犺矾鍙€冿紝鎻愬墠缁撴潫鎭愭厡銆?
+    -- 瀵归綈 MC 瀹炴祴锛氳鍥村湪灏忓彴瀛愪笂鐨勫弸濂界敓鐗╁啿鍑犱笅灏辩珯浣忥紝涓嶄細鏃犻檺涔辨挒缁曞湀
     local failures = 0
     local giveUpAfter = mob.FleeGiveUpFailures or 4
 
@@ -132,7 +131,11 @@ function BMB.Behaviors.Flee.Run(mob)
         if destination then
             local airborneStart = mob.IsBMBOnGround and not mob:IsBMBOnGround() or false
             local fleeMinPathSpeed
-            if mob.GetBMBRunActivityThreshold then
+            if mob.FleeKeepFullSpeed then
+                fleeMinPathSpeed = mob.RunSpeed or mob.WalkSpeed or 0
+            elseif mob.FleeMinPathSpeed then
+                fleeMinPathSpeed = mob.FleeMinPathSpeed
+            elseif mob.GetBMBRunActivityThreshold then
                 fleeMinPathSpeed = mob:GetBMBRunActivityThreshold() + (mob.FleeMinPathSpeedPadding or 1)
             else
                 fleeMinPathSpeed = ((mob.WalkSpeed or mob.RunSpeed or 0) + (mob.RunSpeed or mob.WalkSpeed or 0)) * 0.5 + 1
@@ -140,8 +143,8 @@ function BMB.Behaviors.Flee.Run(mob)
 
             fleeMinPathSpeed = math.min(mob.RunSpeed or fleeMinPathSpeed, fleeMinPathSpeed)
 
-            -- allowPartial=false：恐慌候选不可达就该算失败计数（MC：被围住冲几下放弃），
-            -- 部分路径会把"撞墙"洗成"成功冲刺"，失败计数永远清零、围栏里无限乱撞
+            -- allowPartial=false锛氭亹鎱屽€欓€変笉鍙揪灏辫绠楀け璐ヨ鏁帮紙MC锛氳鍥翠綇鍐插嚑涓嬫斁寮冿級锛?
+            -- 閮ㄥ垎璺緞浼氭妸"鎾炲"娲楁垚"鎴愬姛鍐插埡"锛屽け璐ヨ鏁版案杩滄竻闆躲€佸洿鏍忛噷鏃犻檺涔辨挒
             moved = mob:MoveToWorldPosition(destination, mob.RunSpeed, {
                 skipSourcePath = true,
                 allowPartial = false,
@@ -154,7 +157,7 @@ function BMB.Behaviors.Flee.Run(mob)
         if mob.BMBMoveInterrupt then
             if mob.IsBMBKnockbackActive and mob:IsBMBKnockbackActive() then return end
 
-            -- 跑动中再次受击：FleeUntil 已被刷新，不算逃跑失败，直接进下一段
+            -- 璺戝姩涓啀娆″彈鍑伙細FleeUntil 宸茶鍒锋柊锛屼笉绠楅€冭窇澶辫触锛岀洿鎺ヨ繘涓嬩竴娈?
             if mob.ClearBMBMovementInterrupt then
                 mob:ClearBMBMovementInterrupt()
             else
@@ -178,8 +181,6 @@ end
 function BMB.Behaviors.EatGrass.Try(mob)
     if CurTime() < (mob.NextEatGrassTime or 0) then return false end
 
-    -- 吃的是脚下踩着的那个方块：mob 原点在脚底，往下偏一点再换算才落进支撑方块
-    -- （real 世界里 GetPos 所在格是脚部的空气格；mock 的 WorldToBlock 忽略 z，行为不变）
     local blockCoord = BMB.BlockWorld.WorldToBlock(mob:GetPos() - Vector(0, 0, 4))
     local blockType = BMB.BlockWorld.GetBlockAt(blockCoord)
 
@@ -188,25 +189,40 @@ function BMB.Behaviors.EatGrass.Try(mob)
         return false
     end
 
-    -- mob 作为 actor 传给方块世界（real 实现会带进 MCSWEP 的 OnPlace/OnBreak）
-    BMB.BlockWorld.SetBlockAt(blockCoord, BMB.BlockTypes.Dirt, mob)
-    mob:EmitSound("npc/barnacle/barnacle_crunch2.wav", 65, math.random(95, 105), 0.45)
-    -- MC 里成年羊吃草是低频行为，吃完要隔较长时间才会再吃
-    mob.NextEatGrassTime = CurTime() + math.Rand(mob.EatGrassCooldownMin or 25, mob.EatGrassCooldownMax or 45)
+    local totalDuration = mob.EatGrassAnimationDuration or 1.05
+    local biteDelay = math.Clamp(mob.EatGrassBiteDelay or 0.42, 0, totalDuration)
+
+    if mob.SetBMBState then mob:SetBMBState("eat_grass") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("eat_grass") end
+    if mob.SetNWFloat then mob:SetNWFloat("BMBEatGrassStartedAt", CurTime()) end
 
     if mob.PlayBMBAnimation then
         mob:PlayBMBAnimation("eat")
     end
 
-    if mob.InterruptibleWait then
-        if not mob:InterruptibleWait(0.65) then return false end
-    else
-        coroutine.wait(0.65)
+    if biteDelay > 0 then
+        if mob.InterruptibleWait then
+            if not mob:InterruptibleWait(biteDelay) then return false end
+        else
+            coroutine.wait(biteDelay)
+        end
+    end
+
+    BMB.BlockWorld.SetBlockAt(blockCoord, BMB.BlockTypes.Dirt, mob)
+    mob:EmitSound("npc/barnacle/barnacle_crunch2.wav", 65, math.random(95, 105), 0.45)
+    mob.NextEatGrassTime = CurTime() + math.Rand(mob.EatGrassCooldownMin or 25, mob.EatGrassCooldownMax or 45)
+
+    local remaining = math.max(0, totalDuration - biteDelay)
+    if remaining > 0 then
+        if mob.InterruptibleWait then
+            if not mob:InterruptibleWait(remaining) then return false end
+        else
+            coroutine.wait(remaining)
+        end
     end
 
     return true
 end
-
 local function isAliveTarget(target)
     if not IsValid(target) then return false end
 

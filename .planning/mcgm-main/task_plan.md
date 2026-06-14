@@ -108,6 +108,8 @@ Phase 2
 - [ ] 复测第三十四轮：受击红闪时 HUD 不再 `70/0`，普通移动/flee 能继续接管；非无敌帧命中能看见水平击退；无敌帧连击仍不扣血/不击退；prop 物理伤害、物理枪、debug gap 不回归
 - [x] 第三十五轮：MC 击退手感收口——`DamageInvulnerabilityTime` 改 0.5；`KnockbackDuration` 缩到 0.12，避免长时间压住 flee；地面受击 `loco:Jump()` 后给竖直上抬（`KnockbackVerticalSpeedScale=6`，clamp 170~240u/s），第一下也立即写水平+竖直冲量；Flee 在空中恢复时传 `allowStrandedStart=airborneStart` 继续尝试逃跑
 - [x] 复测第三十五轮：第一下生成后受击也有击退；受击有一点离地上抬；击退后不再长时间停住，空中/落地都会继续 flee；冷却约 0.5s；旧红闪、prop 伤害、物理枪、debug gap 不回归
+- [x] 第三十五轮后 hotfix：Sheep Flee 目标速度满速化——`RunSpeed=100`、`FleeKeepFullSpeed=true`、恐慌窗口 `3.5-5.0s`；共享 Flee 支持 `FleeKeepFullSpeed`，避免 sheep 在 `path_corner` 时 HUD 目标速度从 100 掉到跑步阈值
+- [ ] 复测 Sheep Flee 满速热修：受击后 HUD 目标速度应稳定显示 100，不再出现 81/90 式切换；Flee 应比旧 2s 更久但仍会在 3.5-5.0s 窗口后恢复普通行为；围住放弃、悬崖/撞墙、hop/drop/debug gap 不回归
 - [ ] Fall damage / 摔伤：后续单独实现掉血来源，不和受击击退共用状态；摔伤不应触发击退
 - [ ] 半砖/楼梯/MC 台阶表面高度寻路：等待 MCSWEP shape/floor height 接口（`MC.BlockBoxes` 或等价 API）；A* 从二值 solid/air 升级为 surface-height walk/hop/drop
 - [ ] 玻璃板/栅栏 shape 接口接入后：PARTIAL/窄顶碰撞按"有碰撞但不可站立"，普通 A* 不规划其顶面；StrandedRecovery 负责已站上去的逃生

@@ -562,3 +562,9 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 
 - **z 击飞稳定后，水平击退会被滞空时间放大**：`AttackKnockback=210` 单看速度不夸张，但配合 grounded `launchZ=190` 的空中时间，实际能把玩家带出 4-5 格。
 - **先调水平，不轻易动 z**：z 参数刚用于跨过 Source grounded-player 阈值，动低容易让“击飞时有时无”回归。要把总位移从 4-5 格收回 2-3 格，优先把水平值降到约 150。
+
+## 2026-06-14: Sheep Flee 81/90 is the run-threshold clamp
+
+- **HUD 里的 `81/90` 不是随机速度源**：旧 sheep `WalkSpeed=70`、`RunSpeed=90`，Flee 的 `minPathSpeed` 用 run activity threshold `((walk+run)/2)+padding`，所以过弯/局部控制时会显示约 `81`，直线段显示 `90`。
+- **这条下限原本是保护动画，不是速度手感**：第三十二轮把 `BMBActivitySpeed` 和 `BMBDesiredSpeed` 分开后，阈值下限主要用于避免跑步动作被 path corner 降速切成 walk。套羊模型后，用户更在意 panic HUD/实际目标速度稳定满速，因此需要一个 mob 级开关，而不是全局改 path corner。
+- **`FleeKeepFullSpeed` 是 opt-in**：sheep 开 `FleeKeepFullSpeed=true` 后，Flee 的 corner min speed 直接等于 `RunSpeed`；未来其它 mob 如果还想保留 corner slow 但不掉到 walk，只要不设该字段，就继续走旧阈值语义。

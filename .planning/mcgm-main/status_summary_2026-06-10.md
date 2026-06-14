@@ -805,3 +805,22 @@
   - Static checks updated to expect 150.
 - Operational note:
   - Tuning changes must be synced to `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\gmod_addon`; existing spawned Zombies may need Lua refresh/respawn to use new ENT fields.
+
+## 2026-06-14 Latest Status After Sheep Flee Full-Speed Retune
+
+- User report:
+  - Sheep Flee HUD target speed sometimes shows `81`, sometimes `90`.
+  - Flee duration feels too short.
+  - Desired speed is `100`.
+- Diagnosis:
+  - `81` came from the old run-threshold corner clamp: sheep `WalkSpeed=70`, old `RunSpeed=90`, threshold plus padding is about `81`.
+  - Straight path segments could still show `90`, so the HUD looked inconsistent.
+- Implemented:
+  - Sheep `RunSpeed=100`.
+  - Sheep `FleeKeepFullSpeed=true`, so Flee path corner control keeps the target at full run speed for this mob.
+  - Sheep Flee duration changed to `3.5-5.0s`.
+  - Shared Flee still defaults to the previous run-threshold clamp for mobs that do not opt in.
+- Next game retest:
+  1. Hit a sheep and check that HUD target speed stays `100` through corners.
+  2. Confirm Flee feels longer, then returns to wander/idle after the panic window.
+  3. Confirm previous Flee no-path give-up, cliff/wall safety, hop/drop, and debug-gap behavior still pass.

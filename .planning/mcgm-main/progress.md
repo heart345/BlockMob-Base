@@ -1134,6 +1134,28 @@
   - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
   - glualint on changed Lua files.
 
+## 2026-06-14 Sheep Flee full-speed retune
+
+- User report:
+  - Sheep Flee HUD target speed sometimes shows `81`, sometimes `90`.
+  - Flee duration feels too short.
+  - Desired tuning: Flee speed `100` and a longer panic window.
+- Diagnosis:
+  - Sheep had `WalkSpeed=70` and `RunSpeed=90`.
+  - Flee path following used `GetBMBRunActivityThreshold() + padding` as `minPathSpeed`; for 70/90 this is about `81`.
+  - Straight segments therefore showed the old full run target `90`, while path corner / local control could clamp the target down to `81`.
+  - This was intended to keep run animation above the walk/run threshold, but for the sheep HUD/model pass we want panic target speed itself to stay full-speed.
+- Implemented:
+  - Sheep `RunSpeed` changed to `100`.
+  - Sheep now sets `FleeKeepFullSpeed=true`.
+  - Sheep `FleeDurationMin/Max` changed to `3.5/5.0`.
+  - Shared Flee checks `mob.FleeKeepFullSpeed` before the run-threshold fallback, so only mobs that opt in keep full path-corner speed.
+  - `scripts/check_flee_speed_stability.ps1` now guards the sheep-specific 100/full-speed/longer-window tuning.
+- Next game retest:
+  1. Hit a sheep and confirm HUD target speed remains `100` through straight movement and corners.
+  2. Confirm Flee lasts longer than the old 2s window, then naturally returns to normal behavior.
+  3. Confirm enclosed/no-path Flee give-up, cliff/wall safety, hop/drop, and debug-gap behavior still hold.
+
 ## 2026-06-14 Zombie Phase 2 range/head-overlap tuning
 
 - User retest confirmed deterministic melee launch is fixed.

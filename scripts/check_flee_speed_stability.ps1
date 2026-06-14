@@ -29,6 +29,7 @@ function Assert-Contains([string]$relativePath, [string]$pattern, [string]$messa
 
 $base = "gmod_addon\lua\entities\bmb_base_mob.lua"
 $behaviors = "gmod_addon\lua\bmb\sv_behaviors.lua"
+$sheep = "gmod_addon\lua\entities\bmb_sheep.lua"
 $state = "docs\STATE.md"
 $claude = "CLAUDE.md"
 
@@ -43,6 +44,13 @@ Assert-Contains $base 'GetNWFloat\("BMBActivitySpeed"' "activity selection shoul
 Assert-Contains $behaviors "moveIntentSpeed\s*=\s*mob\.RunSpeed" "Flee should keep run animation intent stable for the full panic segment"
 Assert-Contains $behaviors "minPathSpeed\s*=\s*fleeMinPathSpeed" "Flee should clamp path corner slowdowns above the run/walk threshold"
 Assert-Contains $behaviors "GetBMBRunActivityThreshold" "Flee should derive its minimum path speed from the base run threshold"
+Assert-Contains $behaviors "FleeKeepFullSpeed" "Flee should allow mobs to keep their full run speed through corner control"
+
+Assert-Contains $sheep "RunSpeed\s*=\s*100" "Sheep flee run speed should be tuned to 100u/s"
+Assert-Contains $sheep "FleeKeepFullSpeed\s*=\s*true" "Sheep flee should not expose 81/90-style target speed shifts in the HUD"
+Assert-Contains $sheep "FleeDurationMin\s*=\s*3\.5" "Sheep flee should last longer than the old 2s MC window in GMod tuning"
+Assert-Contains $sheep "FleeDurationMax\s*=\s*5\.0" "Sheep flee max duration should be tuned to 5s"
+Assert-Contains $sheep "FleeDurationMax or 5\.0" "Sheep injury refresh fallback should match the tuned 5s max window"
 
 Assert-Contains $claude "BMBActivitySpeed" "CLAUDE.md should document intent speed vs transient loco command speed"
 Assert-Contains $state "Flee" "STATE.md should record the flee speed stability fix"

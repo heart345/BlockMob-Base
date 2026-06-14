@@ -236,6 +236,12 @@ if SERVER then
     end)
 end
 
+local function addAxisSliders(panel, label, prefix, minValue, maxValue, decimals)
+    panel:NumSlider(label .. " X", prefix .. "_x", minValue, maxValue, decimals)
+    panel:NumSlider(label .. " Y", prefix .. "_y", minValue, maxValue, decimals)
+    panel:NumSlider(label .. " Z", prefix .. "_z", minValue, maxValue, decimals)
+end
+
 function TOOL.BuildCPanel(panel)
     panel:Help("#tool.bmb_debug.desc")
     panel:Help("Left: select mob. Right: move selected mob to point. Reload: stop debug movement.")
@@ -251,4 +257,14 @@ function TOOL.BuildCPanel(panel)
     panel:NumSlider("Acceleration", "bmb_debug_edit_accel", 10, 1200, 0)
     panel:NumSlider("Deceleration", "bmb_debug_edit_decel", 10, 1600, 0)
     panel:Button("Apply movement tuning", "bmb_tool_apply_speed")
+    panel:Help("Sheep bone preview")
+    panel:CheckBox("Preview sheep bones", "bmb_sheep_pose_preview")
+    panel:NumSlider("Keyframe time", "bmb_sheep_pose_key_time", 0, 2, 2)
+    panel:Button("Print sheep pose keyframe", "bmb_sheep_pose_print_keyframe")
+    addAxisSliders(panel, "Head rot", "bmb_sheep_pose_head_rot", -90, 90, 1)
+    addAxisSliders(panel, "Head pos", "bmb_sheep_pose_head_pos", -18, 18, 1)
+    addAxisSliders(panel, "Leg0 rot", "bmb_sheep_pose_leg0_rot", -90, 90, 1)
+    addAxisSliders(panel, "Leg1 rot", "bmb_sheep_pose_leg1_rot", -90, 90, 1)
+    addAxisSliders(panel, "Leg2 rot", "bmb_sheep_pose_leg2_rot", -90, 90, 1)
+    addAxisSliders(panel, "Leg3 rot", "bmb_sheep_pose_leg3_rot", -90, 90, 1)
 end

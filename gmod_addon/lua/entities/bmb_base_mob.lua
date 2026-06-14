@@ -28,6 +28,24 @@ ENT.AdminOnly = true
 ENT.Model = "models/kleiner.mdl"
 ENT.IsBMBMob = true
 ENT.StartHealth = 20
+ENT.UseRagdollOnDeath = false
+ENT.UsePhysicsCorpseOnDeath = false
+ENT.DeathRemoveDelay = 1.0
+ENT.DeathPoofEffect = "bmb_death_poof"
+ENT.DeathKeepRed = true
+ENT.DeathCorpseColor = Color(255, 110, 110, 255)
+ENT.DeathCorpseCollisionGroup = COLLISION_GROUP_DEBRIS
+ENT.DeathCorpseDamageForceScale = 0.01
+ENT.DeathCorpseMaxImpactSpeed = 120
+ENT.DeathCorpseRollVelocity = 45
+ENT.DeathCorpseRightPushSpeed = 55
+ENT.DeathCorpseUpPushSpeed = 0
+ENT.DeathCorpseRightForce = 0
+ENT.DeathCorpseTorqueHeight = 24
+ENT.DeathCorpseRightRollVelocity = 75
+ENT.DeathPoofParticleCountMin = 5
+ENT.DeathPoofParticleCountMax = 8
+ENT.DeathPoofRadiusScale = 44
 ENT.WalkSpeed = 80
 ENT.RunSpeed = 120
 ENT.Acceleration = 420
@@ -190,6 +208,16 @@ end
 
 if CLIENT then
     function ENT:Draw()
+        local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
+        if self:GetNWBool("BMBDead", false) and deathUntil > CurTime() and self.DeathKeepRed ~= false then
+            local gb = 1 - (self.HurtFlashRedAmount or 0.65)
+
+            render.SetColorModulation(1, gb, gb)
+            self:DrawModel()
+            render.SetColorModulation(1, 1, 1)
+            return
+        end
+
         local flashUntil = self:GetNWFloat("BMBHurtFlashUntil", 0)
 
         if flashUntil > CurTime() then
@@ -262,6 +290,7 @@ function ENT:BaseInitialize()
     end
 
     self:SetNWString("BMBState", self.State)
+    self:SetNWFloat("BMBStateStartedAt", CurTime())
     self:SetNWInt("BMBHealth", self:Health())
     self:SetNWFloat("BMBDesiredSpeed", self.WalkSpeed)
     self:SetNWFloat("BMBActivitySpeed", self.WalkSpeed)
@@ -279,6 +308,8 @@ function ENT:BaseInitialize()
     self:SetNWFloat("BMBHopDebugUntil", 0)
     self:SetNWFloat("BMBHurtFlashUntil", 0)
     self:SetNWFloat("BMBHurtFlashDuration", self.HurtFlashTime or 0.5)
+    self:SetNWBool("BMBDead", false)
+    self:SetNWFloat("BMBDeathUntil", 0)
     self:SetNWFloat("BMBInvulnerableUntil", 0)
     self:SetNWFloat("BMBKnockbackUntil", 0)
     self:SetNWFloat("BMBKnockbackSpeed", 0)
@@ -423,6 +454,7 @@ end
 
 function ENT:SetBMBMoveMode(mode)
     mode = mode or "idle"
+    if self.BMBDead and mode ~= "dead" then return end
     if self.BMBCurrentMoveMode == mode then return end
 
     self.BMBCurrentMoveMode = mode
@@ -434,6 +466,8 @@ function ENT:SetBMBMoveMode(mode)
 end
 
 function ENT:MaintainBMBMoveSpeed(speed, activitySpeed)
+    if self.BMBDead then return end
+
     local desiredSpeed = speed or self.WalkSpeed
 
     self.loco:SetDesiredSpeed(desiredSpeed)
@@ -631,7 +665,21 @@ function ENT:RunBehaviour()
 end
 
 function ENT:Think()
+    if CLIENT then
+        if self.UpdateBMBVisualBones then
+            self:UpdateBMBVisualBones()
+        end
+
+        self:NextThink(CurTime())
+        return true
+    end
+
     if SERVER then
+        if self.BMBDead then
+            self:NextThink(CurTime())
+            return true
+        end
+
         if self.BMBHeld then
             -- 物理枪持握中：loco 每 tick 缴械。否则 loco 醒着时重力下拽 + 出固体
             -- 解算上顶，和物理枪的持握点拉扯 = 上下抽搐/陷地循环；loco 恰好睡着的
@@ -721,9 +769,11 @@ if SERVER then
 end
 
 function ENT:SetBMBState(state)
+    if self.BMBDead and state ~= "dead" then return end
     if self.State == state then return end
     self.State = state
     self:SetNWString("BMBState", state)
+    self:SetNWFloat("BMBStateStartedAt", CurTime())
 end
 
 function ENT:IsBMBFleeing()
@@ -3282,6 +3332,251 @@ function ENT:OnInjured(damageInfo, context)
     end
 end
 
+function ENT:GetBMBDeathRemoveDelay()
+    if self.DeathRemoveDelay == false then return false end
+
+    local delay = tonumber(self.DeathRemoveDelay)
+    if delay == nil then delay = 1.0 end
+
+    return math.max(0, delay)
+end
+
+function ENT:StopBMBMovementOnDeath()
+    if CLIENT then return end
+
+    self.BMBDead = true
+    self.BMBHeld = false
+    self.BMBMoveInterrupt = true
+    self.BMBPendingBlockHop = nil
+    self.BMBActiveBlockHop = nil
+    self.BMBBlockHopAirControlUntil = 0
+    self.BMBKnockbackUntil = 0
+    self.BMBKnockbackVelocity = nil
+    self.BMBKnockbackVerticalSpeed = nil
+    self.BMBKnockbackDesiredSpeed = nil
+    self.BMBKnockbackActivitySpeed = nil
+    self.BMBKnockbackLocoSpeed = nil
+    self.TargetEntity = nil
+
+    self:SetNWBool("BMBDead", true)
+    self:SetNWFloat("BMBDesiredSpeed", 0)
+    self:SetNWFloat("BMBActivitySpeed", 0)
+    self:SetNWFloat("BMBKnockbackUntil", 0)
+    self:SetNWFloat("BMBKnockbackSpeed", 0)
+    self:SetBMBState("dead")
+    self:SetBMBMoveMode("dead")
+    self:UpdateBMBApproachDebug(nil, 0)
+    self:RestoreBMBStepHeight()
+
+    if self.loco then
+        if self.loco.SetDesiredSpeed then
+            self.loco:SetDesiredSpeed(0)
+        end
+
+        if self.loco.SetVelocity then
+            self.loco:SetVelocity(vector_origin)
+        end
+    end
+
+    self:SetSolid(SOLID_NONE)
+    self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+end
+
+function ENT:GetBMBDeathEffectOrigin()
+    if self.WorldSpaceCenter then
+        return self:WorldSpaceCenter()
+    end
+
+    return self:GetPos() + self:OBBCenter()
+end
+
+function ENT:GetBMBDeathEffectScale()
+    local mins = self:OBBMins()
+    local maxs = self:OBBMaxs()
+    local height = math.max(1, maxs.z - mins.z)
+    local width = math.max(maxs.x - mins.x, maxs.y - mins.y, 1)
+
+    return math.Clamp(math.max(height, width) / 48, 0.6, 2.4)
+end
+
+function ENT:GetBMBDeathPoofParticleCount()
+    if self.DeathPoofParticleCountMin or self.DeathPoofParticleCountMax then
+        local minCount = math.floor(tonumber(self.DeathPoofParticleCountMin) or 5)
+        local maxCount = math.floor(tonumber(self.DeathPoofParticleCountMax) or minCount)
+
+        if maxCount < minCount then
+            minCount, maxCount = maxCount, minCount
+        end
+
+        return math.random(math.max(1, minCount), math.max(1, maxCount))
+    end
+
+    return math.max(1, math.floor(tonumber(self.DeathPoofParticleCount) or 6))
+end
+
+function ENT:EmitBMBDeathPoofAt(origin, scale)
+    if CLIENT then return end
+    if not self.DeathPoofEffect then return end
+
+    local data = EffectData()
+    local effectScale = scale or self:GetBMBDeathEffectScale()
+
+    data:SetOrigin(origin or self:GetBMBDeathEffectOrigin())
+    data:SetScale(effectScale)
+    data:SetRadius((self.DeathPoofRadiusScale or 28) * effectScale)
+    data:SetMagnitude(self:GetBMBDeathPoofParticleCount())
+    util.Effect(self.DeathPoofEffect, data, true, true)
+end
+
+function ENT:EmitBMBDeathPoof()
+    self:EmitBMBDeathPoofAt(self:GetBMBDeathEffectOrigin(), self:GetBMBDeathEffectScale())
+end
+
+function ENT:GetBMBDeathCorpseImpactVelocity(damageInfo)
+    local velocity = self:GetVelocity() or vector_origin
+    local rightPush = self:GetRight() * (self.DeathCorpseRightPushSpeed or 0)
+    local upPush = Vector(0, 0, self.DeathCorpseUpPushSpeed or 0)
+    local pushedVelocity = velocity + rightPush + upPush
+    if not damageInfo then return pushedVelocity end
+
+    local force = damageInfo:GetDamageForce()
+    if not force or force:LengthSqr() <= 1 then return pushedVelocity end
+
+    local speed = math.min(force:Length() * (self.DeathCorpseDamageForceScale or 0.02), self.DeathCorpseMaxImpactSpeed or 220)
+    local direction = force:GetNormalized()
+
+    return pushedVelocity + direction * speed
+end
+
+function ENT:ApplyBMBDeathCorpseTip(corpse, phys)
+    if not IsValid(corpse) or not IsValid(phys) then return end
+
+    local rightForce = self.DeathCorpseRightForce or 0
+    if rightForce ~= 0 then
+        local massScale = math.max(1, phys:GetMass())
+        local force = self:GetRight() * rightForce * massScale
+        local offset = Vector(0, 0, self.DeathCorpseTorqueHeight or 24)
+
+        phys:ApplyForceOffset(force, corpse:WorldSpaceCenter() + offset)
+    end
+
+    local roll = self.DeathCorpseRightRollVelocity or 0
+    if roll ~= 0 then
+        phys:AddAngleVelocity(corpse:GetForward() * roll)
+    end
+end
+
+function ENT:CopyBMBVisualStateToCorpse(corpse)
+    corpse:SetSkin(self:GetSkin() or 0)
+    corpse:SetColor(self.DeathKeepRed ~= false and (self.DeathCorpseColor or Color(255, 110, 110, 255)) or self:GetColor())
+    corpse:SetRenderMode(RENDERMODE_TRANSALPHA)
+
+    if self.GetBodyGroups then
+        for _, bodyGroup in ipairs(self:GetBodyGroups()) do
+            corpse:SetBodygroup(bodyGroup.id, self:GetBodygroup(bodyGroup.id))
+        end
+    end
+
+    if self.GetMaterials then
+        local materials = self:GetMaterials()
+        for index = 0, #materials - 1 do
+            local subMaterial = self:GetSubMaterial(index)
+            if subMaterial and subMaterial ~= "" then
+                corpse:SetSubMaterial(index, subMaterial)
+            end
+        end
+    end
+end
+
+function ENT:CreateBMBPhysicsCorpse(damageInfo)
+    if CLIENT then return nil end
+    if not self.UsePhysicsCorpseOnDeath then return nil end
+
+    local corpse = ents.Create(self.DeathCorpseClass or "prop_physics")
+    if not IsValid(corpse) then return nil end
+
+    corpse:SetModel(self:GetModel())
+    corpse:SetPos(self:GetPos())
+    corpse:SetAngles(self:GetAngles())
+    self:CopyBMBVisualStateToCorpse(corpse)
+    corpse:Spawn()
+    corpse:Activate()
+    corpse:SetCollisionGroup(self.DeathCorpseCollisionGroup or COLLISION_GROUP_DEBRIS)
+
+    local phys = corpse:GetPhysicsObject()
+    if not IsValid(phys) then
+        corpse:Remove()
+        return nil
+    end
+
+    phys:Wake()
+    phys:SetVelocity(self:GetBMBDeathCorpseImpactVelocity(damageInfo))
+    phys:AddAngleVelocity(Vector(
+        math.Rand(-45, 45),
+        math.Rand(-45, 45),
+        math.Rand(-1, 1) >= 0 and (self.DeathCorpseRollVelocity or 180) or -(self.DeathCorpseRollVelocity or 180)
+    ))
+    self:ApplyBMBDeathCorpseTip(corpse, phys)
+
+    return corpse
+end
+
+function ENT:ScheduleBMBDeathCleanup(delay, corpse)
+    if CLIENT then return end
+    if delay == false then return end
+
+    timer.Simple(delay or 1.0, function()
+        if IsValid(self) then
+            local origin = IsValid(corpse) and corpse:WorldSpaceCenter() or self:GetBMBDeathEffectOrigin()
+            self:EmitBMBDeathPoofAt(origin, self:GetBMBDeathEffectScale())
+        end
+
+        if IsValid(corpse) then
+            corpse:Remove()
+        end
+
+        if IsValid(self) then
+            self:Remove()
+        end
+    end)
+end
+
+function ENT:BeginBMBDeath(damageInfo)
+    if CLIENT then return end
+    if self.BMBDeathStarted then return end
+
+    self.BMBDeathStarted = true
+
+    local delay = self:GetBMBDeathRemoveDelay()
+    local deathUntil = delay == false and 0 or CurTime() + delay
+
+    self:StopBMBMovementOnDeath()
+
+    if self.DeathKeepRed ~= false then
+        self:SetNWFloat("BMBDeathUntil", deathUntil)
+    else
+        self:SetNWFloat("BMBDeathUntil", 0)
+    end
+
+    local attacker = damageInfo and damageInfo:GetAttacker() or self
+    local inflictor = damageInfo and damageInfo:GetInflictor() or attacker
+    hook.Run("OnNPCKilled", self, attacker, inflictor)
+
+    if self.UseRagdollOnDeath then
+        self:BecomeRagdoll(damageInfo)
+        return
+    end
+
+    local corpse = self:CreateBMBPhysicsCorpse(damageInfo)
+    if IsValid(corpse) then
+        self:SetNoDraw(true)
+        self:ScheduleBMBDeathCleanup(delay, corpse)
+        return
+    end
+
+    self:ScheduleBMBDeathCleanup(delay)
+end
+
 function ENT:OnTakeDamage(damageInfo)
     if CLIENT or self.BMBDead then return end
 
@@ -3300,12 +3595,13 @@ function ENT:OnTakeDamage(damageInfo)
 
     self:SetHealth(self:Health() - damage)
     self:SetNWInt("BMBHealth", self:Health())
-    self:OnInjured(damageInfo, { wasFleeing = wasFleeing })
 
     if self:Health() <= 0 then
-        self.BMBDead = true
         self:OnKilled(damageInfo)
+        return damage
     end
+
+    self:OnInjured(damageInfo, { wasFleeing = wasFleeing })
 
     return damage
 end
@@ -3313,6 +3609,5 @@ end
 function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
-    hook.Run("OnNPCKilled", self, damageInfo:GetAttacker(), damageInfo:GetInflictor())
-    self:BecomeRagdoll(damageInfo)
+    self:BeginBMBDeath(damageInfo)
 end

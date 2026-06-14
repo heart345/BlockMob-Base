@@ -113,7 +113,9 @@ end
 
 function ENT:RunBehaviour()
     while true do
-        if self.BMBHeld then
+        if self.BMBDead then
+            return
+        elseif self.BMBHeld then
             self:SetBMBState("held")
             coroutine.wait(0.2)
         elseif self.RunBMBKnockback and self:RunBMBKnockback() then
@@ -232,8 +234,7 @@ function ENT:OnKilled(damageInfo)
         self:EmitSound(randomSound(self.Sounds.Death), 76, math.random(95, 105), 0.9)
     end
 
-    hook.Run("OnNPCKilled", self, damageInfo:GetAttacker(), damageInfo:GetInflictor())
-    self:BecomeRagdoll(damageInfo)
+    self:BeginBMBDeath(damageInfo)
 end
 
 function ENT:ResetBMBAmbientSoundTime()
