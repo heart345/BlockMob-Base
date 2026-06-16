@@ -49,6 +49,8 @@ Assert-Contains $zombie "AttackHitDelay\s*=\s*0" "Phase 2 zombie should resolve 
 Assert-Contains $zombie "AttackKnockback\s*=\s*150" "Zombie melee should knock the player backward without over-pulling horizontally"
 Assert-Contains $zombie "AttackVerticalKnockback\s*=\s*155" "Zombie melee should give a small vertical lift"
 Assert-Contains $zombie "AttackGroundedVerticalKnockback\s*=\s*190" "Zombie melee should cross Source's grounded-player lift threshold without over-launching"
+Assert-Contains $zombie "KnockbackUseJump\s*=\s*false" "Zombie hurt knockback should not open locomotion jump state while chasing on MC blocks"
+Assert-Contains $zombie "KnockbackVerticalMaxSpeed\s*=\s*0" "Zombie hurt knockback should stay horizontal; melee player knockback remains separate"
 Assert-Contains $zombie "AttackVerticalOverlapRange\s*=\s*86" "Zombie should still hit a player standing directly on its head"
 Assert-Contains $zombie "AttackVerticalOverlapFlatRange\s*=\s*24" "Head-overlap melee should stay narrow so high platforms still use chase/pathing"
 Assert-NotContains $zombie "AttackKnockbackCorrectionTicks" "Zombie melee should no longer use multi-tick knockback correction"

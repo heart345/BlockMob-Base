@@ -61,6 +61,11 @@ ENT.CollisionMaxs = Vector(11, 11, 72)
 ENT.RunActivity = ACT_WALK
 ENT.TurnInPlaceAngle = 170
 ENT.BlockHopAllowCloseLaunch = true
+-- Chasing zombies should not turn ordinary hurt knockback into a locomotion jump on MC block tops.
+ENT.KnockbackUseJump = false
+ENT.KnockbackVerticalSpeedScale = 0
+ENT.KnockbackVerticalMinSpeed = 0
+ENT.KnockbackVerticalMaxSpeed = 0
 
 ENT.Sounds = {
     Idle = {

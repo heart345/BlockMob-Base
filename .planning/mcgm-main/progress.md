@@ -1175,6 +1175,43 @@
   - A mob can opt in with e.g. `AnimationSequences = { idle = "idle", walk = "walk", run = "walk", attack = "attack", hurt = "hurt", death = "death" }`.
   - Sequence names should match the converter's printed export list exactly.
 
+## 2026-06-15 Zombie hurt knockback jump-state hotfix
+
+- User report:
+  - When a Zombie is chasing the player on MC blocks, hitting it can sometimes make it unexpectedly jump.
+  - User later clarified it mainly happens while chasing.
+- Diagnosis:
+  - Base hurt knockback still used the sheep-friendly grounded lift path: `loco:Jump()` then `SetVelocity(horizontal + z)`.
+  - During chase, Zombie resumes hostile steering immediately after the short knockback window.
+  - On MC block tops, that temporary locomotion jump state can be picked up visually/behaviorally as a stray jump or connect awkwardly to chase/hop logic.
+- Implemented:
+  - Added `KnockbackUseJump` to BaseMob. Default remains `true`, preserving sheep/friendly mob hurt lift behavior.
+  - Zombie sets `KnockbackUseJump=false`.
+  - Zombie also sets hurt knockback vertical lift scale/min/max to 0, so normal damage knockback is horizontal-only.
+  - Zombie attacking the player is unaffected; player knockback/vertical launch is still controlled by `AttackVerticalKnockback` / `AttackGroundedVerticalKnockback` in shared `MeleeAttack`.
+- Next game retest:
+  1. Let Zombie chase on a flat MC block platform, hit it repeatedly, and confirm it only slides/gets pushed horizontally.
+  2. Confirm legitimate path_hop still works when Zombie must climb a one-block step during chase.
+  3. Confirm Zombie melee still launches the player slightly and does not lose the previous 2-3 block tuning.
+
+## 2026-06-15 Sheep sequence locomotion hookup parked
+
+- User requirements:
+  - Roll back the baked sequence hookup for sheep for now.
+  - Comment out `AnimationSequences` / `AnimationReferenceSpeeds` until converter pivots and low-speed playback/cycle are fixed.
+  - Keep the new persistent `BMBSheepLimbSwingAmount` + `BMBSheepLimbSwingPhase` smoothing logic.
+  - Restore procedural leg `setBoneAngle` using the smoothed phase/amount, capped at 7 degrees.
+- Implemented:
+  - Parked sheep sequence locomotion behind commented code in `bmb_sheep`.
+  - Restored `leg0..3` bone cache/manipulation in normal `UpdateBMBVisualBones`.
+  - Leg pairs now use `sin(phase) * 7 * swingAmount`, with opposite legs counter-swinging.
+  - Kept the old hard branch and old `rate` removed: swing amount still lerps by `FrameTime`, phase still advances from current 2D speed.
+  - Updated `scripts/check_sequence_animation_adapter.ps1` to keep guarding the Base adapter while requiring sheep's temporary procedural leg state.
+- Next game retest:
+  1. Spawn sheep and confirm legs no longer freeze after the baked hookup rollback.
+  2. Confirm stopping eases the legs back instead of snapping.
+  3. Keep sheep `AnimationSequences` disabled until exporter pivot/rate work lands.
+
 ## 2026-06-14 Zombie Phase 2 range/head-overlap tuning
 
 - User retest confirmed deterministic melee launch is fixed.
@@ -1485,3 +1522,148 @@
   - Extended `scripts/check_zombie_phase1.ps1`.
   - Extended `scripts/check_hop_debug_gap_regressions.ps1`.
   - glualint on changed Lua files.
+
+## 2026-06-15 Procedural limb swing → continuous (Base) + sheep eat-grass head pitch
+
+- User requirement (first model hooked up: `sheep.mdl` + walk anim):
+  - Differentiate walk vs run leg animation; drop the binary two-value swing and make amplitude scale continuously with speed.
+  - The continuous swing math is generic, so promote it to Base for future cow/pig.
+  - Sheep eats grass with its head up instead of bending down; add a head pitch (nod) that lowers to the ground during the eat duration and returns.
+- Implemented:
+  - BaseMob `UpdateBMBLimbSwing(speed2D)`: maps horizontal speed to a continuous phase (frequency proportional to speed) and a continuous amplitude `[0,1]` (replaces `speed > 8 and 1 or 0`); persists `BMBLimbSwingPhase/Amount`.
+  - Params `LimbSwingMinSpeed/FullSpeed/MinAmount/PhaseScale/BlendSpeed`, per-mob overridable; `FullSpeed` defaults to `RunSpeed`, `MinAmount` defaults to 0 (pure ratio).
+  - `bmb_sheep` consumes the helper for head/leg overlay and drops its own `BMBSheepLimbSwing*`; keeps `legSwingMax=7` / `headWalkSwingMax=2` and the roll swing axis.
+  - `bmb_sheep` `eat_grass` keyframes moved from roll (`Angle(0,0,X)`, actually a head tilt/up) to pitch (`Angle(X,0,0)`) bending down, lowest at 0.42s (bite), returning by 1.05s; head pos sink kept.
+  - `scripts/check_sequence_animation_adapter.ps1`: limb-swing guard migrated to Base and hardened with a no-binary `and 1 or 0` assertion; sheep guard now requires consuming the Base helper.
+- Verified: glualint (repo + live addon), all 11 `scripts/check_*.ps1` pass, synced to live addon.
+- Next game retest:
+  1. Leg/head swing amplitude should scale continuously with speed (small slow walk -> near-full run), with walk/run frequency differing; no binary snap at a speed threshold.
+  2. Sheep should bend its head down to reach the grass (lowest ~0.42s, return ~1.05s), not tilt/raise.
+  3. Confirm/adjust the eat-grass head pitch sign+degrees with `bmb_sheep_pose_preview` + `bmb_sheep_pose_head_rot_x` (flip pitch sign if it raises the head).
+
+## 2026-06-15 Limb swing +2 retune + eat-grass roll-axis three-stage animation (game-tested)
+
+- User game-test feedback:
+  - Walk and run leg swing both look too small now; add ~2 degrees to both.
+  - Eat-grass does bend down but not far enough, and the head turns to the player's right -- wrong axis/sign.
+  - From the in-game preview the correct reaching pose is `Head rot Z = -55` (roll axis, negative) + `Head pos Y = -12`.
+  - Eat-grass should be an ordered sequence: pos Y down to -12 first, then a rot animation looping -55 <-> -40 twice, then rot and pos return to 0 together.
+- Implemented:
+  - Correction: the head bone's nod/pitch is actually the roll axis negative (last round's pitch change is reverted). Reaching pose = `roll -55` + `posY -12`.
+  - `bmb_sheep` `legSwingMax` 7 -> 9 and `LimbSwingMinAmount = 0.25`, so walk amount ~0.76 (~6.8 deg) and run 9 deg (both about +2).
+  - `eat_grass` rebuilt as a 1.8s three-stage clip: pos Y 0->-12 (0-0.25s, rot still), roll 0->-55 reaching ground (0.25-0.45s), roll chew loop -55<->-40 twice (0.45-1.45s), roll+pos ease back to 0 together (1.45-1.8s).
+  - `EatGrassAnimationDuration` 1.05 -> 1.8, `EatGrassBiteDelay` 0.42 -> 0.45 (aligned with reaching the lowest point / biting).
+  - `scripts/check_sequence_animation_adapter.ps1` `legSwingMax` locked value 7 -> 9.
+- Verified: glualint (repo + live addon), all 11 `scripts/check_*.ps1` pass, synced to live addon.
+- Next game retest:
+  1. Walk/run leg swing both ~2 deg larger, still continuous with speed.
+  2. Eat-grass: head pushes forward/down (posY -12), then bends to roll -55 reaching the grass, chews -55<->-40 twice, then eases back; no tilt/right-turn.
+  3. Tune chew speed/depth via `sheepAnimations.eat_grass.frames` if needed.
+
+## 2026-06-15 Sheep leg amplitude/frequency retune + locomotion head swing off
+
+- User feedback:
+  - Set `legSwingMax` to 25.0.
+  - Lower leg frequency for both walking and running.
+  - Disable locomotion-driven head swing because vanilla sheep head does not bob with the body, but do not lock the head bone; a later feature will own it.
+- Implemented:
+  - `bmb_sheep` `legSwingMax` 9 -> 25.0.
+  - Added sheep override `LimbSwingPhaseScale = 0.13` (Base default is 0.18), so both walk and run phase advance more slowly while remaining speed-proportional.
+  - Removed `walkHead` / `idleHead` locomotion bob from normal `UpdateBMBVisualBones`.
+  - Added one-shot head pose clearing after preview/eat-grass so stale pose is reset without writing head angle every frame.
+  - Updated `scripts/check_sequence_animation_adapter.ps1` to guard 25.0 / 0.13 and forbid locomotion head swing helpers.
+- Next game retest:
+  1. Walk/run legs should swing wider but with a slower cadence than the previous 9-degree version.
+  2. Normal movement should not bob the head.
+  3. Eat-grass and preview should still move the head, and future look/head control should not be blocked by locomotion.
+
+## 2026-06-15 Sheep leg frequency lower again + fix unsynced head swing
+
+- User feedback (after the previous round):
+  - Lower leg frequency a bit more (both walk and run still felt fast).
+  - Head swing is still happening in game even though it was supposedly turned off -- "don't know why".
+- Root cause of the still-swinging head: the live addon (D drive) was not fully synced. The C-drive sheep and the check script already had the head swing removed (`clearSheepHeadPoseOnce`, no `walkHead/idleHead`), but D-drive `bmb_sheep.lua` still had the old `walkHead`/`idleHead` head bob, so the running game read stale code.
+- Implemented:
+  - `bmb_sheep` `LimbSwingPhaseScale` 0.13 -> 0.09 (Base default 0.18); ~45% slower cadence for both walk and run, still speed-proportional.
+  - `scripts/check_sequence_animation_adapter.ps1` phase-scale guard 0.13 -> 0.09.
+  - robocopy full sync of `gmod_addon` to the live addon; verified D-drive `bmb_sheep.lua` now has `clearSheepHeadPoseOnce`, `LimbSwingPhaseScale=0.09`, and no `walkHead/idleHead`.
+- Lesson: every code change must sync the whole `gmod_addon` to D drive, or the in-game test runs stale code (this is what made the head "swing despite being turned off").
+- Verified: glualint (repo + live addon), all 11 `scripts/check_*.ps1` pass.
+- Next game retest:
+  1. Leg cadence clearly slower than the 0.13 version.
+  2. Head no longer bobs during normal movement (now that D drive is synced); eat-grass/preview head still works.
+
+## 2026-06-16 Death sequence redo: scripted bone tip-over + 1.9s linger + Java poof particles
+
+- User request, three parts together:
+  - Tip-over: stop using physics-corpse forces (unstable, random direction). Script the lean in the client `UpdateBMBVisualBones` death branch: lerp the root bone 0->90 about a side-fall axis over ~0.8s, then hold; fixed direction; freeze head/legs.
+  - Linger: ~1s on the side after falling, server remove delay ~1.8-2s.
+  - Particles: replace the Bedrock smoke with a Java poof -- ~20 white puffs at WorldSpaceCenter at the moment of removal, slight up + outward, ~0.6s fade, using the jar's generic_0..7 (8 frames) as an animated material.
+- Implemented:
+  - SMD hierarchy confirmed: root -> body -> leg0..3, head -> root. Rotating root carries the whole sheep; rotating body would leave the head behind. `CacheBMBSheepBones` now caches root/body too.
+  - `bmb_sheep` `UsePhysicsCorpseOnDeath=false`; death branch lerps root 0->90 over `DeathTipDuration=0.8` using `CurTime()-BMBStateStartedAt`, head/legs zeroed to ride along. Side-fall axis is roll for now (Angle(0,0,tip)); flip to pitch/yaw or negate if it nose-dives/spins.
+  - `DeathRemoveDelay=1.9`; no physics corpse so the NextBot stays drawn and the client renders the tip-over, then Remove at 1.9s.
+  - `mc2source/vtf.py` gained `write_animated_bgra8888_vtf` (single mip, numFrames=N, NOMIP/NOLOD). `qs/make_poof_vtf.py` turns generic_0..7 (8x8, LA) into `materials/bmb/particles/mc_poof.vtf` (2160 bytes) + `mc_poof.vmt` (UnlitGeneric multi-frame).
+  - `bmb_death_poof` effect rewritten: count from magnitude (sheep 18-22 ~ MC 20), scatter in bbox, outward+up drift, per-particle `SetInt("$frame", floor(t*8))` over 8 frames, ~0.6s tail fade.
+- Verified: glualint (repo + live), all 11 BMB checks pass, qs `Ran 61 tests OK`, synced to live addon (mc_poof.vtf/vmt present).
+- Next game retest:
+  1. Whole sheep tips to its side (not nose-dive/spin/headless), holds ~1.1s, then vanishes ~1.9s with a ~20-puff white poof.
+  2. Confirm the poof animates through 8 frames (per-particle $frame), not a frozen single frame.
+  3. Confirm the side-fall axis; flip if wrong.
+
+## 2026-06-16 Death retest fixes: side-fall axis, faster lean, MC-matched poof
+
+- User retest:
+  - Tip-over was a BACKWARD lean -- wrong; should lie on its SIDE, randomly left or right. Lean a bit faster.
+  - Linger: fine.
+  - Poof not great vs MC; user exported per-frame PNGs (ours + MC) to `H:\工作视频\20251115毕业\project\PNG导出` for comparison.
+- Frame comparison (MC vs ours):
+  - MC poof = dense soft cloud of overlapping puffs clustered at the body, nearly stationary, puffs at different frames -> fluffy cloud.
+  - Ours = sparse isolated crisp crosses spread too wide (velocity too high), too few overlapping, lifetimes too uniform (same frame -> identical crosses).
+- Implemented:
+  - Side-fall axis: roll (3rd) is the backward lean; lying on side is YAW (2nd). `Angle(0, ±tip, 0)`, left/right fixed per entity via `EntIndex`.
+  - `DeathTipDuration` 0.8 -> 0.55 (faster lean).
+  - Poof toward MC: scatter radius ~width/2 (`DeathPoofRadiusScale` 22 -> 15, effect floor BS*0.5 -> 0.4), nearly stationary velocity (0.45 BS -> 0.12, up 0.6 -> 0.14), bigger overlapping puffs (baseSize 0.22-0.4 -> 0.3-0.52 BS), lifetimes 0.5-0.7 -> 0.4-0.8 so per-particle frames desync into a soft cloud; growth 1+t*0.25 -> 1+t*0.1.
+- Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
+- Next game retest:
+  1. Sheep lies on its side (left/right random), not backward/spin; if it spins, swap yaw->pitch.
+  2. Poof reads as a clustered soft cloud like MC, not sparse crosses; confirm 8-frame playback.
+
+## 2026-06-16 Death poof rewritten to MC ExplodeParticle behavior + linger 1.7s
+
+- User: linger -0.2s; poof still off -- wrote MC behavior doc `D:\BMBTools\mc26_1_poof_particle_behavior.md`, match it.
+- Corrections vs my earlier poof (per the doc):
+  - Size: `0.1*(rand*rand*6+1)` block (mostly tiny smoke dots, few big puffs) -- I had uniform large.
+  - Lifetime: `16/(rand*0.8+0.2)+2` tick = 0.9-4.1s, very uneven (frames desync naturally) -- I had 0.4-0.8s uniform.
+  - Color: grey-white 0.7-1.0, not pure white.
+  - No alpha fade (OPAQUE); dissipation = frame change + removal at lifetime.
+  - Frames play generic_7 -> generic_0 (poof.json order), not 0->7.
+  - Per-tick physics: friction 0.9, gravity -0.1 (slight upward), spawn = bbox-random - vel*10.
+- Implemented:
+  - `DeathRemoveDelay` 1.9 -> 1.7 (lean 0.55 + ~1.15 on side).
+  - Rewrote `bmb_death_poof` to simulate MC ExplodeParticle per-tick (20Hz, 0.05s accumulator in Think): velocity gaussian*0.02 + +-0.05 jitter, spawn bbox-random - vel*10, size 0.1*(rand*rand*6+1), lifetime 18-82 tick, grey-white 0.7-1.0, friction 0.9 + up-drift 0.004/tick, frame = (7 - age*7/lifetime) so generic_7->0 on our generic_0..7 VTF, opaque (no alpha fade).
+- Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
+- Next game retest:
+  1. Poof like MC: mostly-small grey-white smoke dots + a few bigger, slight up-drift, thinning via frames; some particles linger longer.
+  2. Confirm 8-frame playback (generic_7->0); if frozen single frame, switch to sprite-sheet UV.
+  3. Linger ~1.7s.
+
+## 2026-06-16 Poof frame interpolation (de-stutter) + linger 1.5s
+
+- User: poof looks good but a bit choppy -- is the Hz too low, can it be raised? And trim linger another 0.2s.
+- Diagnosis: particle physics is 20Hz (MC tick) and Render used discrete tick positions with no interpolation, so at 60fps particles jump every 3rd frame. MC itself runs 20Hz ticks but interpolates on render (partialTick).
+- Implemented:
+  - Render extrapolates each particle by `pos + vel * (Accumulator / PARTICLE_TICK)`, smoothing motion between ticks without changing the 20Hz physics (friction/gravity per-tick values stay MC-accurate).
+  - `DeathRemoveDelay` 1.7 -> 1.5.
+- Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
+- Next retest: poof motion smooth (no per-tick jumping); linger ~1.5s.
+
+## 2026-06-16 Death corpse stops moving (no follow-run/jump) + poof defaults lifted to Base
+
+- User: corpse follows the flee run on death; dying mid-jump makes the corpse follow the jump arc. Also "the poof is used by basically every mob -- should it go in Base?"
+- Root cause (follow run/jump): `StopBMBMovementOnDeath` zeros loco velocity once, but after death the server Think returns early and never re-clamps, so loco keeps integrating its leftover horizontal (flee) / ballistic (BlockHop) velocity -- same class as the physgun-held jitter that needed per-tick disarm.
+- Implemented:
+  - base Think BMBDead branch disarms loco every tick: `SetGravity(0)` + `SetVelocity(vector_origin)` + `SetDesiredSpeed(0)`. Corpse stops dead at the death position. (Mid-air/mid-jump deaths hover, since SOLID_NONE makes gravity-landing clip through the floor -- accepted minor limitation.)
+  - Poof was already a Base capability (`DeathPoofEffect` + `EmitBMBDeathPoofAt` in Base, effect is global). Lifted Base defaults to Java poof values: `DeathPoofParticleCountMin/Max` 5/8 -> 18/22, `DeathPoofRadiusScale` 44 -> 15. Sheep dropped its duplicate overrides (and the redundant `UsePhysicsCorpseOnDeath=false`, already Base default). Cow/pig/etc. now get MC poof out of the box.
+- Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
+- Next retest: corpse no longer follows flee run or jump arc; new mobs inherit the poof.

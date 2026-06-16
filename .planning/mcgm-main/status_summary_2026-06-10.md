@@ -838,3 +838,93 @@
 - First model setup:
   - Add something like `AnimationSequences = { idle="idle", walk="walk", run="walk", attack="attack", hurt="hurt", death="death" }` to the entity.
   - Match aliases exactly to the converter's printed export list.
+
+## 2026-06-15 Latest Status After Zombie Hurt-Jump Hotfix
+
+- User report:
+  - Zombie can unexpectedly jump after being hit while chasing the player on MC blocks.
+- Diagnosis:
+  - Base hurt knockback used `loco:Jump()` for grounded vertical lift.
+  - Chasing Zombie resumes chase immediately, so that temporary jump state can bleed into chase/hop behavior on MC block tops.
+- Implemented:
+  - Added BaseMob `KnockbackUseJump` switch. Default stays true for existing friendly mob hurt-lift behavior.
+  - Zombie sets `KnockbackUseJump=false`.
+  - Zombie normal hurt knockback vertical lift is 0, making incoming damage knockback horizontal-only.
+  - Zombie melee player launch is unchanged and still uses `AttackVerticalKnockback` / `AttackGroundedVerticalKnockback`.
+- Next game retest:
+  1. Hit a chasing Zombie repeatedly on flat MC blocks; it should not jump from damage.
+  2. Confirm path_hop still works for actual one-block climbs.
+  3. Confirm Zombie melee still pushes/lifts the player with the existing 2-3 block tuning.
+
+## 2026-06-15 Latest Status After Sheep Sequence Locomotion Hookup Rollback
+
+- User requirement:
+  - Roll back the sheep baked sequence hookup for now.
+  - Keep the new persistent swing smoothing, but drive legs procedurally again.
+  - Leave BaseMob's `AnimationSequences` adapter intact for future model hookup.
+- Implemented:
+  - `bmb_sheep` has `AnimationSequences` / `AnimationReferenceSpeeds` commented out with a note to wait for converter pivot and low-speed playback/cycle fixes.
+  - Normal `UpdateBMBVisualBones` caches `leg0..3` again and applies `sin(phase) * 7 * BMBSheepLimbSwingAmount`; opposite leg pairs counter-swing.
+  - The old hard `if speed > 8 then` branch and `local rate` time-driven swing remain removed.
+  - Head overlay remains for idle/move bob and eating grass.
+  - `scripts/check_sequence_animation_adapter.ps1` now guards the parked sheep state while still checking the Base sequence adapter.
+- Next game retest:
+  1. Confirm sheep legs move again with no baked-hookup freeze/desync.
+  2. Confirm stopping lerps the swing amount down smoothly.
+  3. Re-enable sheep sequences only after the converter pivot/rate issues are fixed.
+
+## 2026-06-15 Latest Status After Procedural Limb Swing Continuous + Sheep Eat-Grass Pitch
+
+- Procedural limb swing amplitude is now continuous with speed and lives in BaseMob (`UpdateBMBLimbSwing`), so cow/pig can reuse it; sheep consumes it and keeps its own swing axis/cap. The binary `speed > 8 and 1 or 0` amplitude switch is gone; frequency still scales with speed (walk slow / run fast).
+- Sheep `eat_grass` head animation now bends down on the pitch axis (was roll = tilt/up), lowest at ~0.42s (bite) and back by ~1.05s. Pitch sign/degrees depend on the exported head bone orientation and need in-game confirmation via `bmb_sheep_pose_preview`.
+- `check_sequence_animation_adapter.ps1` guard migrated to Base and hardened (no binary `and 1 or 0`). glualint + all 11 check scripts pass; synced to live addon. Authoritative state stays in `docs/STATE.md`.
+
+## 2026-06-15 Latest Status After Limb Swing +2 Retune + Eat-Grass Roll-Axis Animation
+
+- Limb swing amplitude retuned after game test: sheep `legSwingMax` 7 -> 9 with `LimbSwingMinAmount = 0.25`, so walk ~6.8 deg and run 9 deg (both ~+2), still continuous with speed and lifted to Base.
+- Eat-grass axis corrected: the head nod/pitch is the roll axis negative (last round's pitch attempt reverted). Reaching pose from preview is `roll -55` + `posY -12`. `eat_grass` is now a 1.8s ordered three-stage clip: pos Y down first, then roll to -55 reaching ground, then roll chew loop -55<->-40 twice, then rot+pos ease back to 0 together. `EatGrassBiteDelay` 0.42 -> 0.45.
+- `check_sequence_animation_adapter.ps1` `legSwingMax` lock 7 -> 9. glualint + all 11 checks pass; synced to live addon. Authoritative state stays in `docs/STATE.md`.
+
+## 2026-06-15 Latest Status After Sheep 25-Degree Leg Retune
+
+- Sheep procedural leg swing is now `legSwingMax=25.0`.
+- Sheep overrides `LimbSwingPhaseScale=0.13` so walk/run cadence is lower than the Base default 0.18, while still scaling continuously with speed.
+- Locomotion head bob is disabled: normal movement no longer computes `walkHead` / `idleHead`. The head pose is only cleared once after preview/eat-grass, so the head bone is not locked every frame and remains available for future look control.
+- `check_sequence_animation_adapter.ps1` guards the 25.0 amplitude, 0.13 phase scale, and no-locomotion-head-swing rule.
+
+## 2026-06-15 Latest Status After Lower Leg Frequency + Head-Swing Sync Fix
+
+- Sheep `LimbSwingPhaseScale` lowered again 0.13 -> 0.09 (Base default 0.18); leg cadence ~45% slower for walk and run, still continuous with speed. `legSwingMax` stays 25.0.
+- The "head still swings even though it was turned off" report was a sync gap: C-drive sheep + check already removed the head bob (`clearSheepHeadPoseOnce`, no `walkHead/idleHead`), but the live addon (D drive) still had the old code. Fixed by a full robocopy sync; D-drive `bmb_sheep.lua` verified to carry the new code.
+- `check_sequence_animation_adapter.ps1` phase-scale guard updated to 0.09. glualint + all 11 checks pass; synced to live addon. Authoritative state stays in `docs/STATE.md`.
+
+## 2026-06-16 Latest Status After Death Sequence Redo
+
+- Sheep death is now a scripted client-side bone tip-over instead of a physics corpse: `UsePhysicsCorpseOnDeath=false`, the death branch lerps the **root** bone 0->90 over `DeathTipDuration=0.8s` by `CurTime()-BMBStateStartedAt`, head/legs ride along (root is their ancestor: root->body->legs, head->root). Side-fall axis is roll for now; verify in game.
+- Linger: `DeathRemoveDelay=1.9` (0.8 fall + ~1.1 on side), NextBot stays drawn (no physics corpse), removed at 1.9s.
+- Death particles are now a Java-style poof: `mc2source/vtf.py` `write_animated_bgra8888_vtf` packs MC `generic_0..7` into an animated `mc_poof.vtf` (+ `mc_poof.vmt`); `bmb_death_poof` emits ~20 white puffs at WorldSpaceCenter, per-particle 8-frame `$frame` playback, outward+up, ~0.6s fade, at removal. Old single-frame `mc_white_smoke` retired for death.
+- glualint (repo + live), all 11 BMB checks, qs 61 tests pass; synced to live addon. Authoritative state stays in `docs/STATE.md`.
+
+## 2026-06-16 Latest Status After Death Retest (side-fall axis + MC-matched poof)
+
+- Tip-over fixed: roll was a backward lean; lying on the side is yaw (`Angle(0, ±tip, 0)`), left/right randomized per `EntIndex`. `DeathTipDuration` 0.8 -> 0.55 (faster).
+- Poof retuned against MC reference frames: clustered (radius ~width/2), nearly stationary, bigger overlapping puffs, lifetimes desynced (0.4-0.8s) so frames mix into a soft cloud instead of sparse isolated crosses.
+- glualint (repo + live) + all 11 BMB checks pass; synced to live addon. Authoritative state in `docs/STATE.md`.
+
+## 2026-06-16 Latest Status After Poof Rewrite to MC ExplodeParticle
+
+- Death poof rewritten to match MC `ExplodeParticle` exactly (per `D:\BMBTools\mc26_1_poof_particle_behavior.md`): per-tick(20Hz) friction 0.9 + gravity -0.1 (slight up-drift), spawn bbox-random - vel*10, velocity gaussian*0.02 + +-0.05 jitter, size 0.1*(rand*rand*6+1) block (mostly tiny, few big), lifetime 18-82 tick (uneven), grey-white 0.7-1.0, frames generic_7->0, opaque / no alpha fade.
+- Linger trimmed: `DeathRemoveDelay` 1.9 -> 1.7 (lean 0.55 + ~1.15 on side). Side-fall (yaw, random L/R) already good.
+- glualint (repo + live) + all 11 BMB checks pass; synced to live addon. Authoritative state in `docs/STATE.md`.
+
+## 2026-06-16 Latest Status After Poof Frame Interpolation + Linger 1.5s
+
+- Poof particle physics stays 20Hz (MC tick), but Render now extrapolates by the tick remainder (`pos + vel * Accumulator/TICK`), removing the low-Hz visual stutter without altering MC-accurate friction/gravity.
+- Linger trimmed again: `DeathRemoveDelay` 1.7 -> 1.5 (lean 0.55 + ~0.95 on side).
+- glualint (repo + live) + all 11 BMB checks pass; synced to live addon.
+
+## 2026-06-16 Latest Status After Death Disarm + Poof Defaults in Base
+
+- Death corpse no longer follows movement: base Think's BMBDead branch disarms loco every tick (`SetGravity(0)` + `SetVelocity(0)` + `SetDesiredSpeed(0)`), fixing flee-run-follow and mid-jump-follow (`StopBMBMovementOnDeath`'s one-shot clear wasn't enough; loco keeps integrating leftover velocity). Mid-air deaths hover (SOLID_NONE can't gravity-land without clipping) -- accepted.
+- Poof is now a Base default for all mobs: `DeathPoofEffect`/`EmitBMBDeathPoofAt` were already in Base and the effect is global; Base defaults updated to Java poof (count 18-22, radius 15). Sheep dropped its duplicate overrides.
+- glualint (repo + live) + all 11 BMB checks pass; synced to live addon. Authoritative state in `docs/STATE.md`.

@@ -1,80 +1,129 @@
--- Bedrock resource_pack/particles/white_smoke.json style, rendered with the
--- matching 8x8 frame cropped from textures/particle/particles.png.
+-- Minecraft Java 死亡 poof 粒子（ParticleTypes.POOF → ExplodeParticle）复刻。
+-- 行为对照 D:\BMBTools\mc26_1_poof_particle_behavior.md：死亡那刻一次性 20 个粒子，
+-- 逐 tick(20Hz) 模拟 MC 物理：friction 0.9、gravity -0.1(轻微上飘)、按年龄从 generic_7
+-- 切到 generic_0、灰白 0.7~1.0、尺寸 0.1*(rand*rand*6+1) 多小少大、寿命 18~82 tick，
+-- OPAQUE 无 alpha 渐隐（消散来自帧变化 + 到寿命移除）。
+local POOF_MATERIAL = Material("bmb/particles/mc_poof")
+local FRAME_COUNT = 8
 local MC_BLOCK_UNITS = 36.5
-local SMOKE_MATERIAL = Material("bmb/particles/mc_white_smoke")
-local SMOKE_COLOR = Color(255, 255, 255)
-local START_ALPHA = 230
+local PARTICLE_TICK = 0.05   -- MC 粒子 20Hz
 
-local function randomDiscOffset(radius, scale)
-    local theta = math.Rand(0, math.pi * 2)
-    local distance = math.sqrt(math.Rand(0, 1)) * radius
-
-    return Vector(math.cos(theta) * distance, math.sin(theta) * distance, math.Rand(-10, 12) * scale)
+local function gaussian()
+    -- 近似标准正态（3 个均匀分布求和，std≈1），对齐 MC random.nextGaussian()
+    return math.Rand(-1, 1) + math.Rand(-1, 1) + math.Rand(-1, 1)
 end
 
 function EFFECT:Init(data)
     local origin = data:GetOrigin()
     local scale = math.max(data:GetScale(), 0.1)
-    local radius = math.max(data:GetRadius(), MC_BLOCK_UNITS * 0.6 * scale)
-    local count = data:GetMagnitude() > 0 and math.floor(data:GetMagnitude() + 0.5) or math.random(5, 8)
-    local now = CurTime()
+    -- 用 radius(u) 估实体水平半宽(block)，垂直按比例略高（对齐 getRandomX/Y/Z 的包围盒散布）
+    local halfWidthBlock = math.max(data:GetRadius(), MC_BLOCK_UNITS * 0.4 * scale) / MC_BLOCK_UNITS
+    local halfHeightBlock = halfWidthBlock * 1.3
+    local count = data:GetMagnitude() > 0 and math.floor(data:GetMagnitude() + 0.5) or 20
 
-    count = math.Clamp(count, 5, 8)
-    self.Puffs = {}
-    self.DieTime = now + 1.3
+    self.Origin = origin
+    self.Particles = {}
+    self.Accumulator = 0
+    self.LastTime = CurTime()
+    local maxLifetime = 1
 
     for _ = 1, count do
-        local velocity = Vector(math.Rand(-0.85, 0.85), math.Rand(-0.85, 0.85), math.Rand(0.55, 1.0))
-        velocity:Normalize()
-        velocity:Mul(math.Rand(MC_BLOCK_UNITS * 0.45, MC_BLOCK_UNITS * 0.9) * math.Clamp(scale, 0.75, 1.35))
+        -- 速度 block/tick：gaussian*0.02（makePoof）+ 扰动 ±0.05（ExplodeParticle 构造）
+        local vel = Vector(
+            gaussian() * 0.02 + math.Rand(-1, 1) * 0.05,
+            gaussian() * 0.02 + math.Rand(-1, 1) * 0.05,
+            gaussian() * 0.02 + math.Rand(-1, 1) * 0.05
+        )
+        -- 出生点 block（相对 center）：包围盒内随机 - vel*10（让团从中心向外蓬开）
+        local pos = Vector(
+            math.Rand(-1, 1) * halfWidthBlock - vel.x * 10,
+            math.Rand(-1, 1) * halfWidthBlock - vel.y * 10,
+            math.Rand(-1, 1) * halfHeightBlock - vel.z * 10
+        )
+        -- 尺寸 block：0.1*(rand*rand*6+1) → 0.1~0.7，多数小烟点、少数大团
+        local size = 0.1 * (math.Rand(0, 1) * math.Rand(0, 1) * 6 + 1)
+        -- 寿命 tick：16/(rand*0.8+0.2)+2 → 18~82 tick（约 0.9~4.1s，差异大）
+        local lifetime = math.floor(16 / (math.Rand(0, 1) * 0.8 + 0.2) + 2)
+        maxLifetime = math.max(maxLifetime, lifetime)
+        -- 颜色：灰白随机 0.7~1.0（三通道相同）
+        local col = math.floor((math.Rand(0, 1) * 0.3 + 0.7) * 255)
 
-        self.Puffs[#self.Puffs + 1] = {
-            origin = origin + randomDiscOffset(radius, scale),
-            velocity = velocity,
-            acceleration = Vector(0, 0, math.Rand(MC_BLOCK_UNITS * 0.12, MC_BLOCK_UNITS * 0.28) * scale),
-            startTime = now + math.Rand(0, 0.16),
-            lifetime = math.Rand(0.75, 1.12),
-            baseSize = math.Rand(25, 35),
-            alphaScale = math.Rand(0.86, 1.0),
-            rotation = math.Rand(0, 360)
+        self.Particles[#self.Particles + 1] = {
+            pos = pos,
+            vel = vel,
+            age = 0,
+            lifetime = lifetime,
+            size = size,
+            col = col,
+            rotation = math.Rand(0, 360),
+            dead = false
         }
     end
 
-    self:SetRenderBounds(Vector(-320, -320, -96), Vector(320, 320, 320))
+    self.DieTime = CurTime() + maxLifetime * PARTICLE_TICK + 0.1
+    local bound = (halfWidthBlock + 3) * MC_BLOCK_UNITS
+    self:SetRenderBounds(Vector(-bound, -bound, -bound), Vector(bound, bound, bound * 3))
 end
 
 function EFFECT:Think()
-    return CurTime() < (self.DieTime or 0)
+    if not self.Particles then return false end
+
+    local now = CurTime()
+    self.Accumulator = self.Accumulator + (now - self.LastTime)
+    self.LastTime = now
+
+    -- 逐 tick(20Hz) 推进 MC 粒子物理；限步数防卡顿后大跳
+    local steps = 0
+    while self.Accumulator >= PARTICLE_TICK and steps < 10 do
+        self.Accumulator = self.Accumulator - PARTICLE_TICK
+        steps = steps + 1
+
+        for _, p in ipairs(self.Particles) do
+            if not p.dead then
+                p.age = p.age + 1
+                if p.age >= p.lifetime then
+                    p.dead = true
+                else
+                    p.vel.z = p.vel.z + 0.004   -- gravity -0.1 → 每 tick 轻微上飘
+                    p.pos:Add(p.vel)             -- move
+                    p.vel:Mul(0.9)               -- friction
+                end
+            end
+        end
+    end
+
+    return now < (self.DieTime or 0)
 end
 
 function EFFECT:Render()
-    if not self.Puffs then return end
+    if not self.Particles then return end
 
-    render.SetMaterial(SMOKE_MATERIAL)
-
-    local now = CurTime()
+    render.SetMaterial(POOF_MATERIAL)
+    local origin = self.Origin
     local eye = EyePos()
+    -- 帧间外插：粒子物理走 20Hz（对齐 MC），渲染按 tick 余量平滑外插，避免低 Hz 视觉卡顿
+    local frac = math.Clamp(self.Accumulator / PARTICLE_TICK, 0, 1)
 
-    for _, puff in ipairs(self.Puffs) do
-        local age = now - puff.startTime
-        if age >= 0 and age <= puff.lifetime then
-            local t = age / puff.lifetime
-            local pos = puff.origin + puff.velocity * age + puff.acceleration * (age * age * 0.5)
-            local normal = eye - pos
+    for _, p in ipairs(self.Particles) do
+        if not p.dead then
+            -- 帧：MC sprites=[generic_7..generic_0]，idx=age*(n-1)/lifetime；
+            -- 我们的 VTF 是 generic_0..7，故 VTF 帧号 = (n-1) - idx，实现 generic_7→0。
+            local idx = math.Clamp(math.floor(p.age * (FRAME_COUNT - 1) / math.max(1, p.lifetime)), 0, FRAME_COUNT - 1)
+            local frame = (FRAME_COUNT - 1) - idx
 
+            local worldPos = origin + (p.pos + p.vel * frac) * MC_BLOCK_UNITS
+            local sizeU = p.size * MC_BLOCK_UNITS
+
+            local normal = eye - worldPos
             if normal:LengthSqr() > 1 then
                 normal:Normalize()
             else
                 normal = EyeVector() * -1
             end
 
-            local alpha = START_ALPHA
-            if t > 0.55 then
-                alpha = alpha * (1 - (t - 0.55) / 0.45)
-            end
-
-            alpha = math.Clamp(alpha * puff.alphaScale, 0, START_ALPHA)
-            render.DrawQuadEasy(pos, normal, puff.baseSize, puff.baseSize, Color(SMOKE_COLOR.r, SMOKE_COLOR.g, SMOKE_COLOR.b, alpha), puff.rotation)
+            -- OPAQUE：不做 alpha 渐隐，顶点 alpha 固定 255，形状靠贴图 alpha + 帧变化
+            POOF_MATERIAL:SetInt("$frame", frame)
+            render.DrawQuadEasy(worldPos, normal, sizeU, sizeU, Color(p.col, p.col, p.col, 255), p.rotation)
         end
     end
 end

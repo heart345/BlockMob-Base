@@ -1,5 +1,32 @@
 # Findings
 
+## 死亡序列重做：骨骼倾倒 + 多帧 VTF poof（2026-06-16）
+
+- **整只翻必须转 root，不能转 body**：SMD 骨骼层级是 `root → body → leg0-3` 且 `head → root`。转 body 只带动 body+腿，head 留原地（用户担心的"只身子倒"）；转 root 才整只翻。这类"哪根骨骼是共同祖先"先读 `reference.smd` 的 nodes 块，不要猜。
+- **脚本化倾倒 > 物理尸体**：旧 `prop_physics` + 施力倒地方向随机、不稳。改成客户端按 `CurTime()-BMBStateStartedAt` lerp root 角度，方向固定、可控、可复现；死亡时刻用 `SetBMBState("dead")` 已网络同步的 `BMBStateStartedAt`，客户端直接读。
+- **多帧动画 VTF 的最简布局**：`vtf.py` 加 `write_animated_bgra8888_vtf`——单 mip（`mipCount=1`）+ `numFrames=N` + NOMIP/NOLOD，data = lowres DXT1 + 各帧全尺寸顺序拼接，避免多 mip × 多帧的嵌套布局。8×8×4×8 帧 + header + lowres = 2160 bytes。粒子帧动画用逐粒子 `IMaterial:SetInt("$frame", n)` + `DrawQuadEasy`（待游戏确认不被批处理定格）。
+- **MC poof 精确参数**（对照 `D:\BMBTools\mc26_1_poof_particle_behavior.md` / `ExplodeParticle`；凭记忆的“0.6s / 纯白 / 均匀大小 / 有渐隐”都是错的）：20 个；速度 `gaussian*0.02 + 扰动±0.05` block/tick；出生 bbox 内随机 `- vel*10`；尺寸 `0.1*(rand*rand*6+1)` block（多小少大）；寿命 `16/(rand*0.8+0.2)+2` tick（0.9~4.1s）；灰白 0.7~1.0；friction 0.9/tick + gravity -0.1（上飘 0.004/tick）；帧 generic_7→0；OPAQUE 无 alpha 渐隐（靠帧 + 到寿命移除消散）。素材 `LA` 8×8。**教训**：这类有源码/文档的行为，照文档逐参数复刻，别凭印象。
+- **侧倒轴实测结果**：root 的 roll(第三分量)=后仰、**yaw(第二分量)=侧躺**（游戏实测确认，左右用 `EntIndex` 随机）。又一次印证骨骼局部轴语义只能靠游戏实测，不能从别的骨骼/绑定姿态推。
+
+## 协作教训：改完必须同步 D 盘，否则游戏测的是旧代码（2026-06-15）
+
+- 现象：sheep 头部 locomotion swing 在代码层（C 盘 `bmb_sheep.lua` + check 脚本）早已关闭，但用户游戏里头还在晃，“不知道为什么”。
+- 根因：live addon（`D:\...\addons\gmod_addon`）没全量同步——D 盘 `bmb_sheep.lua` 还是旧代码（`walkHead`/`idleHead` 头摆还在），而游戏读的是 D 盘。**C 盘改对了不等于游戏生效**。本轮还发现 D 盘是“半同步”状态（`legSwingMax=25` 同步了，但关 head swing / 调频率那轮没同步）。
+- 教训：每轮改完**必须** robocopy 整个 `gmod_addon` 到 D 盘，并对关键文件抽查 D 盘内容（grep 确认旧代码已消失），不能只 lint C 盘就以为完事。多 agent 协作时尤其容易只改 C 盘 / 只更新日志而漏同步 D 盘。
+
+## 模型动画接入：腿摆 25° / 低频率 / 头部不随动（2026-06-15）
+
+- **腿幅和腿频要分开调**：`legSwingMax` 只决定最大角度，`LimbSwingPhaseScale` 决定相位推进速度。当前 sheep 用 `legSwingMax=25.0` 放大腿摆，同时把 `LimbSwingPhaseScale` 从 Base 默认 0.18 降到 0.13，让走路和跑步频率都慢下来，不需要改 Base helper。
+- **原版羊头不随身体 bob**：locomotion 层不再算 `walkHead/idleHead`，普通移动不写 head swing。为了不把后续看向系统挡住，normal 分支只在退出吃草/preview 后清一次旧 head angle/pos，不每帧 `setBoneAngle(head, zero)` 锁死头骨。
+- **护栏跟随手感参数**：`check_sequence_animation_adapter.ps1` 现在同时锁定 `legSwingMax=25.0`、`LimbSwingPhaseScale=0.13`，并禁止 `UpdateBMBVisualBones` 重新出现 `walkHead/idleHead/headWalkSwing`。
+
+## 模型动画接入：腿摆连续缩放进 base + 吃草低头轴向（2026-06-15）
+
+- **腿摆“频率连续但幅度二元”的割裂**：sheep 程序化腿摆 `targetSwingAmount = speed > 8 and 1 or 0` 把摆幅做成开关——走和跑都满 7°，只有相位推进（频率 = `speed * frameTime * scale`）随速度变。观感上走路腿摆又大又慢、和跑步只有快慢之别。改法是把摆幅也连续化：摆幅强度 = `Clamp((speed-minSpeed)/(fullSpeed-minSpeed), 0, 1)`（再 Lerp 到 `MinAmount` 下限），走=小幅低频、跑=大幅高频、全程连续。
+- **这套数学是通用的，上提到 base**：`UpdateBMBLimbSwing(speed2D)` 只产出连续的 phase 和 amount 并维护持久状态（`BMBLimbSwingPhase/Amount`），不碰具体骨骼；各 mob（牛/猪/羊）在自己的 `UpdateBMBVisualBones` 里决定摆几条腿、什么轴、最大角度。符合“驱动可复用、怪物差异在参数里”，且不干扰 sequence 动画路（sequence 路频率本就由 `SetPlaybackRate(speed/refSpeed)` 连续缩放，幅度由模型动画决定）。
+- **吃草“抬头不低头”根因是符号反、不是轴错**：上轮推断“roll 不是俯仰、低头应是 pitch”是**错的**——游戏内 preview 实测证明 sheep head 骨骼的**俯仰/低头就是 roll 轴（`Angle(0,0,X)`）**，只是符号反了：正 roll（原 +66）=抬头，负 roll=低头，够地姿势 `roll=-55` + `posY=-12`。改 pitch 那版已回退。教训：MC→Source 转换 + bind_pose 旋转后，骨骼局部轴语义不能从“走路摇头用 roll”反推“低头一定不是 roll”；有 `bmb_sheep_pose_preview` + `bmb_sheep_pose_print_keyframe` 这套游戏内调姿工具时，直接实测取值，不要凭轴名推理。吃草最终做成有先后顺序的三段动画（pos 下探 → roll 低头够地 → roll -55↔-40 咀嚼两回 → rot+pos 一起收回）。
+- **改实现就同步迁护栏，不削弱**：`check_sequence_animation_adapter.ps1` 原本断言 sheep 内含 `BMBSheepLimbSwingAmount` 等（编码了“摆幅逻辑在 sheep”的旧假设）；本轮把逻辑搬到 base，护栏相应迁到 base 并**加强**——新增“`UpdateBMBLimbSwing` 内禁止 `and 1 or 0`”防止退回二元。不是删护栏盲过测试。
+
 ## 一格宽走廊"出得来、进不去"（第十一轮，2026-06-11）
 
 - **不对称现象本身就是诊断线索**：从走廊里能出来，说明 A* 和基本通行判定大概率没坏；从外面进不去，问题更像路径跟随层在入口处把一条已规划路径误判为不可走。
@@ -575,3 +602,16 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **每只怪自己声明逻辑动作映射**：`AnimationSequences` 是 per-mob opt-in 表，把 `idle/walk/run/jump/attack/hurt/death/eat_grass` 这类逻辑动作映射到模型 sequence 别名。比如 MC 模型只有一个移动循环时，`walk="walk", run="walk"` 即可。
 - **缺序列必须温和降级**：`LookupSequence(alias) == -1` 时不能硬播无效序列；先回退 idle，idle 也没有才交回旧 Activity 层。这样模型和代码可以分步接入，不会因为少一个 attack/death sequence 把实体动画打坏。
 - **移动循环用当前速度缩放 playback rate**：walk/run 的 `SetPlaybackRate` 默认按水平速度除以参考速度（默认 `WalkSpeed`）计算，让同一个 walk loop 跟随 chase/flee/path_corner 的实际速度变化，减少腿部打滑。
+
+## 2026-06-15: Hurt lift and chase hop must be decoupled
+
+- **`loco:Jump()` 是状态开关，不只是视觉上抬**：Base hurt knockback 为了让羊有 MC 式受击上抬，会在 grounded hit 时调用 `loco:Jump()`。这会把 NextBot locomotion 切到 jumping/climbing 语义，后续一两 tick 里 `UpdateBMBActivityFromLocomotion`、chase 和 path_hop 都会看到“刚进入跳跃态”。
+- **追击态最容易暴露这个串味**：Zombie 被玩家打时通常马上保持 target 并回到 chase；如果站在 MC 方块顶面，短 knockback 后 chase/hop 管线立刻接管，受击上抬就可能被看成一次莫名跳跃。非追击状态因为没有马上接强移动，现象不明显。
+- **受击上抬必须按 mob opt-in**：友好/被动生物可保留 `KnockbackUseJump=true` 的上抬手感；Zombie 这类敌对追击怪当前关闭受击 jump-state，并把普通受击竖直速度置 0，只保留水平击退。注意这不影响 Zombie 命中玩家时给玩家的竖直击飞，那是独立的 melee player knockback。
+
+## 2026-06-15: Sheep sequence hookup is parked until the exporter is stable
+
+- **Base 的 sequence adapter 保留，sheep 的接线先退回注释**：`AnimationSequences` 仍是正式 MC 模型的方向，但当前导出的 sheep 还存在 pivot 和低速播放速率/cycle 脱节问题，强接会表现成冻腿/滑步，容易误判为 BMB 移动 bug。
+- **程序化腿摆临时恢复，但只用新平滑逻辑**：旧的 `speed > 8 then` 硬分支和 `rate` 计时摆腿不回归；当前实现走 Base `UpdateBMBLimbSwing`，sheep 只保留自己的摆轴/摆幅参数。
+- **正式接入时仍不能双写腿**：等转换器 pivot 修好、低速 playback/cycle 方案确定后，再打开 sheep `AnimationSequences` / `AnimationReferenceSpeeds`，同时撤掉客户端 `leg*` 覆盖。模型 sequence 和程序化腿摆不能同时存在。
+- **吃草/看向仍是上层姿态**：当前占位阶段吃草 keyframe 主要覆盖 head；后续真实模型接入时，头部/看向/吃草覆盖应继续和 locomotion sequence 分层处理。

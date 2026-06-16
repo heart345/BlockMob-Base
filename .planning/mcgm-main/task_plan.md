@@ -142,6 +142,7 @@ Phase 2
 - [x] Zombie Phase 2 hotfix 7：修 `ApplyTargetKnockback` 把 normalized 单位方向 `LengthSqr()==1` 当无效方向早退；方向验证统一改 epsilon，并记录 `direction_nil/direction_invalid`
 - [x] Zombie Phase 2 hotfix 8：手感细调——Zombie 索敌范围扩到 `TargetRange=1350` / `TargetLoseRange=1725`，同层攻击距离调到 `AttackRange=60`，水平击退降到 `AttackKnockback=210`；共享 `MeleeAttack` 新增可选窄竖直重叠命中，Zombie 用 `AttackVerticalOverlapRange=86` + `AttackVerticalOverlapFlatRange=24` 解决玩家踩头不挨打，同时保持普通 `AttackVerticalRange=28` 防止高一格平台误攻击
 - [x] Zombie Phase 2 hotfix 9：击退距离继续收敛——用户复测 210 水平击退配合 190z 滞空会推出约 4-5 格，目标是 2-3 格；Zombie `AttackKnockback` 改为 150，竖直击飞保持 155 / grounded 190
+- [x] Zombie Phase 2 hotfix 10：Zombie 在 MC 方块顶面追击玩家时被打偶发触发跳跃——Base 新增 `KnockbackUseJump`，Zombie 关闭受击 `loco:Jump()` 并把受击竖直速度置 0；Zombie 攻击玩家的玩家击飞仍走独立 MeleeAttack 参数
 - [ ] 复测 Zombie Phase 2：约 1350u 内应能发现玩家；同层约 60u 第一时间扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退约 2-3 格且不再时好时坏；玩家直接踩头会被打，但站高一格平台/隔块目标仍走 chase/path；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；完整 MCSWEP 方块平地/平台中间追击不应显示 `*_cliff` 停住；旧追击、hop、stranded、受击不回归
 - [ ] 重新设计低顶/头顶方块坏 hop：A* hop-edge clearance 方案已撤回（会导致正常 hop 不触发），后续改用更局部的失败记忆/绕路目标或精确分诊
 - [x] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准（本轮确认 Zombie ambient 走通用 `Mob` 80 tick 递增概率；攻击节奏按用户 Phase 2 手感最终取 1.0s）
@@ -159,6 +160,13 @@ Phase 2
 
 - [ ] 确定 Blockbench/Crowbar/StudioMDL 流程
 - [x] BMB 侧 sequence adapter：BaseMob 新增 opt-in `AnimationSequences`，按逻辑动作映射到模型 `$sequence` 别名；缺序列回退 idle；walk/run playback rate 按当前速度缩放；新增 `scripts/check_sequence_animation_adapter.ps1`
+- [x] Sheep sequence 接线临时撤回：`AnimationSequences` / `AnimationReferenceSpeeds` 先注释，等转换器 pivot 和低速 playback/cycle 稳定后再打开；客户端保留 Base 连续 limb swing，并恢复程序化腿摆，头部 overlay 仅保留吃草/preview/后续看向接管
+- [x] 模型接入后第一轮调整：程序化腿摆从二元摆幅（`speed>8?1:0`）改为随速度连续缩放，上提到 base 通用 `UpdateBMBLimbSwing(speed2D)`（连续相位 + 连续摆幅强度，牛/猪复用），频率仍随速度区分走/跑；sheep 改调 helper，删自维护 `BMBSheepLimbSwing*`；`check_sequence_animation_adapter.ps1` 护栏迁到 base 并加“禁止二元 `and 1 or 0`”断言（待用户游戏回归）
+- [x] Sheep 吃草低头改俯仰轴（羊专属，不进 base）：`eat_grass` head 关键帧从 roll 改 pitch（`Angle(X,0,0)`）下俯够地，0.42s 到最低点、1.05s 收回；pitch 符号/度数依模型骨骼朝向，待用 `bmb_sheep_pose_preview` 游戏实测确认（可能翻号）
+- [x] 模型接入实测迭代：腿摆走/跑都偏小 → sheep `legSwingMax 7→9` + `LimbSwingMinAmount=0.25`；吃草实测纠正——俯仰是 **roll 轴负值**（上轮误判 pitch 已回退），`eat_grass` 改为 preview 实测值的三段动画（`pos Y` 下探到 -12 → `roll -55` 够地 → `roll -55↔-40` 咀嚼两回 → rot+pos 一起收回，`duration 1.8`/`biteDelay 0.45`）
+- [x] 模型接入实测迭代 2：sheep `legSwingMax=25.0`；`LimbSwingPhaseScale=0.13`，走/跑腿频率都降低；普通移动头部 swing 关闭，退出吃草/preview 后只清一次旧 head pose，不每帧锁死 head 骨；check 锁值同步到 25/0.13（待用户复测）
+- [x] 模型接入实测迭代 3：腿频率再降 `LimbSwingPhaseScale 0.13→0.09`（走/跑都更慢）；修“头部 swing 关了但游戏仍晃”——根因是 live addon(D 盘)漏同步、游戏读到旧 `walkHead/idleHead`，本轮 robocopy 全量同步并验证 D 盘已是新代码；check phase-scale 锁值同步 0.09（待用户复测）
+- [x] 死亡序列重做：脚本化骨骼倾倒（root 0→90° lerp 0.8s，整只翻、方向固定，关物理尸体）+ 停留 1.9s + Java poof 粒子（`vtf.py` 多帧 VTF、`generic_0..7`→`mc_poof.vtf/vmt`、effect 20 粒子 8 帧轮播 0.6s 淡出）；侧倒轴 roll 待实测（待用户复测）
 - [ ] 做第一只 Minecraft 风格 Zombie 模型
 - [ ] 做 idle/walk/attack/hurt/death 动画
 - [ ] 让脚步声和动画帧同步

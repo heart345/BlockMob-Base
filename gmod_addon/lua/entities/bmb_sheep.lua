@@ -10,20 +10,29 @@ ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/sheep/sheep.mdl"
 ENT.StartHealth = 20
-ENT.UsePhysicsCorpseOnDeath = true
-ENT.DeathCorpseRightPushSpeed = 70
-ENT.DeathCorpseRollVelocity = 35
-ENT.DeathCorpseRightForce = 0
-ENT.DeathCorpseRightRollVelocity = 95
-ENT.DeathPoofParticleCountMin = 5
-ENT.DeathPoofParticleCountMax = 8
-ENT.DeathPoofRadiusScale = 50
-ENT.EatGrassAnimationDuration = 1.05
-ENT.EatGrassBiteDelay = 0.42
+-- 死亡序列：纯客户端脚本化骨骼倾倒（不再用物理尸体施力，避免方向随机/不稳）。
+-- UsePhysicsCorpseOnDeath / DeathPoof* 用 base 默认（base 已是 false + Java poof 默认）。
+ENT.DeathRemoveDelay = 1.5              -- 倒下约 0.55s + 侧躺约 0.95s 后移除
+ENT.DeathTipDuration = 0.55             -- root 侧倒到位用时（快一点）
+ENT.DeathTipDegrees = 90                -- 侧倒角度（0 → 90°）
+ENT.EatGrassAnimationDuration = 1.8
+ENT.EatGrassBiteDelay = 0.45
 ENT.WalkSpeed = 70
 -- 当前先按 GMod/MC 模型手感调到 100u/s；FleeKeepFullSpeed 防止拐弯时 HUD 目标速度掉到跑步阈值。
 ENT.RunSpeed = 100
 ENT.FleeKeepFullSpeed = true
+-- 程序化腿摆：满速腿摆 25°，随速度连续缩放；MinAmount 给走路一个下限，使走/跑摆幅都更饱满。
+ENT.LimbSwingMinAmount = 0.25
+ENT.LimbSwingPhaseScale = 0.09
+-- Sequence locomotion is parked until exported sheep pivots and low-speed playback are stable.
+-- ENT.AnimationSequences = {
+--     idle = "idle",
+--     walk = "walk",
+--     run = "walk"
+-- }
+-- ENT.AnimationReferenceSpeeds = {
+--     walk = 70
+-- }
 ENT.Acceleration = 240
 ENT.Deceleration = 260
 ENT.WanderDistanceMinCells = 3  -- 单段游荡 3~8 格
@@ -47,6 +56,7 @@ ENT.CollisionMaxs = Vector(16, 16, 44)
 if CLIENT then
     local zeroAngle = Angle(0, 0, 0)
     local zeroVector = Vector(0, 0, 0)
+    local legSwingMax = 25.0
     local previewPose = CreateClientConVar("bmb_sheep_pose_preview", "0", true, false, "Preview sheep bone transforms live.")
     local previewKeyTime = CreateClientConVar("bmb_sheep_pose_key_time", "0", true, false, "Printed sheep keyframe time.")
 
@@ -54,14 +64,19 @@ if CLIENT then
 
     local sheepAnimations = {
         eat_grass = {
-            duration = 1.05,
+            duration = 1.8,
             frames = {
-                { time = 0.00, bones = { head = { angle = Angle(0, 0, 0), pos = Vector(0, 0, 0) } } },
-                { time = 0.18, bones = { head = { angle = Angle(0, 0, 30), pos = Vector(0, -1.5, -2.5) } } },
-                { time = 0.42, bones = { head = { angle = Angle(0, 0, 66), pos = Vector(0, -4.0, -7.0) } } },
-                { time = 0.62, bones = { head = { angle = Angle(0, 0, 58), pos = Vector(0, -4.0, -6.0) } } },
-                { time = 0.82, bones = { head = { angle = Angle(0, 0, 66), pos = Vector(0, -4.0, -7.0) } } },
-                { time = 1.05, bones = { head = { angle = Angle(0, 0, 0), pos = Vector(0, 0, 0) } } }
+                -- 低头吃草（实测：head 骨骼 roll 轴=俯仰，负值低头；够地姿势 roll -55 + pos Y -12）。
+                -- 顺序：① pos Y 先下探到 -12（rot 不动）；② roll 低到 -55 够地（与 EatGrassBiteDelay 对齐咬草）；
+                -- ③ roll 在 -55↔-40 之间咀嚼循环两回；④ rot 和 pos 一起均匀收回 0。
+                { time = 0.00, bones = { head = { angle = Angle(0, 0, 0),   pos = Vector(0,   0, 0) } } },
+                { time = 0.25, bones = { head = { angle = Angle(0, 0, 0),   pos = Vector(0, -12, 0) } } },
+                { time = 0.45, bones = { head = { angle = Angle(0, 0, -55), pos = Vector(0, -12, 0) } } },
+                { time = 0.70, bones = { head = { angle = Angle(0, 0, -40), pos = Vector(0, -12, 0) } } },
+                { time = 0.95, bones = { head = { angle = Angle(0, 0, -55), pos = Vector(0, -12, 0) } } },
+                { time = 1.20, bones = { head = { angle = Angle(0, 0, -40), pos = Vector(0, -12, 0) } } },
+                { time = 1.45, bones = { head = { angle = Angle(0, 0, -55), pos = Vector(0, -12, 0) } } },
+                { time = 1.80, bones = { head = { angle = Angle(0, 0, 0),   pos = Vector(0,   0, 0) } } }
             }
         }
     }
@@ -76,11 +91,6 @@ if CLIENT then
 
     local previewHeadRot = createAxisConVars("bmb_sheep_pose_head_rot", "Preview sheep head rotation")
     local previewHeadPos = createAxisConVars("bmb_sheep_pose_head_pos", "Preview sheep head position")
-    local previewLegRot = {}
-
-    for index = 0, 3 do
-        previewLegRot[index] = createAxisConVars("bmb_sheep_pose_leg" .. index .. "_rot", "Preview sheep leg" .. index .. " rotation")
-    end
 
     local function angleFromConVars(convars)
         return Angle(convars.x:GetFloat(), convars.y:GetFloat(), convars.z:GetFloat())
@@ -179,15 +189,20 @@ if CLIENT then
         print("{ time = " .. formatNumber(previewKeyTime:GetFloat()) .. ", bones = {")
         print("    head = { angle = " .. formatAngle(angleFromConVars(previewHeadRot)) .. ", pos = " .. formatVector(vectorFromConVars(previewHeadPos)) .. " },")
 
-        for index = 0, 3 do
-            print("    leg" .. index .. " = { angle = " .. formatAngle(angleFromConVars(previewLegRot[index])) .. " },")
-        end
-
         print("} },")
     end)
 
     local function resetSheepBones(ent, bones)
         applySheepPose(ent, bones, nil)
+        ent.BMBSheepHeadPoseCleared = true
+    end
+
+    local function clearSheepHeadPoseOnce(ent, bones)
+        if ent.BMBSheepHeadPoseCleared then return end
+
+        setBoneAngle(ent, bones.head, zeroAngle)
+        setBonePosition(ent, bones.head, zeroVector)
+        ent.BMBSheepHeadPoseCleared = true
     end
 
     function ENT:CacheBMBSheepBones()
@@ -198,6 +213,8 @@ if CLIENT then
 
         self.BMBSheepBoneCache = {
             model = model,
+            root = self:LookupBone("root"),
+            body = self:LookupBone("body"),
             head = self:LookupBone("head"),
             leg0 = self:LookupBone("leg0"),
             leg1 = self:LookupBone("leg1"),
@@ -216,19 +233,27 @@ if CLIENT then
         if previewPose:GetBool() then
             setBoneAngle(self, bones.head, angleFromConVars(previewHeadRot))
             setBonePosition(self, bones.head, vectorFromConVars(previewHeadPos))
-            setBoneAngle(self, bones.leg0, angleFromConVars(previewLegRot[0]))
-            setBoneAngle(self, bones.leg1, angleFromConVars(previewLegRot[1]))
-            setBoneAngle(self, bones.leg2, angleFromConVars(previewLegRot[2]))
-            setBoneAngle(self, bones.leg3, angleFromConVars(previewLegRot[3]))
+            self.BMBSheepHeadPoseCleared = false
             return
         end
 
         if state == "dead" or self:GetNWBool("BMBDead", false) then
+            -- 脚本化侧倒：绕 root 从 0 lerp 到 DeathTipDegrees，约 DeathTipDuration 秒倒完停住。
+            -- head/leg 是 root 的子骨骼，随 root 整只翻；自身归零冻住、不再摆动。
             resetSheepBones(self, bones)
+
+            if bones.root then
+                local startedAt = self:GetNWFloat("BMBStateStartedAt", CurTime())
+                local duration = self.DeathTipDuration or 0.8
+                local t = duration > 0 and math.Clamp((CurTime() - startedAt) / duration, 0, 1) or 1
+                local tip = t * (self.DeathTipDegrees or 90)
+                -- 侧倒：实测 roll(第三分量)=后仰；侧躺是 yaw(第二分量)。左右随机用 EntIndex 固定方向。
+                local tipSign = (self:EntIndex() % 2 == 0) and 1 or -1
+                setBoneAngle(self, bones.root, Angle(0, tip * tipSign, 0))
+            end
+
             return
         end
-
-        local speed = self:GetVelocity():Length2D()
 
         if state == "eat_grass" then
             local animation = sheepAnimations.eat_grass
@@ -236,30 +261,22 @@ if CLIENT then
             local elapsed = math.Clamp(CurTime() - startedAt, 0, animation.duration)
 
             applySheepPose(self, bones, sampleSheepAnimation(animation, elapsed))
+            self.BMBSheepHeadPoseCleared = false
             return
         end
 
-        setBonePosition(self, bones.head, zeroVector)
+        clearSheepHeadPoseOnce(self, bones)
 
-        if speed > 8 then
-            local rate = math.Clamp(speed / 48.0, 1.1, 2.8)
-            local swing = math.sin(CurTime() * rate * math.pi * 2.0) * 24.0
-            local headBob = math.sin(CurTime() * rate * math.pi) * 2.0
+        local speed = self:GetVelocity():Length2D()
+        -- 摆幅/频率统一走 base 的连续驱动:幅度随速度连续缩放,频率随速度推进。
+        local phase, swingAmount = self:UpdateBMBLimbSwing(speed)
 
-            setBoneAngle(self, bones.head, Angle(0, 0, headBob))
-            setBoneAngle(self, bones.leg0, Angle(0, 0, swing))
-            setBoneAngle(self, bones.leg3, Angle(0, 0, swing))
-            setBoneAngle(self, bones.leg1, Angle(0, 0, -swing))
-            setBoneAngle(self, bones.leg2, Angle(0, 0, -swing))
-            return
-        end
+        local legSwing = math.sin(phase) * legSwingMax * swingAmount
 
-        local idleHead = math.sin(CurTime() * 1.2) * 1.5
-        setBoneAngle(self, bones.head, Angle(0, 0, idleHead))
-        setBoneAngle(self, bones.leg0, zeroAngle)
-        setBoneAngle(self, bones.leg1, zeroAngle)
-        setBoneAngle(self, bones.leg2, zeroAngle)
-        setBoneAngle(self, bones.leg3, zeroAngle)
+        setBoneAngle(self, bones.leg0, Angle(0, 0, legSwing))
+        setBoneAngle(self, bones.leg3, Angle(0, 0, legSwing))
+        setBoneAngle(self, bones.leg1, Angle(0, 0, -legSwing))
+        setBoneAngle(self, bones.leg2, Angle(0, 0, -legSwing))
     end
 end
 

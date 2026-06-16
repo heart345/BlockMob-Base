@@ -43,9 +43,9 @@ ENT.DeathCorpseUpPushSpeed = 0
 ENT.DeathCorpseRightForce = 0
 ENT.DeathCorpseTorqueHeight = 24
 ENT.DeathCorpseRightRollVelocity = 75
-ENT.DeathPoofParticleCountMin = 5
-ENT.DeathPoofParticleCountMax = 8
-ENT.DeathPoofRadiusScale = 44
+ENT.DeathPoofParticleCountMin = 18    -- MC Java poof 约 20 个（所有 mob 通用默认）
+ENT.DeathPoofParticleCountMax = 22
+ENT.DeathPoofRadiusScale = 15         -- 基数，经 GetBMBDeathEffectScale 按体型缩放
 ENT.WalkSpeed = 80
 ENT.RunSpeed = 120
 ENT.Acceleration = 420
@@ -155,6 +155,7 @@ ENT.KnockbackDuration = 0.12
 ENT.KnockbackMinSpeed = 150
 ENT.KnockbackDamageSpeedScale = 8
 ENT.KnockbackMaxSpeed = 320
+ENT.KnockbackUseJump = true
 ENT.KnockbackVerticalSpeedScale = 6
 ENT.KnockbackVerticalMinSpeed = 170
 ENT.KnockbackVerticalMaxSpeed = 240
@@ -170,6 +171,13 @@ ENT.AnimationMovePlaybackRateMin = 0
 ENT.AnimationMovePlaybackRateMax = 2.5
 ENT.AnimationPlaybackRateMin = 0.05
 ENT.AnimationPlaybackRateMax = 2.5
+-- 程序化腿摆(非 sequence 动画路)的通用速度→相位/幅度驱动,牛猪羊可共用。
+-- 幅度随速度连续缩放(取代走/跑二元开关),频率随速度推进(走慢跑快自然区分)。
+ENT.LimbSwingMinSpeed = 8        -- 低于此速度视为静止,摆幅强度→0
+ENT.LimbSwingFullSpeed = nil     -- 摆幅到满(强度 1)的参考速度;nil 时取 RunSpeed
+ENT.LimbSwingMinAmount = 0       -- 起步(刚过 MinSpeed)时的最小摆幅强度;0=纯比例,>0 给走路一个下限
+ENT.LimbSwingPhaseScale = 0.18   -- 相位推进系数:频率 ∝ speed
+ENT.LimbSwingBlendSpeed = 10     -- 摆幅强度向目标平滑过渡的速度
 
 local function flatDistance(a, b)
     local dx = a.x - b.x
@@ -353,6 +361,34 @@ end
 
 function ENT:GetBMBMoveActivityForSpeed(speed)
     return speed >= self:GetBMBRunActivityThreshold() and self:GetBMBRunActivity() or self:GetBMBWalkActivity()
+end
+
+-- 程序化腿摆的通用驱动。把当前水平速度映射为:
+--   phase  —— 累积相位(频率随速度连续推进,走慢跑快)
+--   amount —— [0,1] 摆幅强度(随速度从 LimbSwingMinAmount 连续缩放到 1,不再走/跑二元)
+-- 各 mob 在自己的 UpdateBMBVisualBones 里用 phase/amount 摆自己的骨骼(腿数/轴/最大角度自定)。
+-- 持久状态存 self.BMBLimbSwingPhase / self.BMBLimbSwingAmount,需逐帧调用。
+function ENT:UpdateBMBLimbSwing(speed2D)
+    speed2D = speed2D or self:GetVelocity():Length2D()
+
+    local frameTime = FrameTime()
+    local minSpeed = self.LimbSwingMinSpeed or 8
+    local fullSpeed = math.max(minSpeed + 1, self.LimbSwingFullSpeed or self.RunSpeed or 100)
+    local speedFrac = math.Clamp((speed2D - minSpeed) / (fullSpeed - minSpeed), 0, 1)
+
+    local targetAmount = 0
+    if speed2D > minSpeed then
+        targetAmount = Lerp(speedFrac, self.LimbSwingMinAmount or 0, 1)
+    end
+
+    local blend = math.Clamp(frameTime * (self.LimbSwingBlendSpeed or 10), 0, 1)
+    local amount = Lerp(blend, self.BMBLimbSwingAmount or 0, targetAmount)
+    local phase = (self.BMBLimbSwingPhase or 0) + speed2D * frameTime * (self.LimbSwingPhaseScale or 0.18)
+
+    self.BMBLimbSwingAmount = amount
+    self.BMBLimbSwingPhase = phase % (math.pi * 2)
+
+    return self.BMBLimbSwingPhase, amount
 end
 
 function ENT:UsesBMBSequenceAnimation()
@@ -830,6 +866,13 @@ function ENT:Think()
 
     if SERVER then
         if self.BMBDead then
+            -- 死亡后每 tick 缴械 loco：否则 flee 的水平动量 / 跳跃中死亡的弹道速度残留会让尸体跟着跑或跳
+            if self.loco then
+                if self.loco.SetGravity then self.loco:SetGravity(0) end
+                if self.loco.SetVelocity then self.loco:SetVelocity(vector_origin) end
+                if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(0) end
+            end
+
             self:UpdateBMBSequenceAnimationFromState()
             self:NextThink(CurTime())
             return true
@@ -1060,7 +1103,7 @@ function ENT:StartBMBKnockback(damageInfo)
     self:UpdateBMBApproachDebug(nil, 0)
     self:MaintainBMBKnockbackSpeedBudget()
 
-    if verticalSpeed > currentVelocity.z and self.loco.Jump then
+    if self.KnockbackUseJump ~= false and verticalSpeed > currentVelocity.z and self.loco.Jump then
         self.loco:Jump()
     end
 
