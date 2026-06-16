@@ -930,3 +930,10 @@
 - Death corpse no longer follows movement: base Think's BMBDead branch disarms loco every tick (`SetGravity(0)` + `SetVelocity(0)` + `SetDesiredSpeed(0)`), fixing flee-run-follow and mid-jump-follow (`StopBMBMovementOnDeath`'s one-shot clear wasn't enough; loco keeps integrating leftover velocity). Mid-air deaths hover (SOLID_NONE can't gravity-land without clipping) -- accepted.
 - Poof is now a Base default for all mobs: `DeathPoofEffect`/`EmitBMBDeathPoofAt` were already in Base and the effect is global; Base defaults updated to Java poof (count 18-22, radius 15). Sheep dropped its duplicate overrides.
 - glualint (repo + live) + all 11 BMB checks pass; synced to live addon. Authoritative state in `docs/STATE.md`.
+
+## 2026-06-17 Latest Status After Zombie Model + Procedural Biped Animation
+
+- Zombie now uses the converted MC model (`models/mcgm/zombie/zombie.mdl`) with arms hanging neutral, not Valve Classic. Converter: removed the zombie attack rest-pose bake so zombie family arms are neutral (body was already upright = correctly biped, not quadruped); skeleton/wither keep raised arms. qs 62 tests OK; restaged + compiled to addon.
+- Base generalization (client): `BMB.SampleKeyframeAnimation` + keyframe lerp/apply helpers (extracted from sheep eat-grass, shared with zombie attack), and `ENT:ApplyBMBBipedLocomotion` (legs counter-swing + arm forward-hold + counter-swing). Death tip / lookat / look-around / step / poof / disarm reused from base.
+- Zombie rewrite: model swap, dropped `RunActivity=ACT_WALK`, procedural client `UpdateBMBVisualBones` (biped walk + lookat + root side-fall on death + attack forward-swing keyframe via networked `BMBAttackStartedAt`). `check_zombie_phase1.ps1` guard moved to procedural biped. Behavior (chase/attack/sounds) untouched.
+- All swing axes / forward angle / attack / side-fall are initial values, to be tuned in-game like the sheep. glualint (repo + live) + 11 BMB checks + qs 62 tests pass; lua synced to live addon. Authoritative state in `docs/STATE.md`.

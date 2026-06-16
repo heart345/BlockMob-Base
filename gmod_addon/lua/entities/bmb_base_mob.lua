@@ -637,6 +637,89 @@ if CLIENT then
 
         return active
     end
+
+    -- 程序化关键帧动画通用工具（羊吃草、僵尸攻击等共用）。
+    -- animation = { duration=, frames = { { time=, bones = { boneName = { angle=Angle, pos=Vector } } } } }
+    function BMB.LerpKeyframeAngle(fromAngle, toAngle, fraction)
+        return Angle(
+            Lerp(fraction, fromAngle.p, toAngle.p),
+            Lerp(fraction, fromAngle.y, toAngle.y),
+            Lerp(fraction, fromAngle.r, toAngle.r)
+        )
+    end
+
+    function BMB.LerpKeyframeVector(fromVector, toVector, fraction)
+        return Vector(
+            Lerp(fraction, fromVector.x, toVector.x),
+            Lerp(fraction, fromVector.y, toVector.y),
+            Lerp(fraction, fromVector.z, toVector.z)
+        )
+    end
+
+    function BMB.SampleKeyframeAnimation(animation, elapsed)
+        local frames = animation and animation.frames
+        if not frames or #frames == 0 then return nil end
+        if elapsed <= frames[1].time then return frames[1].bones end
+
+        for index = 1, #frames - 1 do
+            local currentFrame = frames[index]
+            local nextFrame = frames[index + 1]
+            if elapsed <= nextFrame.time then
+                local span = math.max(0.001, nextFrame.time - currentFrame.time)
+                local fraction = math.Clamp((elapsed - currentFrame.time) / span, 0, 1)
+                local pose = {}
+                local names = {}
+                for name in pairs(currentFrame.bones or {}) do names[name] = true end
+                for name in pairs(nextFrame.bones or {}) do names[name] = true end
+                for name in pairs(names) do
+                    local c = (currentFrame.bones and currentFrame.bones[name]) or {}
+                    local n = (nextFrame.bones and nextFrame.bones[name]) or {}
+                    pose[name] = {
+                        angle = BMB.LerpKeyframeAngle(c.angle or angle_zero, n.angle or angle_zero, fraction),
+                        pos = BMB.LerpKeyframeVector(c.pos or vector_origin, n.pos or vector_origin, fraction)
+                    }
+                end
+                return pose
+            end
+        end
+
+        return frames[#frames].bones
+    end
+
+    function ENT:SetBMBVisualBoneAngle(boneId, angle)
+        if not boneId then return end
+        self:ManipulateBoneAngles(boneId, angle or angle_zero)
+    end
+
+    function ENT:SetBMBVisualBonePosition(boneId, position)
+        if not boneId then return end
+        self:ManipulateBonePosition(boneId, position or vector_origin)
+    end
+
+    -- 把采样 pose 应用到一组骨骼。boneCache: { name = boneId }；poseBones: name → { angle, pos }。
+    function ENT:ApplyBMBKeyframePose(poseBones, boneCache, includePosition)
+        for name, boneId in pairs(boneCache) do
+            local bonePose = poseBones and poseBones[name]
+            self:SetBMBVisualBoneAngle(boneId, bonePose and bonePose.angle or angle_zero)
+            if includePosition then
+                self:SetBMBVisualBonePosition(boneId, bonePose and bonePose.pos or vector_origin)
+            end
+        end
+    end
+
+    -- 双足程序化 locomotion：两腿反相摆 + 手臂前伸基角 + 反相轻微摆（从垂下中性基线）。
+    -- boneCache 需含 rightLeg/leftLeg/rightArm/leftArm；参数从 self 读、按 mob 实测覆盖。
+    -- 摆轴默认 roll（Angle 第三分量，对齐羊腿实测）；若进游戏摆动方向不对，按 mob 换分量/符号。
+    function ENT:ApplyBMBBipedLocomotion(boneCache, phase, amount)
+        local legSwing = math.sin(phase) * (self.BipedLegSwingMax or 32) * amount
+        local armSwing = math.sin(phase) * (self.BipedArmSwingMax or 10) * amount
+        local armForward = self.BipedArmForwardAngle or 0
+        -- 步态：右腿前 ↔ 左腿后；手臂配对侧腿（右臂随左腿，与右腿反相）。
+        self:SetBMBVisualBoneAngle(boneCache.rightLeg, Angle(0, 0, legSwing))
+        self:SetBMBVisualBoneAngle(boneCache.leftLeg, Angle(0, 0, -legSwing))
+        self:SetBMBVisualBoneAngle(boneCache.rightArm, Angle(0, 0, armForward - armSwing))
+        self:SetBMBVisualBoneAngle(boneCache.leftArm, Angle(0, 0, armForward + armSwing))
+    end
 end
 
 function ENT:UsesBMBSequenceAnimation()

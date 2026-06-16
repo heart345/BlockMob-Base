@@ -1668,6 +1668,18 @@
 - Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
 - Next retest: corpse no longer follows flee run or jump arc; new mobs inherit the poof.
 
+## 2026-06-17 Zombie model + procedural biped animation
+
+- User: open the zombie (model + animation). Zombie animation stays procedural like the sheep -- converter outputs model only, no baked sequences. Confirm zombie is biped (body not rotated, not treated as quadruped). Arms hang in the model; forward-hold pose added procedurally, not baked. Reuse base for death tip + poof, lookat, look-around, step. Attack uses the sheep eat-grass keyframe sampler (generalized into base), defined as a forward arm-swing.
+- Converter (arms down):
+  - Confirmed biped: `body` bind rotation 0 (not the quadruped `body -90° stand`); `root` 90°X is the universal Y-up->Z-up (sheep has it too). The only non-zero bind was the arms, baked from `animation.zombie.attack_bare_hand` as a forward "raised-arm" rest pose.
+  - `geo.py` `REST_POSE_ANIMATION_*` dropped the zombie attack entries, so zombie family (zombie/husk/drowned/zombie_pigman/baby_zombie) arms hang neutral (`bind_pose_rotation=0`); skeleton/wither keep their raised arms.
+  - Golden updated (`test_*raised_arm` split into skeleton + zombie-family-neutral); 62 tests OK. Restaged + full-compiled zombie to the addon (arms down).
+- Base generalization (client block): `BMB.SampleKeyframeAnimation` + `BMB.LerpKeyframeAngle/Vector` + `ENT:SetBMBVisualBoneAngle/Position` + `ENT:ApplyBMBKeyframePose` (extracted from sheep eat-grass, shared), plus `ENT:ApplyBMBBipedLocomotion` (legs counter-swing + arm forward-hold + counter-swing; params `BipedLegSwingMax/ArmSwingMax/ArmForwardAngle`). Death tip / lookat / look-around / step / poof / death disarm all reused from base.
+- Zombie rewrite: `Model` -> `models/mcgm/zombie/zombie.mdl`, dropped `RunActivity=ACT_WALK`, `PlayBMBMeleeGesture` -> `SetNWFloat("BMBAttackStartedAt")`, new client `UpdateBMBVisualBones`: dead tips root over (yaw, reused from sheep), normal does lookat + limb swing + biped locomotion, attack window swaps arms to a forward-swing keyframe (over the forward baseline, legs keep walking). `check_zombie_phase1.ps1` guard moved from ACT_WALK to procedural biped + converted model + attack keyframe (forbids Classic.mdl/ACT_WALK/RestartGesture regress). Behavior (SeekTarget/Chase/MeleeAttack/sounds/hurt) untouched.
+- Verified: glualint (repo + live), all 11 BMB checks pass, qs 62 tests pass; lua synced to live addon, model packaged by converter.
+- Next game retest: legs counter-swing + arms forward-hold/swing (tune `ApplyBMBBipedLocomotion` axis / `BipedArmForwardAngle` if wrong); attack arm-swing; death side-fall (yaw, swap to pitch if it spins); lookat head-only; chase/attack behavior unchanged.
+
 ## 2026-06-16 Base LookAtPlayerGoal + Sheep head hookup
 
 - User request:

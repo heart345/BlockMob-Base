@@ -1,5 +1,12 @@
 # Findings
 
+## Zombie 双足程序化动画 + 转换器手臂垂下（2026-06-17）
+
+- **确认僵尸没被当四足**：`reference.smd` 的 `body` bind rotation 是 0（直立），不像羊/牛的 `body -90° stand`；`root` 的 90°X 是所有 MC 模型通用的 Y-up→Z-up（羊也有），不是四足特征。判断"有没有被当四足"看 `body`/子骨骼 bind，不是 root。
+- **僵尸手臂前伸是 attack 动画被烘成 rest pose**：`geo.py` 把 `animation.zombie.attack_bare_hand` 当 rest pose 烘进 arm bind（前伸标志姿态）。用户要程序化手臂（从垂下基线，避免在前伸 bind 上叠欧拉旋转踩 gimbal/合成坑），故从 `REST_POSE_ANIMATION_*` 移除 zombie 攻击条目；僵尸家族手臂垂下。改实现就同步改 golden（`test_*raised_arm` 拆 skeleton/zombie-family）。
+- **关键帧采样器泛化进 base**：羊吃草的 `sampleSheepAnimation`/`applyPose`/`lerp` 提取为 `BMB.SampleKeyframeAnimation` + `ENT:ApplyBMBKeyframePose`（base client 块），僵尸攻击前挥复用同一套；双足 locomotion `ENT:ApplyBMBBipedLocomotion`（腿反相 + 手臂前伸 + 反相摆）。死亡侧倒/lookat/step/poof/缴械全复用 base，僵尸实体只配参数 + 写 `UpdateBMBVisualBones`。
+- **僵尸摆轴/角度沿用羊的实测策略（初值待游戏调）**：双足摆轴先用 roll（对齐羊腿），手臂前伸/攻击/死亡侧倒（yaw）都给初值，按游戏表现迭代——骨骼局部轴语义只能实测，不从骨骼名/bind 猜。
+
 ## Base LookAtPlayerGoal：偶发注视是并行控制器，不是行为状态（2026-06-16）
 
 - **MC LookAtPlayerGoal 的观感重点是“偶尔看一眼”**：服务端只在未看目标时低频轮询（当前 0.5s），首轮 15% 实测太频繁，默认已降到 6%，一次持续 2-4s；目标在范围内也不能每 tick 续期，否则会变成“玩家靠近就一直盯”。BMB 用 `BMBLookAtTarget` + `BMBLookAtUntil` NW 同步“看谁/看到何时”，超时、离开范围、吃草或死亡就清掉。

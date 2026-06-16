@@ -8,7 +8,7 @@ ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
-ENT.Model = "models/Zombie/Classic.mdl"
+ENT.Model = "models/mcgm/zombie/zombie.mdl"
 ENT.StartHealth = 20
 ENT.WalkSpeed = 92
 ENT.RunSpeed = 115
@@ -57,8 +57,15 @@ ENT.AmbientSoundTickRate = 20
 ENT.AmbientSoundMaxCatchupTicks = 4
 ENT.CollisionMins = Vector(-11, -11, 0)
 ENT.CollisionMaxs = Vector(11, 11, 72)
--- Classic zombie model has a reliable walk sequence; ACT_RUN can freeze its legs on some installs.
-ENT.RunActivity = ACT_WALK
+-- 程序化双足动画（不再用模型 sequence / ACT_WALK）：腿反相摆 + 手臂前伸轻微摆，攻击播手臂前挥关键帧。
+ENT.BipedLegSwingMax = 38          -- 腿摆幅（roll 轴，实测调）
+ENT.BipedArmSwingMax = 14          -- 手臂走路轻微摆幅
+ENT.BipedArmForwardAngle = -60     -- 手臂前伸基角（roll；僵尸标志前伸，符号/角度待实测）
+ENT.AttackKeyframeDuration = 0.5   -- 攻击手臂前挥关键帧时长
+ENT.DeathTipDuration = 0.55        -- 死亡侧倒用时（复用羊脚本化倾倒）
+ENT.DeathTipDegrees = 90
+ENT.LimbSwingMinAmount = 0.3       -- 走路也保持可见腿摆
+ENT.LimbSwingPhaseScale = 0.12     -- 腿频率（实测调）
 ENT.TurnInPlaceAngle = 170
 ENT.BlockHopAllowCloseLaunch = true
 -- Chasing zombies should not turn ordinary hurt knockback into a locomotion jump on MC block tops.
@@ -102,6 +109,93 @@ local function validTarget(target)
     end
 
     return false
+end
+
+if CLIENT then
+    local zombieAnimations = {
+        -- 攻击：双臂前挥（相对前伸基线的 roll 偏移，叠加在 BipedArmForwardAngle 上；轴/角度待实测）。
+        attack = {
+            duration = 0.5,
+            frames = {
+                { time = 0.00, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } },
+                { time = 0.15, bones = { rightArm = { angle = Angle(0, 0, -55) }, leftArm = { angle = Angle(0, 0, -55) } } },
+                { time = 0.32, bones = { rightArm = { angle = Angle(0, 0, 45) }, leftArm = { angle = Angle(0, 0, 45) } } },
+                { time = 0.50, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } }
+            }
+        }
+    }
+
+    function ENT:CacheBMBZombieBones()
+        local model = self:GetModel()
+        if self.BMBZombieBoneCache and self.BMBZombieBoneCache.model == model then
+            return self.BMBZombieBoneCache
+        end
+
+        self.BMBZombieBoneCache = {
+            model = model,
+            root = self:LookupBone("root"),
+            head = self:LookupBone("head"),
+            rightArm = self:LookupBone("rightArm"),
+            leftArm = self:LookupBone("leftArm"),
+            rightLeg = self:LookupBone("rightLeg"),
+            leftLeg = self:LookupBone("leftLeg")
+        }
+
+        return self.BMBZombieBoneCache
+    end
+
+    function ENT:UpdateBMBVisualBones()
+        local bones = self:CacheBMBZombieBones()
+        if not bones then return end
+
+        local state = self:GetNWString("BMBState", "idle")
+
+        if state == "dead" or self:GetNWBool("BMBDead", false) then
+            -- 脚本化侧倒：冻结四肢/头，绕 root 整只翻（复用羊实测：yaw=侧躺，EntIndex 定左右）。
+            self:SetBMBVisualBoneAngle(bones.head, angle_zero)
+            self:SetBMBVisualBoneAngle(bones.rightArm, angle_zero)
+            self:SetBMBVisualBoneAngle(bones.leftArm, angle_zero)
+            self:SetBMBVisualBoneAngle(bones.rightLeg, angle_zero)
+            self:SetBMBVisualBoneAngle(bones.leftLeg, angle_zero)
+
+            if bones.root then
+                local startedAt = self:GetNWFloat("BMBStateStartedAt", CurTime())
+                local duration = self.DeathTipDuration or 0.55
+                local t = duration > 0 and math.Clamp((CurTime() - startedAt) / duration, 0, 1) or 1
+                local tip = t * (self.DeathTipDegrees or 90)
+                local tipSign = (self:EntIndex() % 2 == 0) and 1 or -1
+                self:SetBMBVisualBoneAngle(bones.root, Angle(0, tip * tipSign, 0))
+            end
+
+            return
+        end
+
+        -- 头：看向系统（与移动并行，只控头）
+        self:UpdateBMBLookAtHeadPose(bones.head)
+
+        local speed = self:GetVelocity():Length2D()
+        local phase, amount = self:UpdateBMBLimbSwing(speed)
+
+        -- 腿 + 手臂走路摆（双足通用：腿反相 + 手臂前伸 + 轻微反相摆）
+        self:ApplyBMBBipedLocomotion(bones, phase, amount)
+
+        -- 攻击窗内：手臂改播前挥关键帧（叠在前伸基线上），覆盖走路臂摆；腿继续走
+        local attackStart = self:GetNWFloat("BMBAttackStartedAt", 0)
+        if attackStart > 0 then
+            local elapsed = CurTime() - attackStart
+            local duration = self.AttackKeyframeDuration or 0.5
+            if elapsed >= 0 and elapsed <= duration then
+                local pose = BMB.SampleKeyframeAnimation(zombieAnimations.attack, elapsed)
+                if pose then
+                    local armForward = self.BipedArmForwardAngle or 0
+                    local ra = (pose.rightArm and pose.rightArm.angle) or angle_zero
+                    local la = (pose.leftArm and pose.leftArm.angle) or angle_zero
+                    self:SetBMBVisualBoneAngle(bones.rightArm, Angle(0, 0, armForward + ra.r))
+                    self:SetBMBVisualBoneAngle(bones.leftArm, Angle(0, 0, armForward + la.r))
+                end
+            end
+        end
+    end
 end
 
 function ENT:Initialize()
@@ -184,7 +278,8 @@ function ENT:CanBMBTarget(target)
 end
 
 function ENT:PlayBMBMeleeGesture(_)
-    self:RestartGesture(ACT_MELEE_ATTACK1)
+    -- 程序化攻击：标记攻击开始时刻，客户端 UpdateBMBVisualBones 播手臂前挥关键帧。
+    self:SetNWFloat("BMBAttackStartedAt", CurTime())
 end
 
 function ENT:ApplyBMBPlayerHitFeedback(target)
