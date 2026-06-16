@@ -62,6 +62,7 @@ Assert-Contains $base "HurtFlashTime\s*=\s*0\.5" "base mob should use MC's 10 ti
 Assert-Contains $base "BMBHurtFlashUntil" "accepted damage should network a hurt flash deadline for client red tint"
 Assert-Contains $base "function\s+ENT:IsBMBInDamageInvulnerability" "damage pipeline should have one helper for invulnerability checks"
 Assert-Contains $base "function\s+ENT:StartBMBHurtFlash" "damage pipeline should start the visual hurt flash only on accepted hits"
+Assert-Contains $base "OnBMBHurtSound[\s\S]*SetHealth" "accepted damage should let mobs play hurt sounds before lethal damage branches"
 Assert-Contains $base "HurtFlashRedAmount" "hurt flash should use a constant MC-style red tint while the timer is active"
 Assert-Contains $base "function\s+ENT:GetBMBKnockbackDirection" "knockback direction should be derived from attacker/source/force, not facing"
 Assert-Contains $base "KnockbackDuration\s*=\s*0\.12" "knockback should be a short impulse arbitration window so flee can resume while airborne"
@@ -87,6 +88,8 @@ Assert-FunctionNotContains $base "RunBMBKnockback" "MaintainBMBMoveSpeed\s*\(\s*
 Assert-FunctionNotContains $base "RunBMBKnockback" "SetDesiredSpeed\s*\(\s*0" "knockback must not set loco desired speed to 0 while trying to apply horizontal knockback"
 
 Assert-Contains $sheep "RunBMBKnockback" "sheep behavior should prioritize knockback before debug/stranded/flee steering"
+Assert-Contains $sheep "function\s+ENT:OnBMBHurtSound" "sheep should play its hurt say even when the accepted hit is lethal"
+Assert-FunctionNotContains $sheep "OnBMBInjured" "PlayBMBSheepSay" "sheep hurt sound should not live only in non-lethal injury handling"
 Assert-Contains $sheep "wasFleeing" "sheep injury handling should know whether the current hit happened during an active flee"
 Assert-Contains $sheep "not\s+wasFleeing" "hits during an active flee should refresh panic time without interrupting the current flee segment"
 Assert-Contains $zombie "KnockbackUseJump\s*=\s*false" "zombie hurt knockback should not open locomotion jump state during chase"

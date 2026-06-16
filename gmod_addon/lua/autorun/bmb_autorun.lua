@@ -1,6 +1,21 @@
 BMB = BMB or {}
 BMB.Version = "0.1.0"
 
+local resourceFiles = {
+    "sound/bmb/mob/sheep/say1.ogg",
+    "sound/bmb/mob/sheep/say2.ogg",
+    "sound/bmb/mob/sheep/say3.ogg",
+    "sound/bmb/mob/sheep/step1.ogg",
+    "sound/bmb/mob/sheep/step2.ogg",
+    "sound/bmb/mob/sheep/step3.ogg",
+    "sound/bmb/mob/sheep/step4.ogg",
+    "sound/bmb/mob/sheep/step5.ogg",
+    "sound/bmb/dig/grass1.ogg",
+    "sound/bmb/dig/grass2.ogg",
+    "sound/bmb/dig/grass3.ogg",
+    "sound/bmb/dig/grass4.ogg"
+}
+
 local function addServerFile(path)
     if SERVER then include(path) end
 end
@@ -8,6 +23,10 @@ end
 if SERVER then
     AddCSLuaFile("bmb/sh_config.lua")
     AddCSLuaFile("bmb/cl_debug.lua")
+
+    for _, resourceFile in ipairs(resourceFiles) do
+        resource.AddFile(resourceFile)
+    end
 end
 
 include("bmb/sh_config.lua")

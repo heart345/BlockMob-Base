@@ -1667,3 +1667,136 @@
   - Poof was already a Base capability (`DeathPoofEffect` + `EmitBMBDeathPoofAt` in Base, effect is global). Lifted Base defaults to Java poof values: `DeathPoofParticleCountMin/Max` 5/8 -> 18/22, `DeathPoofRadiusScale` 44 -> 15. Sheep dropped its duplicate overrides (and the redundant `UsePhysicsCorpseOnDeath=false`, already Base default). Cow/pig/etc. now get MC poof out of the box.
 - Verified: glualint (repo + live), all 11 BMB checks pass; synced to live addon.
 - Next retest: corpse no longer follows flee run or jump arc; new mobs inherit the poof.
+
+## 2026-06-16 Base LookAtPlayerGoal + Sheep head hookup
+
+- User request:
+  - Put LookAt into `bmb_base_mob` as a shared feature.
+  - Server decision layer: every ~0.5s, if a player is in range and the mob is not already looking, ~15% chance to start looking for 2-4s. Sync target EntIndex and timeout through NW vars. Do not make nearby players force constant staring.
+  - Client render layer: `UpdateBMBVisualBones` head branch reads the NW target, computes relative body yaw/pitch, clamps and smooths with Lerp, and applies the head bone. Eat grass/death must suppress LookAt. Movement must keep running in parallel.
+  - Sheep-tested axis mapping: head rot X positive = left, negative = right; head rot Z positive = up, negative = down.
+- Implemented:
+  - Initial base defaults: `LookAtEnabled`, `LookAtHeadBoneName`, `LookAtRangeCells`, `LookAtPollInterval=0.5`, `LookAtStartChance=0.15`, `LookAtDurationMin/Max=2/4`, `LookAtYawLimit=70`, `LookAtPitchLimit=35`, `LookAtLerpSpeed=8`; later retuned below to 0.06 chance and 24 pitch limit after first game test.
+  - Base NW state: `BMBLookAtTarget` and `BMBLookAtUntil`.
+  - Server helper `UpdateBMBLookAtController()` runs from base `Think` independently of behavior movement, clears targets when suppressed, expired, invalid, out of range, or dead.
+  - Client helper `UpdateBMBLookAtHeadPose(headBone)` computes `Angle(yaw, 0, pitch)` using the sheep axis mapping, clamps/smooths it, applies `ManipulateBoneAngles`, and eases back to zero after target loss.
+  - Sheep normal visual branch now calls `self:UpdateBMBLookAtHeadPose(bones.head)`; death and eat-grass branches still return before normal head control.
+  - Static check coverage added to `scripts/check_sequence_animation_adapter.ps1`.
+- Verified:
+  - `glualint` passes for `bmb_base_mob.lua` and `bmb_sheep.lua`.
+  - Full `scripts/check_*.ps1` suite passes.
+  - Synced full `gmod_addon` to the live D-drive addon and confirmed LookAt strings exist in live files.
+- Next game retest:
+  1. Stand near a sheep: it should occasionally glance for 2-4s, not stare constantly.
+  2. Confirm left/right/up/down axes match the sheep preview mapping.
+  3. Confirm Wander/Flee/normal walking continue while the head looks.
+  4. Confirm eating grass and death suppress LookAt and the head eases back when no target is active.
+
+## 2026-06-16 LookAt retune after first game test
+
+- User retest: LookAt exists, but the sheep looks too often; head rot Z is too high.
+- Changed:
+  - Base `LookAtStartChance` 0.15 -> 0.06. Poll interval stays 0.5s; duration stays 2-4s.
+  - Base `LookAtPitchLimit` 35 -> 24, reducing vertical head rot Z amplitude while keeping yaw at ±70.
+  - Updated static guards and docs to match the new defaults.
+- Next game retest:
+  1. Near-player LookAt should feel noticeably rarer than the first 15% version.
+  2. Vertical head movement should no longer over-raise; left/right range remains unchanged.
+
+## 2026-06-16 Random look-around + keep player LookAt network-cheap
+
+- User request:
+  - Confirm whether player LookAt already syncs only target EntIndex. If yes, only add random look-around.
+  - When not looking at a player, server should every random 1-3s choose yaw ±60 and small pitch ±15, sometimes straight ahead, and low-frequency NW sync those angles.
+  - Random look-around should be active when idle/slow walking; fast running should look straight ahead.
+  - Client mode: valid target entity -> look at player; else valid look-around angle -> look around; else straight ahead. Reuse the same Lerp path.
+- Confirmed:
+  - Player LookAt was already network-cheap: server syncs `BMBLookAtTarget` EntIndex and `BMBLookAtUntil`; the client computes direction from the player's synced position every frame. No per-tick angle NW existed.
+- Implemented:
+  - Added base defaults: `LookAroundEnabled`, `LookAroundIntervalMin/Max=1/3`, `LookAroundYawLimit=60`, `LookAroundPitchLimit=15`, `LookAroundForwardChance=0.35`, `LookAroundMaxSpeed=nil` (`WalkSpeed+10` fallback).
+  - Added NW vars `BMBLookAroundYaw`, `BMBLookAroundPitch`, `BMBLookAroundUntil`. These update only when a new slow/idle look-around target is chosen, not every tick.
+  - Added `UpdateBMBLookAroundController(now)` and client `GetBMBLookAroundHeadAngle()`.
+  - `UpdateBMBLookAtHeadPose` now resolves player target -> look-around angle -> zero and reuses one smoothing path.
+- Next game retest:
+  1. Idle/slow sheep should subtly glance around every 1-3s, with some straight-ahead beats.
+  2. Fast run/Flee should keep the head forward unless an active player LookAt is intentionally in effect.
+  3. Player LookAt should still work from EntIndex and should not become more network-heavy.
+
+## 2026-06-16 Sheep final sound pass
+
+- User request:
+  - Use unpacked Minecraft sheep sounds from `D:\BMBTools\解包音频\minecraft\sounds\mob\sheep`: currently need `say` and `step`.
+  - Eat-grass sound uses `D:\BMBTools\解包音频\minecraft\sounds\dig\grass1-4.ogg`.
+  - Footsteps should be distance-driven, not timer-driven: same source as client leg animation (`speed * FrameTime()`), play when accumulated distance crosses a tuned half-gait threshold, then subtract threshold. Faster run naturally plays denser footsteps.
+  - Basic step version may use sheep's own step OGG before full foot-block step-sound lookup is wired.
+- Assets copied:
+  - `gmod_addon/sound/bmb/mob/sheep/say1-3.ogg`
+  - `gmod_addon/sound/bmb/mob/sheep/step1-5.ogg`
+  - `gmod_addon/sound/bmb/dig/grass1-4.ogg`
+  - `bmb_autorun.lua` registers them with `resource.AddFile`.
+- Implemented:
+  - Sheep `Sounds` table for `Say`, `Step`, and `EatGrass`.
+  - Sheep ambient say uses the same MC-style 80 tick / random.nextInt(1000) model already used by Zombie. Injury now plays sheep say instead of headcrab pain.
+  - Sheep overrides `MaybePlayStep()` as no-op so Base's old timer-driven `NextStepSoundTime` zombie footstep placeholder cannot play for sheep.
+  - Client `UpdateBMBSheepStepSound(speed)` accumulates `BMBSheepStepDistance += speed * FrameTime()`, threshold `StepSoundDistance=35`, volume 0.28->0.48 by speed, pitch random 88-112.
+  - `EatGrass.Try` now calls `mob:PlayBMBEatGrassSound()` when present; sheep plays random `bmb/dig/grass1-4.ogg` at the bite/block-change moment.
+- Verified:
+  - `glualint` passes for `bmb_sheep.lua`, `sv_behaviors.lua`, and `bmb_autorun.lua`.
+  - `check_sequence_animation_adapter.ps1` guards distance-driven sheep step timing and MC sound paths.
+- Next game retest:
+  1. Walking/running footsteps line up with visual foot plants; adjust `StepSoundDistance` if off.
+  2. Running automatically produces denser steps without timer desync.
+  3. Ambient/injury sound is sheep say; eat grass uses random grass dig 1-4.
+
+## 2026-06-16 Sheep sound volume bump
+
+- User retest: sheep sounds are functionally good; overall volume should be a bit louder.
+- Changed:
+  - Step volume range 0.28-0.48 -> 0.38-0.65.
+  - Ambient say volume 0.62 -> 0.78.
+  - Injury say volume 0.70 -> 0.85.
+  - Eat-grass grass-dig volume 0.48 -> 0.65.
+- No timing changes; footsteps remain distance-driven with `StepSoundDistance=35`.
+
+## 2026-06-16 Sheep OGG sample-rate fix
+
+- User screenshot showed GMod error: `Invalid sample rate (48000) for sound 'bmb\dig\grass4.ogg', must be 44100, 22050 or 11025`.
+- Cause: the sound files were already inside the addon, but at least `grass4.ogg` came from the unpacked assets at 48000Hz, which Source rejects for normal sounds.
+- Fixed:
+  - Re-encoded all addon sheep/dig OGG files under `gmod_addon/sound/bmb` to Vorbis `44100 Hz` using `D:\oopz\ffmpeg.exe`.
+  - Synced the re-encoded files to the D-drive live addon.
+  - Verified live `grass4.ogg` and `step1.ogg` report `Audio: vorbis, 44100 Hz, mono`.
+
+## 2026-06-16 Sheep sound volume bump 2
+
+- User: overall sound can be a bit louder again.
+- Changed:
+  - Step volume range 0.38-0.65 -> 0.50-0.82.
+  - Ambient say volume 0.78 -> 0.92.
+  - Injury say volume 0.85 -> 0.98.
+  - Eat-grass grass-dig volume 0.65 -> 0.82.
+- No timing or pitch changes.
+
+## 2026-06-16 Lethal sheep hit still plays hurt say
+
+- User found: if the final attack kills the sheep, there is no hurt say on that hit.
+- Cause: sheep say lived in `OnBMBInjured`, which only runs after base confirms the mob survived the accepted damage. Lethal hits go straight to `OnKilled`.
+- Fixed:
+  - Base accepted-damage path calls optional `OnBMBHurtSound(damageInfo)` immediately after hurt flash and before `SetHealth(...)` / lethal branch.
+  - Sheep implements `OnBMBHurtSound` and plays `PlayBMBSheepSay(0.98)`.
+  - Sheep `OnBMBInjured` no longer plays say, so non-lethal hits do not double-play.
+- Verified: glualint for base/sheep and all `scripts/check_*.ps1` pass; live addon synced.
+
+## 2026-06-16 Physgun drop resumes wander
+
+- User found: after grabbing a sheep with physgun and dropping it, HUD can return to `wander` but the sheep does not move until hit.
+- Diagnosis:
+  - `OnBMBPhysgunPickup()` correctly calls `InterruptBMBMovement()` to stop any active move while held.
+  - `OnBMBPhysgunDrop()` restored gravity and kicked the loco downward, but did not clear `BMBMoveInterrupt`.
+  - It also left desired speed at 0 from held disarm and could leave `BMBInitialIdleUntil` active. A later hit clears/restarts movement, which is why damage “fixes” it.
+- Fixed:
+  - `OnBMBPhysgunDrop()` now calls `ClearBMBMovementInterrupt()`.
+  - Restores `MaintainBMBMoveSpeed(self.WalkSpeed or 80)`.
+  - Sets `BMBInitialIdleUntil = 0`.
+  - Keeps the existing `SetVelocity(0,0,-10)` loco wake-up.
+- Verified: glualint for base and all `scripts/check_*.ps1` pass; live addon synced.

@@ -24,6 +24,17 @@ ENT.FleeKeepFullSpeed = true
 -- 程序化腿摆：满速腿摆 25°，随速度连续缩放；MinAmount 给走路一个下限，使走/跑摆幅都更饱满。
 ENT.LimbSwingMinAmount = 0.25
 ENT.LimbSwingPhaseScale = 0.09
+ENT.StepSoundDistance = 35
+ENT.StepSoundMinSpeed = 8
+ENT.StepSoundLevel = 58
+ENT.StepSoundVolumeMin = 0.50
+ENT.StepSoundVolumeMax = 0.82
+ENT.StepSoundPitchMin = 88
+ENT.StepSoundPitchMax = 112
+ENT.AmbientSoundIntervalTicks = 80
+ENT.AmbientSoundChanceDenominator = 1000
+ENT.AmbientSoundTickRate = 20
+ENT.AmbientSoundMaxCatchupTicks = 4
 -- Sequence locomotion is parked until exported sheep pivots and low-speed playback are stable.
 -- ENT.AnimationSequences = {
 --     idle = "idle",
@@ -52,6 +63,32 @@ ENT.FleePanicMinDistanceCells = 1
 ENT.FleeGiveUpFailures = 4       -- 连续 4 次选不出点/起步即被挡 → 认定无路可逃，放弃恐慌
 ENT.CollisionMins = Vector(-16, -16, 0) -- MC 成年羊宽 0.9 格 ~= 32.4u；保持略小于 36u 一格走廊
 ENT.CollisionMaxs = Vector(16, 16, 44)
+
+ENT.Sounds = {
+    Say = {
+        "bmb/mob/sheep/say1.ogg",
+        "bmb/mob/sheep/say2.ogg",
+        "bmb/mob/sheep/say3.ogg"
+    },
+    Step = {
+        "bmb/mob/sheep/step1.ogg",
+        "bmb/mob/sheep/step2.ogg",
+        "bmb/mob/sheep/step3.ogg",
+        "bmb/mob/sheep/step4.ogg",
+        "bmb/mob/sheep/step5.ogg"
+    },
+    EatGrass = {
+        "bmb/dig/grass1.ogg",
+        "bmb/dig/grass2.ogg",
+        "bmb/dig/grass3.ogg",
+        "bmb/dig/grass4.ogg"
+    }
+}
+
+local function randomSound(list)
+    if not list or #list == 0 then return nil end
+    return list[math.random(1, #list)]
+end
 
 if CLIENT then
     local zeroAngle = Angle(0, 0, 0)
@@ -205,6 +242,28 @@ if CLIENT then
         ent.BMBSheepHeadPoseCleared = true
     end
 
+    function ENT:UpdateBMBSheepStepSound(speed)
+        speed = speed or self:GetVelocity():Length2D()
+
+        if speed <= (self.StepSoundMinSpeed or 8) then
+            self.BMBSheepStepDistance = 0
+            return
+        end
+
+        local stepDistance = self.StepSoundDistance or 35
+        self.BMBSheepStepDistance = (self.BMBSheepStepDistance or 0) + speed * FrameTime()
+        if self.BMBSheepStepDistance < stepDistance then return end
+
+        self.BMBSheepStepDistance = self.BMBSheepStepDistance - stepDistance
+
+        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        if not soundName then return end
+
+        local speedFrac = math.Clamp((speed - (self.WalkSpeed or 70)) / math.max(1, (self.RunSpeed or 100) - (self.WalkSpeed or 70)), 0, 1)
+        local volume = Lerp(speedFrac, self.StepSoundVolumeMin or 0.28, self.StepSoundVolumeMax or 0.48)
+        self:EmitSound(soundName, self.StepSoundLevel or 58, math.random(self.StepSoundPitchMin or 88, self.StepSoundPitchMax or 112), volume)
+    end
+
     function ENT:CacheBMBSheepBones()
         local model = self:GetModel()
         if self.BMBSheepBoneCache and self.BMBSheepBoneCache.model == model then
@@ -265,11 +324,17 @@ if CLIENT then
             return
         end
 
-        clearSheepHeadPoseOnce(self, bones)
+        local lookAtActive = self:UpdateBMBLookAtHeadPose(bones.head)
+        if lookAtActive then
+            self.BMBSheepHeadPoseCleared = false
+        else
+            clearSheepHeadPoseOnce(self, bones)
+        end
 
         local speed = self:GetVelocity():Length2D()
         -- 摆幅/频率统一走 base 的连续驱动:幅度随速度连续缩放,频率随速度推进。
         local phase, swingAmount = self:UpdateBMBLimbSwing(speed)
+        self:UpdateBMBSheepStepSound(speed)
 
         local legSwing = math.sin(phase) * legSwingMax * swingAmount
 
@@ -290,6 +355,66 @@ function ENT:Initialize()
     self.FleeUntil = 0
     self.BMBInitialIdleUntil = CurTime() + math.Rand(self.InitialIdleMin or 4.0, self.InitialIdleMax or 9.0)
     self.NextEatGrassTime = CurTime() + math.Rand(8.0, 20.0)
+    self:ResetBMBAmbientSoundTime()
+    self.BMBNextAmbientSoundTickAt = CurTime() + math.Rand(0, 1 / (self.AmbientSoundTickRate or 20))
+end
+
+function ENT:ResetBMBAmbientSoundTime()
+    self.BMBAmbientSoundTime = -(self.AmbientSoundIntervalTicks or 80)
+end
+
+function ENT:PlayBMBSheepSay(volume)
+    local soundName = randomSound(self.Sounds and self.Sounds.Say)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 70, math.random(90, 110), volume or 0.65)
+end
+
+function ENT:MaybePlayIdleSound()
+    if self.BMBDead then return end
+
+    local now = CurTime()
+    local tickRate = self.AmbientSoundTickRate or 20
+    local tickInterval = 1 / tickRate
+    local nextTick = self.BMBNextAmbientSoundTickAt or now
+    if now < nextTick then return end
+
+    local ticks = math.floor((now - nextTick) / tickInterval) + 1
+    ticks = math.Clamp(ticks, 1, self.AmbientSoundMaxCatchupTicks or 4)
+
+    for _ = 1, ticks do
+        local soundTime = self.BMBAmbientSoundTime
+        if soundTime == nil then
+            soundTime = -(self.AmbientSoundIntervalTicks or 80)
+        end
+
+        if math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
+            self:PlayBMBSheepSay(0.92)
+            self:ResetBMBAmbientSoundTime()
+        else
+            self.BMBAmbientSoundTime = soundTime + 1
+        end
+    end
+
+    self.BMBNextAmbientSoundTickAt = nextTick + ticks * tickInterval
+    if self.BMBNextAmbientSoundTickAt < now - tickInterval then
+        self.BMBNextAmbientSoundTickAt = now + tickInterval
+    end
+end
+
+function ENT:MaybePlayStep()
+    -- Sheep footsteps are client-side and distance-driven from the same speed integration as the visual leg phase.
+end
+
+function ENT:PlayBMBEatGrassSound()
+    local soundName = randomSound(self.Sounds and self.Sounds.EatGrass)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 64, math.random(92, 108), 0.82)
+end
+
+function ENT:OnBMBHurtSound(_)
+    self:PlayBMBSheepSay(0.98)
 end
 
 function ENT:RunBehaviour()
@@ -353,6 +478,4 @@ function ENT:OnBMBInjured(damageInfo, wasFleeing)
     elseif not wasFleeing then
         self.BMBMoveInterrupt = true
     end
-
-    self:EmitSound("npc/headcrab/pain1.wav", 70, math.random(98, 108), 0.55)
 end

@@ -1,5 +1,19 @@
 # Findings
 
+## Base LookAtPlayerGoal：偶发注视是并行控制器，不是行为状态（2026-06-16）
+
+- **MC LookAtPlayerGoal 的观感重点是“偶尔看一眼”**：服务端只在未看目标时低频轮询（当前 0.5s），首轮 15% 实测太频繁，默认已降到 6%，一次持续 2-4s；目标在范围内也不能每 tick 续期，否则会变成“玩家靠近就一直盯”。BMB 用 `BMBLookAtTarget` + `BMBLookAtUntil` NW 同步“看谁/看到何时”，超时、离开范围、吃草或死亡就清掉。
+- **LookAt 不应进移动/行为状态机**：它和 Wander/Flee/Chase 并行，只控制头骨，不打断 locomotion，不抢 `RunBehaviour`。Base `Think` 里独立运行服务端控制器，客户端由每只 mob 的 `UpdateBMBVisualBones` 在普通 pose 分支调用 `UpdateBMBLookAtHeadPose(headBone)`。
+- **轴向以 sheep 实测为准，别按骨骼名字猜**：当前通用映射采用 sheep preview 实测结果：head rot X 正=向左、负=向右；head rot Z 正=向上、负=向下；Y 不参与 LookAt。计算上先把目标转到 mob 本地空间，yaw 来自 local Y/X，pitch 来自 local Z/horizontal，然后分别钳制 `±70/±24` 并 Lerp 平滑；首轮 `±35` 实测 Z 太高。
+- **头骨所有权要分支明确**：死亡和吃草 pose 提前 return，完全压过 LookAt；普通移动不再每帧锁死头骨，只在 LookAt active 时写头角度，目标消失后平滑回正再交回“清一次旧 pose”的逻辑。这样后续牛/猪只需要配头骨名、范围、概率、时长和 clamp。
+- **随机环视也只同步低频目标，不同步每帧姿态**：看玩家已经只同步 EntIndex/timeout，客户端用玩家位置实时算方向；随机环视同理，服务端只在慢走/静止时每 1-3s 写一次 `BMBLookAroundYaw/Pitch/Until`，客户端复用 LookAt 的 Lerp。快跑时服务端清环视，客户端回正，避免 Flee/跑动时头乱扫。
+
+## Sheep sound：脚步跟距离走，别跟计时器走（2026-06-16）
+
+- **脚步应该挂在视觉步态的同一个距离源上**：当前程序化腿摆是 `phase += speed * FrameTime() * LimbSwingPhaseScale`，半个步态波长对应距离约 `pi / 0.09 = 34.9u`。Sheep 脚步因此用 `BMBSheepStepDistance += speed * FrameTime()`，阈值先取 `StepSoundDistance=35`，跨阈值播放并减掉阈值。走/跑只改变距离增长速度，脚步自然变密，不需要单独定时器。
+- **Base 的旧 `MaybePlayStep` 是占位计时器，不适合 sheep**：base 仍有 `NextStepSoundTime` + zombie foot placeholder 给旧路径调用兜底；sheep 必须 override 成 no-op，由客户端视觉分支自己播脚步，否则会出现服务端固定 0.5s 脚步和视觉腿摆不同步。
+- **声音来源先落到 MC 原始 OGG，方块 step 后续再接**：本轮基础版用 sheep 自己的 `step1-5.ogg`，吃草用 `dig/grass1-4.ogg`。后续接脚下方块 step 时，只换“迈步时播放哪个 sound list”，不要改步态时机；BMB 只决定迈步时机，block 系统决定材质声音。
+
 ## 死亡序列重做：骨骼倾倒 + 多帧 VTF poof（2026-06-16）
 
 - **整只翻必须转 root，不能转 body**：SMD 骨骼层级是 `root → body → leg0-3` 且 `head → root`。转 body 只带动 body+腿，head 留原地（用户担心的"只身子倒"）；转 root 才整只翻。这类"哪根骨骼是共同祖先"先读 `reference.smd` 的 nodes 块，不要猜。

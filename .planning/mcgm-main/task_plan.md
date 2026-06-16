@@ -167,6 +167,8 @@ Phase 2
 - [x] 模型接入实测迭代 2：sheep `legSwingMax=25.0`；`LimbSwingPhaseScale=0.13`，走/跑腿频率都降低；普通移动头部 swing 关闭，退出吃草/preview 后只清一次旧 head pose，不每帧锁死 head 骨；check 锁值同步到 25/0.13（待用户复测）
 - [x] 模型接入实测迭代 3：腿频率再降 `LimbSwingPhaseScale 0.13→0.09`（走/跑都更慢）；修“头部 swing 关了但游戏仍晃”——根因是 live addon(D 盘)漏同步、游戏读到旧 `walkHead/idleHead`，本轮 robocopy 全量同步并验证 D 盘已是新代码；check phase-scale 锁值同步 0.09（待用户复测）
 - [x] 死亡序列重做：脚本化骨骼倾倒（root 0→90° lerp 0.8s，整只翻、方向固定，关物理尸体）+ 停留 1.9s + Java poof 粒子（`vtf.py` 多帧 VTF、`generic_0..7`→`mc_poof.vtf/vmt`、effect 20 粒子 8 帧轮播 0.6s 淡出）；侧倒轴 roll 待实测（待用户复测）
+- [x] Base 通用 LookAtPlayerGoal + 随机环视：看玩家只 NW 同步 EntIndex/timeout（首轮 15% 太频繁，本轮降到 6%、2-4s），客户端按玩家位置算方向；没看玩家时慢走/静止每 1-3s 低频同步随机 yaw ±60 / pitch ±15 或正前，快跑回正；head rot Z 上限 35→24；sheep normal 分支接入，吃草/死亡分支抑制（待用户复测调参）
+- [x] Sheep sound 收尾：接入 MC `say1-3`、`step1-5`、`dig/grass1-4`；ambient/受击用 say；吃草咬草用 grass dig；脚步改客户端距离驱动（`speed * FrameTime()` 累积，阈值 35u）对齐腿摆，不再用计时器（待用户复测）
 - [ ] 做第一只 Minecraft 风格 Zombie 模型
 - [ ] 做 idle/walk/attack/hurt/death 动画
 - [ ] 让脚步声和动画帧同步

@@ -4,6 +4,8 @@
 
 ## Fable 接手后的增量（2026-06-10，最新）
 
+- **2026-06-16 最新：Base 通用 LookAtPlayerGoal 已接入 Sheep，并新增随机环视**。看玩家仍保持省网络：服务端只同步 `BMBLookAtTarget` EntIndex + `BMBLookAtUntil`，客户端用玩家已同步的位置每帧算方向。服务端低频概率控制（0.5s 轮询、首轮 15% 太频繁，本轮降到 6%、2-4s 持续），吃草/死亡/离开范围清空；客户端 `UpdateBMBLookAtHeadPose(headBone)` 按相对身体方向计算 yaw/pitch、钳制 `±70/±24`、Lerp 平滑。没看玩家时，静止/慢走每 1-3s 低频 NW `BMBLookAroundYaw/Pitch/Until`（yaw ±60、pitch ±15，35% 正前）；快跑清环视回正。Sheep normal visual branch 调用 base helper，吃草/死亡分支提前 return。复测重点：玩家靠近时只偶尔看 2-4s，不持续盯；idle/慢走有小幅环视；快跑/Flee 不乱扫；head rot Z 不再抬太高。
+- **2026-06-16 最新：Sheep sound 收尾已切，待复测**。音频从 `D:\BMBTools\解包音频` 复制进 addon：`sound/bmb/mob/sheep/say1-3.ogg`、`step1-5.ogg`、`sound/bmb/dig/grass1-4.ogg`，并在 autorun 注册 `resource.AddFile`。Sheep ambient/受击用 say；吃草咬草/变 dirt 那刻走 `PlayBMBEatGrassSound()` 随机 grass dig；脚步改为客户端距离驱动，`BMBSheepStepDistance += speed * FrameTime()`，阈值 `StepSoundDistance=35`，音量随速度 0.28→0.48，pitch 88-112 随机。Sheep 覆盖 base `MaybePlayStep()` 为 no-op，避免旧 0.5s 计时器脚步回归。
 - "走一会停一下换方向"已修：Wander 改回 A* 完整路径 + 到站停顿，根因和修法见 `findings.md` 开头一节。
 - 原地扭动真根因已定位并修复：goalTolerance 12->18 消减速区死区；FaceTarget 改 `loco:FaceTowards`（弃 SetAngles）。
 - 新增 `SteerTowards`：目标在身后先原地转身再走，修"面朝前方倒退"。`TurnRate=400`、`TurnInPlaceAngle=110`。

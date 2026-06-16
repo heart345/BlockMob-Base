@@ -171,6 +171,25 @@ ENT.AnimationMovePlaybackRateMin = 0
 ENT.AnimationMovePlaybackRateMax = 2.5
 ENT.AnimationPlaybackRateMin = 0.05
 ENT.AnimationPlaybackRateMax = 2.5
+-- 并行头部注视控制：服务端低频决定偶尔看谁，客户端按骨骼轴映射平滑转头。
+-- 默认对齐 MC LookAtPlayerGoal 的"偶尔看一眼"，不是玩家靠近就持续盯住。
+ENT.LookAtEnabled = true
+ENT.LookAtHeadBoneName = "head"
+ENT.LookAtRangeCells = 8
+ENT.LookAtPollInterval = 0.5
+ENT.LookAtStartChance = 0.06
+ENT.LookAtDurationMin = 2.0
+ENT.LookAtDurationMax = 4.0
+ENT.LookAtYawLimit = 70
+ENT.LookAtPitchLimit = 24
+ENT.LookAtLerpSpeed = 8
+ENT.LookAroundEnabled = true
+ENT.LookAroundIntervalMin = 1.0
+ENT.LookAroundIntervalMax = 3.0
+ENT.LookAroundYawLimit = 60
+ENT.LookAroundPitchLimit = 15
+ENT.LookAroundForwardChance = 0.35
+ENT.LookAroundMaxSpeed = nil -- nil = WalkSpeed + 10; fast running looks straight ahead.
 -- 程序化腿摆(非 sequence 动画路)的通用速度→相位/幅度驱动,牛猪羊可共用。
 -- 幅度随速度连续缩放(取代走/跑二元开关),频率随速度推进(走慢跑快自然区分)。
 ENT.LimbSwingMinSpeed = 8        -- 低于此速度视为静止,摆幅强度→0
@@ -220,6 +239,15 @@ end
 local function scaledBlockDistance(value, scale, fallbackScale)
     if value then return value end
     return getBlockSizeValue() * (scale or fallbackScale or 1)
+end
+
+local function atan2(y, x)
+    if x > 0 then return math.atan(y / x) end
+    if x < 0 and y >= 0 then return math.atan(y / x) + math.pi end
+    if x < 0 and y < 0 then return math.atan(y / x) - math.pi end
+    if y > 0 then return math.pi * 0.5 end
+    if y < 0 then return -math.pi * 0.5 end
+    return 0
 end
 
 if CLIENT then
@@ -329,6 +357,11 @@ function ENT:BaseInitialize()
     self:SetNWFloat("BMBInvulnerableUntil", 0)
     self:SetNWFloat("BMBKnockbackUntil", 0)
     self:SetNWFloat("BMBKnockbackSpeed", 0)
+    self:SetNWInt("BMBLookAtTarget", 0)
+    self:SetNWFloat("BMBLookAtUntil", 0)
+    self:SetNWFloat("BMBLookAroundYaw", 0)
+    self:SetNWFloat("BMBLookAroundPitch", 0)
+    self:SetNWFloat("BMBLookAroundUntil", 0)
 end
 
 function ENT:StartBMBActivity(activity)
@@ -389,6 +422,221 @@ function ENT:UpdateBMBLimbSwing(speed2D)
     self.BMBLimbSwingPhase = phase % (math.pi * 2)
 
     return self.BMBLimbSwingPhase, amount
+end
+
+function ENT:GetBMBLookAtRange()
+    return scaledBlockDistance(self.LookAtRange, self.LookAtRangeCells, 8)
+end
+
+function ENT:ClearBMBLookAtTarget()
+    if self:GetNWInt("BMBLookAtTarget", 0) == 0 and self:GetNWFloat("BMBLookAtUntil", 0) == 0 then return end
+
+    self:SetNWInt("BMBLookAtTarget", 0)
+    self:SetNWFloat("BMBLookAtUntil", 0)
+end
+
+function ENT:ClearBMBLookAroundTarget()
+    if self:GetNWFloat("BMBLookAroundUntil", 0) == 0
+        and self:GetNWFloat("BMBLookAroundYaw", 0) == 0
+        and self:GetNWFloat("BMBLookAroundPitch", 0) == 0 then
+        return
+    end
+
+    self:SetNWFloat("BMBLookAroundYaw", 0)
+    self:SetNWFloat("BMBLookAroundPitch", 0)
+    self:SetNWFloat("BMBLookAroundUntil", 0)
+end
+
+function ENT:IsBMBLookAtSuppressed()
+    local state = self:GetNWString("BMBState", self.State or "idle")
+    return self.BMBDead or state == "dead" or state == "eat_grass"
+end
+
+function ENT:IsBMBLookAtCandidateValid(target, rangeSqr)
+    if not IsValid(target) or not target:IsPlayer() then return false end
+    if target.Alive and not target:Alive() then return false end
+
+    return self:GetPos():DistToSqr(target:GetPos()) <= rangeSqr
+end
+
+function ENT:FindBMBLookAtPlayer(rangeSqr)
+    local candidates = {}
+
+    for _, ply in ipairs(player.GetAll()) do
+        if self:IsBMBLookAtCandidateValid(ply, rangeSqr) then
+            candidates[#candidates + 1] = ply
+        end
+    end
+
+    if #candidates == 0 then return nil end
+    return candidates[math.random(1, #candidates)]
+end
+
+function ENT:IsBMBLookAroundActiveForSpeed()
+    local maxSpeed = self.LookAroundMaxSpeed or ((self.WalkSpeed or 80) + 10)
+    return self:GetVelocity():Length2D() <= maxSpeed
+end
+
+function ENT:UpdateBMBLookAroundController(now)
+    if self.LookAroundEnabled == false or not self:IsBMBLookAroundActiveForSpeed() then
+        self:ClearBMBLookAroundTarget()
+        self.BMBNextLookAroundAt = now + math.Rand(self.LookAroundIntervalMin or 1.0, self.LookAroundIntervalMax or 3.0)
+        return
+    end
+
+    if now < (self.BMBNextLookAroundAt or 0) then return end
+
+    local delay = math.Rand(self.LookAroundIntervalMin or 1.0, self.LookAroundIntervalMax or 3.0)
+    self.BMBNextLookAroundAt = now + delay
+
+    local yaw = 0
+    local pitch = 0
+    if math.Rand(0, 1) > (self.LookAroundForwardChance or 0.35) then
+        yaw = math.Rand(-(self.LookAroundYawLimit or 60), self.LookAroundYawLimit or 60)
+        pitch = math.Rand(-(self.LookAroundPitchLimit or 15), self.LookAroundPitchLimit or 15)
+    end
+
+    self:SetNWFloat("BMBLookAroundYaw", yaw)
+    self:SetNWFloat("BMBLookAroundPitch", pitch)
+    self:SetNWFloat("BMBLookAroundUntil", self.BMBNextLookAroundAt + 0.1)
+end
+
+function ENT:UpdateBMBLookAtController()
+    if self.LookAtEnabled == false then
+        self:ClearBMBLookAtTarget()
+        self:ClearBMBLookAroundTarget()
+        return
+    end
+
+    if self:IsBMBLookAtSuppressed() then
+        self:ClearBMBLookAtTarget()
+        self:ClearBMBLookAroundTarget()
+        return
+    end
+
+    local now = CurTime()
+    local range = self:GetBMBLookAtRange()
+    local rangeSqr = range * range
+    local targetIndex = self:GetNWInt("BMBLookAtTarget", 0)
+    local lookUntil = self:GetNWFloat("BMBLookAtUntil", 0)
+
+    if targetIndex > 0 and lookUntil > now then
+        local target = Entity(targetIndex)
+        if self:IsBMBLookAtCandidateValid(target, rangeSqr) then
+            self:ClearBMBLookAroundTarget()
+            return
+        end
+
+        self:ClearBMBLookAtTarget()
+    end
+
+    if targetIndex > 0 or lookUntil > 0 then
+        self:ClearBMBLookAtTarget()
+    end
+
+    if now < (self.BMBNextLookAtCheck or 0) then
+        self:UpdateBMBLookAroundController(now)
+        return
+    end
+    self.BMBNextLookAtCheck = now + (self.LookAtPollInterval or 0.5)
+
+    if math.Rand(0, 1) > (self.LookAtStartChance or 0.06) then
+        self:UpdateBMBLookAroundController(now)
+        return
+    end
+
+    local target = self:FindBMBLookAtPlayer(rangeSqr)
+    if not IsValid(target) then
+        self:UpdateBMBLookAroundController(now)
+        return
+    end
+
+    self:ClearBMBLookAroundTarget()
+    self:SetNWInt("BMBLookAtTarget", target:EntIndex())
+    self:SetNWFloat("BMBLookAtUntil", now + math.Rand(self.LookAtDurationMin or 2.0, self.LookAtDurationMax or 4.0))
+end
+
+if CLIENT then
+    function ENT:GetBMBLookAtHeadBoneName()
+        return self.LookAtHeadBoneName or "head"
+    end
+
+    function ENT:GetBMBLookAtTarget()
+        local lookUntil = self:GetNWFloat("BMBLookAtUntil", 0)
+        if lookUntil <= CurTime() then return nil end
+
+        local targetIndex = self:GetNWInt("BMBLookAtTarget", 0)
+        if targetIndex <= 0 then return nil end
+
+        local target = Entity(targetIndex)
+        if not IsValid(target) then return nil end
+
+        return target
+    end
+
+    function ENT:GetBMBLookAtTargetPosition(target)
+        if target.EyePos then return target:EyePos() end
+        return target:WorldSpaceCenter()
+    end
+
+    function ENT:ComputeBMBLookAtHeadAngle(target)
+        local localTarget = self:WorldToLocal(self:GetBMBLookAtTargetPosition(target))
+        local horizontal = math.max(0.001, math.sqrt(localTarget.x * localTarget.x + localTarget.y * localTarget.y))
+        local yaw = math.deg(atan2(localTarget.y, localTarget.x))
+        local pitch = math.deg(atan2(localTarget.z, horizontal))
+
+        -- MC sheep model mapping from in-game pose preview:
+        -- Head rot X: positive = look left, negative = look right.
+        -- Head rot Z: positive = look up, negative = look down.
+        return Angle(
+            math.Clamp(yaw, -(self.LookAtYawLimit or 70), self.LookAtYawLimit or 70),
+            0,
+            math.Clamp(pitch, -(self.LookAtPitchLimit or 24), self.LookAtPitchLimit or 24)
+        )
+    end
+
+    function ENT:GetBMBLookAroundHeadAngle()
+        if self:GetNWFloat("BMBLookAroundUntil", 0) <= CurTime() then return nil end
+
+        return Angle(
+            math.Clamp(self:GetNWFloat("BMBLookAroundYaw", 0), -(self.LookAroundYawLimit or 60), self.LookAroundYawLimit or 60),
+            0,
+            math.Clamp(self:GetNWFloat("BMBLookAroundPitch", 0), -(self.LookAroundPitchLimit or 15), self.LookAroundPitchLimit or 15)
+        )
+    end
+
+    function ENT:UpdateBMBLookAtHeadPose(headBone)
+        if not headBone then return false end
+
+        local target = self:GetBMBLookAtTarget()
+        local lookAroundAngle = nil
+        local targetAngle = Angle(0, 0, 0)
+        if target then
+            targetAngle = self:ComputeBMBLookAtHeadAngle(target)
+        else
+            lookAroundAngle = self:GetBMBLookAroundHeadAngle()
+            if lookAroundAngle then
+                targetAngle = lookAroundAngle
+            end
+        end
+
+        local current = self.BMBLookAtHeadAngle or Angle(0, 0, 0)
+        local fraction = math.Clamp(FrameTime() * (self.LookAtLerpSpeed or 8), 0, 1)
+        local nextAngle = Angle(
+            Lerp(fraction, current.p, targetAngle.p),
+            0,
+            Lerp(fraction, current.r, targetAngle.r)
+        )
+
+        self.BMBLookAtHeadAngle = nextAngle
+
+        local active = target ~= nil or lookAroundAngle ~= nil or math.abs(nextAngle.p) > 0.05 or math.abs(nextAngle.r) > 0.05
+        if active then
+            self:ManipulateBoneAngles(headBone, nextAngle)
+        end
+
+        return active
+    end
 end
 
 function ENT:UsesBMBSequenceAnimation()
@@ -866,6 +1114,8 @@ function ENT:Think()
 
     if SERVER then
         if self.BMBDead then
+            self:ClearBMBLookAtTarget()
+
             -- 死亡后每 tick 缴械 loco：否则 flee 的水平动量 / 跳跃中死亡的弹道速度残留会让尸体跟着跑或跳
             if self.loco then
                 if self.loco.SetGravity then self.loco:SetGravity(0) end
@@ -877,6 +1127,8 @@ function ENT:Think()
             self:NextThink(CurTime())
             return true
         end
+
+        self:UpdateBMBLookAtController()
 
         if self.BMBHeld then
             -- 物理枪持握中：loco 每 tick 缴械。否则 loco 醒着时重力下拽 + 出固体
@@ -941,6 +1193,8 @@ function ENT:OnBMBPhysgunDrop(_)
     if not self.BMBHeld then return end
 
     self.BMBHeld = false
+    self:ClearBMBMovementInterrupt()
+
     if self.loco.SetGravity and self.BMBHeldGravity then
         self.loco:SetGravity(self.BMBHeldGravity)
     end
@@ -949,7 +1203,10 @@ function ENT:OnBMBPhysgunDrop(_)
     -- 踹一脚向下速度：被抓瞬间 loco 若在睡眠（零速 + 自认在地面）物理更新被短路，
     -- 松手悬空也不掉；这脚把它踹醒，挂天上/半空松手的都正常受重力下落
     self.loco:SetVelocity(Vector(0, 0, -10))
+    self:MaintainBMBMoveSpeed(self.WalkSpeed or 80)
+    self.BMBInitialIdleUntil = 0
     self:SetBMBMoveMode("idle")
+    self:StartBMBIdleActivity()
 end
 
 if SERVER then
@@ -3790,6 +4047,9 @@ function ENT:OnTakeDamage(damageInfo)
     self.BMBDamageInvulnerableUntil = now + (self.DamageInvulnerabilityTime or 1.0)
     self:SetNWFloat("BMBInvulnerableUntil", self.BMBDamageInvulnerableUntil)
     self:StartBMBHurtFlash()
+    if self.OnBMBHurtSound then
+        self:OnBMBHurtSound(damageInfo)
+    end
 
     self:SetHealth(self:Health() - damage)
     self:SetNWInt("BMBHealth", self:Health())

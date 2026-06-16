@@ -209,7 +209,12 @@ function BMB.Behaviors.EatGrass.Try(mob)
     end
 
     BMB.BlockWorld.SetBlockAt(blockCoord, BMB.BlockTypes.Dirt, mob)
-    mob:EmitSound("npc/barnacle/barnacle_crunch2.wav", 65, math.random(95, 105), 0.45)
+    if mob.PlayBMBEatGrassSound then
+        mob:PlayBMBEatGrassSound()
+    else
+        mob:EmitSound("npc/barnacle/barnacle_crunch2.wav", 65, math.random(95, 105), 0.45)
+    end
+
     mob.NextEatGrassTime = CurTime() + math.Rand(mob.EatGrassCooldownMin or 25, mob.EatGrassCooldownMax or 45)
 
     local remaining = math.max(0, totalDuration - biteDelay)

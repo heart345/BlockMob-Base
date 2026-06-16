@@ -44,6 +44,11 @@ Assert-Contains $base "stranded_bail_retry" "HUD mode should expose stranded ret
 Assert-Contains $base "function\s+ENT:MaintainBMBDropAir\s*\(" "drop edges need an air handler that preserves facing/velocity"
 Assert-Contains $base "activeAction\s*==\s*""drop""[\s\S]*MaintainBMBDropAir" "drop branch must not use generic air steering that can turn backward"
 
+Assert-Contains $base "function\s+ENT:OnBMBPhysgunDrop\s*\(" "physgun drop should have an explicit recovery hook"
+Assert-Contains $base "OnBMBPhysgunDrop[\s\S]*ClearBMBMovementInterrupt" "physgun drop must clear the pickup movement interrupt so wander can resume"
+Assert-Contains $base "OnBMBPhysgunDrop[\s\S]*MaintainBMBMoveSpeed\(self\.WalkSpeed or 80\)" "physgun drop must restore a non-zero desired speed budget"
+Assert-Contains $base "OnBMBPhysgunDrop[\s\S]*BMBInitialIdleUntil\s*=\s*0" "physgun drop should not leave sheep stuck behind the spawn idle gate"
+
 Assert-Contains $base "BlockHopLaunchLateralToleranceScale" "hop launch must define a lateral alignment tolerance"
 Assert-Contains $base "lateralOffset" "hop launch must measure lateral offset from the intended launch line"
 Assert-Contains $base "reason\s*=\s*""align""" "hop launch must steer to alignment before jumping"
