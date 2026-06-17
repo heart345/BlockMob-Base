@@ -1472,6 +1472,13 @@ function ENT:StartBMBKnockback(damageInfo)
 
     self.loco:SetVelocity(Vector(self.BMBKnockbackVelocity.x, self.BMBKnockbackVelocity.y, verticalSpeed))
 
+    -- 唤醒/engage loco：站定（aim 等）状态下 loco 处于 idle，纯 SetVelocity 不会推动落地的 nextbot；
+    -- 朝击退方向给一个 Approach 让 loco 参与，移动中的怪不受影响。
+    local flatKb = Vector(self.BMBKnockbackVelocity.x, self.BMBKnockbackVelocity.y, 0)
+    if self.loco.Approach and flatKb:LengthSqr() > 1 then
+        self.loco:Approach(self:GetPos() + flatKb, self.BMBKnockbackLocoSpeed or speed)
+    end
+
     return true
 end
 
@@ -1506,6 +1513,13 @@ function ENT:RunBMBKnockback()
         self:SetBMBMoveMode("knockback")
         self:MaintainBMBKnockbackSpeedBudget()
         self.loco:SetVelocity(Vector(baseVelocity.x * remaining, baseVelocity.y * remaining, currentVelocity.z))
+
+        -- 持续 engage loco（用衰减后的目标，避免给站定怪额外加速）
+        local flatKb = Vector(baseVelocity.x * remaining, baseVelocity.y * remaining, 0)
+        if self.loco.Approach and flatKb:LengthSqr() > 1 then
+            self.loco:Approach(self:GetPos() + flatKb, self.BMBKnockbackLocoSpeed or flatKb:Length())
+        end
+
         self:UpdateBMBApproachDebug(nil, 0)
 
         coroutine.yield()

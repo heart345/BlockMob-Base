@@ -7,6 +7,7 @@ BMB.Behaviors.EatGrass = BMB.Behaviors.EatGrass or {}
 BMB.Behaviors.SeekTarget = BMB.Behaviors.SeekTarget or {}
 BMB.Behaviors.Chase = BMB.Behaviors.Chase or {}
 BMB.Behaviors.MeleeAttack = BMB.Behaviors.MeleeAttack or {}
+BMB.Behaviors.RangedAttack = BMB.Behaviors.RangedAttack or {}
 
 local MIN_VALID_DIRECTION_SQR = 0.0001
 
@@ -79,11 +80,15 @@ end
 -- 璺戝畬涓€娈佃繕鍦ㄦ亹鎱岀獥鍙ｅ唴灏卞啀閫変笅涓€娈碘€斺€斿ぇ骞冲湴鐨勮鎰熷氨鏄殢鏈轰贡璺戙€佷笖璺戜笉杩溿€?
 -- 鍊欓€夌偣鍏ㄩ儴涓嶅彲杈撅紙MC锛?0 娆″叏杩囦笉浜嗗璺牎楠?鈫?canUse false锛? 娌″湴鏂硅窇锛岀珯浣忎笉鎭愭厡銆?
 
-local function pickPanicDestination(mob)
+local function pickPanicDestination(mob, threat)
     -- MC DefaultRandomPos.getPos(mob, 5, 4)锛氭按骞?卤5 鏍奸殢鏈猴紱RANDOM_POS_ATTEMPTS = 10
     local size = blockSize()
     local radius = mob.FleePanicRadius or size * (mob.FleePanicRadiusCells or 5)
     local minDistance = mob.FleePanicMinDistance or size * (mob.FleePanicMinDistanceCells or 1)
+
+    -- threat 缁欏畾鏃讹紙濡傞 qq楠湨閫冪嫾锛夛細鍊欓€夌偣鍋忓悜杩滅 threat锛圡C AvoidEntityGoal.getPosAway 璇箟锛夈€?
+    local threatPos = IsValid(threat) and threat:GetPos() or nil
+    local mobDistToThreatSqr = threatPos and mob:GetPos():DistToSqr(threatPos) or nil
 
     for _ = 1, 10 do
         local candidate = BMB.BlockWorld.GetRandomWalkablePoint(mob:GetPos(), radius, mob)
@@ -93,6 +98,12 @@ local function pickPanicDestination(mob)
         local distance = offset:Length2D()
 
         if distance >= minDistance and distance <= radius then
+            local awayOk = true
+            if threatPos and mobDistToThreatSqr then
+                awayOk = candidate:DistToSqr(threatPos) > mobDistToThreatSqr
+            end
+
+            if awayOk then
             offset:Normalize()
 
             -- MC 鐢ㄥ璺?malus 鏍￠獙鍊欓€夌偣鍙揪锛汢MB 鐨勬柟鍧?A* 鐪嬩笉鍒?prop 鍜?Source 骞冲彴杈圭紭锛?
@@ -104,13 +115,14 @@ local function pickPanicDestination(mob)
             if not mob.IsMovementTargetSafe or mob:IsMovementTargetSafe(probeTarget, probe) then
                 return candidate
             end
+            end
         end
     end
 
     return nil
 end
 
-function BMB.Behaviors.Flee.Run(mob)
+function BMB.Behaviors.Flee.Run(mob, threat)
     -- 杩炵画澶辫触锛堥€変笉鍑哄€欓€夌偣 / 璧锋鍗宠鎸★級杈惧埌涓婇檺 = 纭鏃犺矾鍙€冿紝鎻愬墠缁撴潫鎭愭厡銆?
     -- 瀵归綈 MC 瀹炴祴锛氳鍥村湪灏忓彴瀛愪笂鐨勫弸濂界敓鐗╁啿鍑犱笅灏辩珯浣忥紝涓嶄細鏃犻檺涔辨挒缁曞湀
     local failures = 0
@@ -125,7 +137,7 @@ function BMB.Behaviors.Flee.Run(mob)
             mob.BMBMoveInterrupt = false
         end
 
-        local destination = pickPanicDestination(mob)
+        local destination = pickPanicDestination(mob, threat)
         local moved = false
 
         if destination then
@@ -770,3 +782,167 @@ function BMB.Behaviors.Chase.Run(mob, target)
 
     return false
 end
+
+-- RangedAttack = MeleeAttack 的远程加强版（骷髅弓箭）。
+-- 解耦：「我想站哪」（chase 接近 / aim 停下，M2 加 strafe）和「我何时射」（拉弓/放箭）是两件事。
+-- Update 每 tick 调一次；chase 分支用阻塞式 Chase.Run（多 tick），aim 分支只做一 tick，
+-- 由 RunBehaviour 的 coroutine.yield/wait 提供逐 tick 节奏。
+
+local function rangedEyePos(ent)
+    if ent.EyePos then
+        local ok, pos = pcall(ent.EyePos, ent)
+        if ok and pos then return pos end
+    end
+    return ent:WorldSpaceCenter()
+end
+
+function BMB.Behaviors.RangedAttack.HasLineOfSight(mob, target)
+    if not IsValid(target) then return false end
+
+    local tr = util.TraceLine({
+        start = rangedEyePos(mob),
+        endpos = rangedEyePos(target),
+        filter = { mob, target },
+        mask = MASK_SHOT
+    })
+
+    return (not tr.Hit) or tr.Entity == target
+end
+
+-- 维护 mob.BMBSeeTime（秒）：看得见 +dt、看不见 -dt，可见性翻转清零。返回当前是否可见。
+function BMB.Behaviors.RangedAttack.UpdateSightMemory(mob, target, dt)
+    local visible = BMB.Behaviors.RangedAttack.HasLineOfSight(mob, target)
+    local prev = mob.BMBSeeTime or 0
+
+    if visible then
+        if prev < 0 then prev = 0 end
+        mob.BMBSeeTime = math.min(prev + dt, 5.0)
+    else
+        if prev > 0 then prev = 0 end
+        mob.BMBSeeTime = math.max(prev - dt, -10.0)
+    end
+
+    return visible
+end
+
+function BMB.Behaviors.RangedAttack.GetArrowSpawnPos(mob)
+    local forward = mob.GetForward and mob:GetForward() or Vector(1, 0, 0)
+    -- 显式高度：nextbot 的 EyePos 偏低（裆部），改用脚底 + RangedSpawnHeight（弓/手高）。
+    local height = mob.RangedSpawnHeight or 50
+    return mob:GetPos() + Vector(0, 0, height) + forward * (mob.RangedSpawnForward or 16)
+end
+
+function BMB.Behaviors.RangedAttack.Fire(mob, target)
+    if not IsValid(target) then return end
+
+    local spawnPos = BMB.Behaviors.RangedAttack.GetArrowSpawnPos(mob)
+    local d = rangedEyePos(target) - spawnPos
+    local horiz = math.sqrt(d.x * d.x + d.y * d.y)
+    -- 抛物线补偿（无空气阻力的精确提前量，随距离平方增长）：让箭下坠后正好落到目标。
+    -- 补偿 Δz = 0.5*g*horiz²/speed²（推导自 z(t)=vz·t-½g·t²=Δ 且 t=horiz/vx）；ArrowArcTuning 微调。
+    local g = mob.ArrowGravity or 730
+    local s = mob.ArrowSpeed or 1168
+    d.z = d.z + 0.5 * g * horiz * horiz / (s * s) * (mob.ArrowArcTuning or 1.0)
+    local dir = d:GetNormalized()
+
+    local arrow = ents.Create("bmb_arrow")
+    if not IsValid(arrow) then return end
+
+    arrow:SetPos(spawnPos)
+    arrow:SetAngles(dir:Angle())
+    arrow:Spawn()
+    arrow:Activate()
+
+    if arrow.SetupArrow then
+        arrow:SetupArrow(mob, dir, mob.ArrowSpeed, mob.ArrowSpread, mob.ArrowDamage, mob.ArrowGravity)
+    end
+
+    if mob.PlayBMBRangedShootSound then mob:PlayBMBRangedShootSound() end
+    if mob.SetNWFloat then mob:SetNWFloat("BMBAttackStartedAt", CurTime()) end
+end
+
+-- 拉弓/放箭计时（mob.BMBDrawing / mob.BMBDrawStart / mob.NextRangedAttackTime）。
+function BMB.Behaviors.RangedAttack.UpdateDrawFire(mob, target, visible)
+    local now = CurTime()
+    local seeTime = mob.BMBSeeTime or 0
+    local lossCancel = mob.RangedSightLossTime or -3.0
+    local drawTime = mob.RangedDrawTime or 1.0
+    local interval = mob.RangedAttackInterval or 2.0
+
+    if not mob.BMBDrawing then
+        if now >= (mob.NextRangedAttackTime or 0) and seeTime > lossCancel then
+            mob.BMBDrawing = true
+            mob.BMBDrawStart = now
+            if mob.SetNWFloat then mob:SetNWFloat("BMBDrawStart", now) end
+        end
+        return
+    end
+
+    -- 拉弓中
+    if not visible and seeTime < lossCancel then
+        mob.BMBDrawing = false
+        mob.BMBDrawStart = nil
+        if mob.SetNWFloat then mob:SetNWFloat("BMBDrawStart", 0) end
+        return
+    end
+
+    if visible and (now - (mob.BMBDrawStart or now)) >= drawTime then
+        BMB.Behaviors.RangedAttack.Fire(mob, target)
+        mob.BMBDrawing = false
+        mob.BMBDrawStart = nil
+        if mob.SetNWFloat then mob:SetNWFloat("BMBDrawStart", 0) end
+        mob.NextRangedAttackTime = now + interval
+    end
+end
+
+local function cancelDraw(mob)
+    if mob.BMBDrawing then
+        mob.BMBDrawing = false
+        mob.BMBDrawStart = nil
+        if mob.SetNWFloat then mob:SetNWFloat("BMBDrawStart", 0) end
+    end
+end
+
+-- 距离/视线分支：太远或没稳定看见 → chase 接近（阻塞）；否则 aim 停下（M1 不 strafe）。返回 "chase"/"aim"。
+function BMB.Behaviors.RangedAttack.ResolveMovement(mob, target)
+    local size = blockSize()
+    local range = mob.RangedAttackRange or size * (mob.RangedAttackRangeCells or 15)
+    local sightGain = mob.RangedSightGainTime or 1.0
+
+    local flat = target:GetPos() - mob:GetPos()
+    flat.z = 0
+    local dist = flat:Length2D()
+    local seeTime = mob.BMBSeeTime or 0
+
+    if dist > range or seeTime < sightGain then
+        cancelDraw(mob)
+        if mob.SetBMBState then mob:SetBMBState("chase") end
+        mob.BMBStrafeTime = -1
+        BMB.Behaviors.Chase.Run(mob, target) -- 阻塞式接近段
+        return "chase"
+    end
+
+    -- aim：停止寻路、面向目标（M2 在此接 UpdateStrafe）
+    if mob.SetBMBState then mob:SetBMBState("aim") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("aim") end
+    if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(0, 0) end
+    if mob.loco then mob.loco:SetDesiredSpeed(0) end
+    if mob.FaceTarget then mob:FaceTarget(rangedEyePos(target)) end
+
+    return "aim"
+end
+
+function BMB.Behaviors.RangedAttack.Update(mob, target)
+    if not IsValid(target) then return end
+
+    local now = CurTime()
+    local dt = math.Clamp(now - (mob.BMBRangedLastUpdate or now), 0, 0.5)
+    mob.BMBRangedLastUpdate = now
+
+    local visible = BMB.Behaviors.RangedAttack.UpdateSightMemory(mob, target, dt)
+
+    if BMB.Behaviors.RangedAttack.ResolveMovement(mob, target) == "aim" then
+        BMB.Behaviors.RangedAttack.UpdateDrawFire(mob, target, visible)
+    end
+end
+

@@ -178,11 +178,15 @@ Phase 2
 ### Phase 6: 生物扩展
 
 - [ ] 被动生物：Pig 或 Cow
-- [ ] 远程敌对：Skeleton
+- [~] 远程敌对：Skeleton
+  - [x] M1 轨1：`bmb_arrow` SENT（trace 弹道/重力/命中/伤害，占位视觉）；`BMB.Behaviors.RangedAttack`（Update/SightMemory/ResolveMovement/DrawFire/Fire，chase 阻塞 + aim 一 tick）；`Flee.Run` 加可选 threat 参数；`bmb_skeleton.lua`（镜像僵尸链 + RunBMBSkeletonAI + 程序化手臂 + 头锁定 + ambient）；spawn 注册；M1 占位音效（待复测，只判对错）
+  - [x] M1 轨2：转换器中性化骷髅手臂（geo.py 移除 skeleton_attack rest pose，62 tests OK）+ 重烘 `skeleton.mdl`（双足 rotate 0）+ swap `ENT.Model`（待复测）
+  - [ ] M2：strafe 风筝 + 安全探测；弓挂手骨；逃狼实测；左撇子 5%；polish（拉弦手/真箭模型/弓弦 bodygroup/箭插表面）
+  - [ ] 实测项（§10）：骷髅模型 LookAt/瞄准臂轴、箭速/伤害/散布、strafe 速度、转身速率
 - [ ] 特殊行为：Enderman
 - [ ] 飞行/水生生物
 - [ ] 26.1 系列完整生物清单
-- **Status:** pending
+- **Status:** in_progress
 
 ## Key Questions
 

@@ -1847,3 +1847,16 @@
   - Sets `BMBInitialIdleUntil = 0`.
   - Keeps the existing `SetVelocity(0,0,-10)` loco wake-up.
 - Verified: glualint for base and all `scripts/check_*.ps1` pass; live addon synced.
+
+## 2026-06-17 Skeleton M1 - ranged combat core + model rebake + procedural arms (track 1+2)
+
+- Third mob: Skeleton (pure ranged bow). Spec `H:\工作视频\20251115毕业\BMB骷髅_实现spec.md`. User chose two-milestone delivery; M1 split into two independent risk tracks (logic on placeholder model / model rebake) so neither blocks the other. M1 testing judges correctness only (no strafe yet, so no kiting feel).
+- New SENT `lua/entities/bmb_arrow.lua`: pure GMod-trace projectile. Manual gravity integration (`ArrowGravity=320`) + per-tick TraceLine; hit world -> remove, hit player/NPC/NextBot -> TakeDamageInfo (`ArrowDamage=6`). `SetupArrow(owner,dir,speed,spread,damage,gravity)` sets initial velocity + spread cone. Placeholder model sphere025x025. No voxel dependency.
+- New `BMB.Behaviors.RangedAttack` in `sv_behaviors.lua`: `Update`/`UpdateSightMemory`/`ResolveMovement`/`UpdateDrawFire`/`Fire`/`HasLineOfSight`/`GetArrowSpawnPos`. Decouples "where to stand" (chase via blocking `Chase.Run`; aim = stop + FaceTarget) from "when to shoot" (draw timing). Sight memory `mob.BMBSeeTime` seconds. Coroutine fit: chase blocks, aim is one tick, `RunBehaviour` yield/wait gives cadence. M1 aim does not strafe.
+- `Flee.Run(mob, threat)` gained optional threat param; `pickPanicDestination(mob, threat)` only accepts candidates farther from threat (AvoidEntityGoal getPosAway). No threat = unchanged generic panic (sheep/zombie unaffected). Paves M2 wolf-flee.
+- New `lua/entities/bmb_skeleton.lua`: mirrors zombie structure (RunBehaviour priority chain + RunBMBSkeletonAI: FindNearestWolfThreat->flee, SeekTarget, Wander, RangedAttack.Update). `FindNearestWolfThreat` matches class containing "wolf" (returns nil now, no wolf entity). `CanBMBTarget` players only. `GetBMBForcedLookTarget` locks target. Ranged constants in cells. Biped arms down (`BipedArmForwardAngle=0`) / raised when target (`RangedAimArmAngle=-90`, M1 placeholder both-arms). LookAt reuses zombie `LookAtPitchSign=-1/EyeHeight=64`. MC ambient model copied from zombie. M1 sounds = engine placeholders (`npc/zombie/*` + crossbow shoot); MC skeleton OGGs to be added by sound batch.
+- Registered `bmb_skeleton` in `mcgm_autorun.lua`.
+- Track 2 converter: `qs/mc2source/geo.py` removed `skeleton_attack`/`animation.skeleton.attack` from REST_POSE sets (mirror zombie family; wither_skeleton kept). Tests renamed to neutral assertions, 62 tests OK. Rebaked `skeleton.mdl` to D (reference.smd arms rotation 0). `ENT.Model` swapped from placeholder zombie to `models/mcgm/skeleton/skeleton.mdl`.
+- IMPORTANT incident: earlier `robocopy /MIR` deleted converter-only models on D (sheep/zombie); recovered by rebaking. Sync is now `cp -rf` only (never /MIR) — converter outputs models/materials ONLY to D, not in the C repo.
+- Verified: glualint on changed Lua; unittest 62 OK; cp -rf to D; D has bmb_skeleton/bmb_arrow + skeleton model; sheep/zombie models intact; C/D zombie identical (sound agent's work preserved).
+- Files: NEW bmb_skeleton.lua, bmb_arrow.lua; MODIFIED sv_behaviors.lua, mcgm_autorun.lua, geo.py, test_mc2source_pipeline.py, docs/STATE.md, CLAUDE.md, qs/CURRENT_HANDOFF.md, .planning/*.

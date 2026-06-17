@@ -13,6 +13,12 @@ list.Set("NPC", "bmb_zombie", {
     Category = "BlockMob Base"
 })
 
+list.Set("NPC", "bmb_skeleton", {
+    Name = "BMB Prototype Skeleton",
+    Class = "bmb_skeleton",
+    Category = "BlockMob Base"
+})
+
 list.Set("NPC", "mcgm_zombie", {
     Name = "MCGM Prototype Zombie",
     Class = "mcgm_zombie",

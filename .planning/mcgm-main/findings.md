@@ -643,3 +643,13 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **Source 普通 sound 路径对 OGG 采样率挑剔**：sheep 的 `grass4.ogg` 已踩过 48000Hz 报错；新导入的 Zombie/damage OGG 一律重采样为 `44100 Hz mono`，避免游戏里才暴露 `Invalid sample rate`。
 - **程序化动画的脚步阈值可以从相位参数反推**：Base limb phase 是 `speed * FrameTime() * LimbSwingPhaseScale`，一次半波脚步距离约为 `pi / LimbSwingPhaseScale`。sheep `0.09 -> 35u`，Zombie `0.12 -> 26u`，比纯手猜更容易和落脚视觉对齐。
 - **受击声音应挂 accepted damage 钩子，但 lethal 语义是 per-mob**：如果声音只放在 `OnBMBInjured`，致死命中会跳过；把声音入口接到 `OnBMBHurtSound`，再让 `OnBMBInjured` 只做状态/反击逻辑，可以避免非致死双播。Sheep 在 lethal 也要 say，所以无条件播；Zombie 的 death 已有独立音效，所以 `OnBMBHurtSound` 要检查当前血量和本次伤害，致死时跳过 hurt、只播 death。
+
+## Skeleton ranged combat (2026-06-17)
+
+- **远程怪考验 base 的点是解耦"站哪"和"何时射"**：`RangedAttack.Update` 把移动决策（chase 接近 / aim 停下，M2 strafe）和拉弓放箭计时分开。chase 复用阻塞式 `Chase.Run`，aim 走一 tick + `RunBehaviour` 的 yield/wait 提供逐 tick 节奏——不需要在 aim 里自建协程循环。
+- **ranged 怪不该让 Chase.Run 的近战 in-range 决定停下点**：Chase.Run 用 `AttackRange`/MeleeAttack.IsInRange 决定"到了就 attack_ready"。骷髅要在 15 格停下 aim，由 `ResolveMovement` 每 tick 用真实距离 gate（>15 格或没稳定看见才 chase），并把 `ChaseSegmentTimeout` 调短（0.3s）减少冲过 aim 线的过冲。不要给骷髅设大 `AttackRange` 去骗 Chase（那会变成贴 15 格 attack_ready 而不是停）。
+- **弹丸用纯 GMod trace、不碰体素**：`bmb_arrow` 手动积分重力 + 沿本 tick 位移 TraceLine，命中世界/生物分别处理。这样远程怪零跨系统依赖（不需要 MCSWEP 方块碰撞）。弹丸不是 NextBot，可以用 SetPos/SetAngles 驱动（CLAUDE 禁的是 NextBot loco 移动用 SetPos）。
+- **MC 弹道抛物线补偿是 Z-up 改写**：`d.z += horiz*0.2`，水平用 xy、竖直用 z；别照抄 MC 的 Y-up 轴。
+- **`Player:SetVelocity` 叠加语义**（已有教训）对箭击退不重要（箭伤害走 DamageInfo + DamageForce，不直接 SetVelocity 玩家）。
+- **Flee threat 参数是 PanicGoal↔AvoidEntityGoal 的开关**：同一个 Flee.Run，不传 threat = 随机近点恐慌（与方向无关），传 threat = 只收离威胁更远的候选。逃威胁优先级高于攻击且 return、不清 target。
+- **占位模型先行解耦风险**（用户强调）：远程逻辑先挂僵尸占位模型验证，模型重烘（双足 rotate 0 + 手臂中性化）是独立轨；两轨都好了再 swap `ENT.Model`。M1 测试只判对错，不判 strafe 风筝手感。
