@@ -11,7 +11,7 @@ ENT.AdminOnly = false
 ENT.Model = "models/mcgm/zombie/zombie.mdl"
 ENT.StartHealth = 20
 ENT.WalkSpeed = 92
-ENT.RunSpeed = 115
+ENT.RunSpeed = 95
 ENT.Acceleration = 420
 ENT.Deceleration = 650
 ENT.TargetRange = 1350
@@ -55,19 +55,30 @@ ENT.AmbientSoundIntervalTicks = 80
 ENT.AmbientSoundChanceDenominator = 1000
 ENT.AmbientSoundTickRate = 20
 ENT.AmbientSoundMaxCatchupTicks = 4
+ENT.StepSoundDistance = 26          -- ~= pi / LimbSwingPhaseScale: one foot plant per half gait wave
+ENT.StepSoundMinSpeed = 8
+ENT.StepSoundLevel = 60
+ENT.StepSoundVolumeMin = 0.45
+ENT.StepSoundVolumeMax = 0.78
+ENT.StepSoundPitchMin = 88
+ENT.StepSoundPitchMax = 112
 ENT.CollisionMins = Vector(-11, -11, 0)
 ENT.CollisionMaxs = Vector(11, 11, 72)
 -- 程序化双足动画（不再用模型 sequence / ACT_WALK）：腿反相摆 + 手臂前伸轻微摆，攻击播手臂前挥关键帧。
 ENT.BipedLegSwingMax = 38          -- 腿摆幅（roll 轴，实测调）
-ENT.BipedArmSwingMax = 14          -- 手臂走路轻微摆幅
-ENT.BipedArmForwardAngle = -60     -- 手臂前伸基角（roll；僵尸标志前伸，符号/角度待实测）
-ENT.AttackKeyframeDuration = 0.5   -- 攻击手臂前挥关键帧时长
+ENT.BipedArmSwingMax = 0           -- 手臂不走路摆，静止停在 armForward（前伸基角）
+ENT.BipedArmForwardAngle = -90     -- 手臂前伸基角（roll；-90≈水平平举，更负=更高，约 -90 后可能拧轴）
+ENT.AttackKeyframeDuration = 0.6   -- 攻击手臂上抬关键帧时长（抬/落都放慢）
 ENT.DeathTipDuration = 0.55        -- 死亡侧倒用时（复用羊脚本化倾倒）
 ENT.DeathTipDegrees = 90
 ENT.LimbSwingMinAmount = 0.3       -- 走路也保持可见腿摆
 ENT.LimbSwingPhaseScale = 0.12     -- 腿频率（实测调）
 ENT.TurnInPlaceAngle = 170
 ENT.BlockHopAllowCloseLaunch = true
+-- 头看向：僵尸头骨 pitch 轴与羊相反（玩家在上方时羊抬头、僵尸会低头），翻号纠正；放宽 pitch 范围以便仰视近处/高处玩家。
+ENT.LookAtPitchSign = -1
+ENT.LookAtPitchLimit = 35
+ENT.LookAtEyeHeight = 64            -- 头部高度，pitch 从此高度算，玩家与头同高时平视（不再近距离猛仰头）
 -- Chasing zombies should not turn ordinary hurt knockback into a locomotion jump on MC block tops.
 ENT.KnockbackUseJump = false
 ENT.KnockbackVerticalSpeedScale = 0
@@ -75,30 +86,35 @@ ENT.KnockbackVerticalMinSpeed = 0
 ENT.KnockbackVerticalMaxSpeed = 0
 
 ENT.Sounds = {
-    Idle = {
-        "npc/zombie/zombie_voice_idle1.wav",
-        "npc/zombie/zombie_voice_idle2.wav",
-        "npc/zombie/zombie_voice_idle3.wav"
+    Say = {
+        "bmb/mob/zombie/say1.ogg",
+        "bmb/mob/zombie/say2.ogg",
+        "bmb/mob/zombie/say3.ogg"
     },
     Hurt = {
-        "npc/zombie/zombie_pain1.wav",
-        "npc/zombie/zombie_pain2.wav",
-        "npc/zombie/zombie_pain3.wav"
+        "bmb/mob/zombie/hurt1.ogg",
+        "bmb/mob/zombie/hurt2.ogg"
     },
     Death = {
-        "npc/zombie/zombie_die1.wav",
-        "npc/zombie/zombie_die2.wav",
-        "npc/zombie/zombie_die3.wav"
+        "bmb/mob/zombie/death.ogg"
+    },
+    Step = {
+        "bmb/mob/zombie/step1.ogg",
+        "bmb/mob/zombie/step2.ogg",
+        "bmb/mob/zombie/step3.ogg",
+        "bmb/mob/zombie/step4.ogg",
+        "bmb/mob/zombie/step5.ogg"
     },
     Hit = {
-        "player/pl_pain5.wav",
-        "player/pl_pain6.wav",
-        "player/pl_pain7.wav"
+        "bmb/damage/hit1.ogg",
+        "bmb/damage/hit2.ogg",
+        "bmb/damage/hit3.ogg"
     }
 }
 
 local function randomSound(list)
-    return list[math.random(#list)]
+    if not list or #list == 0 then return nil end
+    return list[math.random(1, #list)]
 end
 
 local function validTarget(target)
@@ -113,17 +129,39 @@ end
 
 if CLIENT then
     local zombieAnimations = {
-        -- 攻击：双臂前挥（相对前伸基线的 roll 偏移，叠加在 BipedArmForwardAngle 上；轴/角度待实测）。
+        -- 攻击：双臂从水平基线上抬再回水平（roll 偏移，同 armForward 轴，叠加在 BipedArmForwardAngle 上；更负=抬更高）。抬/落都放慢。
         attack = {
-            duration = 0.5,
+            duration = 0.6,
             frames = {
-                { time = 0.00, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } },
-                { time = 0.15, bones = { rightArm = { angle = Angle(0, 0, -55) }, leftArm = { angle = Angle(0, 0, -55) } } },
-                { time = 0.32, bones = { rightArm = { angle = Angle(0, 0, 45) }, leftArm = { angle = Angle(0, 0, 45) } } },
-                { time = 0.50, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } }
+                { time = 0.00, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } },   -- 水平基线
+                { time = 0.25, bones = { rightArm = { angle = Angle(0, 0, -45) }, leftArm = { angle = Angle(0, 0, -45) } } }, -- 上抬（慢抬，更负=更高）
+                { time = 0.60, bones = { rightArm = { angle = Angle(0, 0, 0) }, leftArm = { angle = Angle(0, 0, 0) } } }    -- 慢放回水平
             }
         }
     }
+
+    function ENT:UpdateBMBZombieStepSound(speed)
+        speed = speed or self:GetVelocity():Length2D()
+
+        if speed <= (self.StepSoundMinSpeed or 8) then
+            self.BMBZombieStepDistance = 0
+            return
+        end
+
+        local stepDistance = self.StepSoundDistance or 26
+        self.BMBZombieStepDistance = (self.BMBZombieStepDistance or 0) + speed * FrameTime()
+        if self.BMBZombieStepDistance < stepDistance then return end
+
+        self.BMBZombieStepDistance = self.BMBZombieStepDistance - stepDistance
+
+        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        if not soundName then return end
+
+        local fullSpeed = math.max((self.StepSoundMinSpeed or 8) + 1, self.RunSpeed or 95)
+        local speedFrac = math.Clamp((speed - (self.StepSoundMinSpeed or 8)) / (fullSpeed - (self.StepSoundMinSpeed or 8)), 0, 1)
+        local volume = Lerp(speedFrac, self.StepSoundVolumeMin or 0.45, self.StepSoundVolumeMax or 0.78)
+        self:EmitSound(soundName, self.StepSoundLevel or 60, math.random(self.StepSoundPitchMin or 88, self.StepSoundPitchMax or 112), volume)
+    end
 
     function ENT:CacheBMBZombieBones()
         local model = self:GetModel()
@@ -151,10 +189,11 @@ if CLIENT then
         local state = self:GetNWString("BMBState", "idle")
 
         if state == "dead" or self:GetNWBool("BMBDead", false) then
-            -- 脚本化侧倒：冻结四肢/头，绕 root 整只翻（复用羊实测：yaw=侧躺，EntIndex 定左右）。
+            -- 脚本化侧倒：冻结头/腿，手臂保持前伸（直挺挺前伸着栽下去），绕 root 整只翻。
+            local armForward = self.BipedArmForwardAngle or 0
             self:SetBMBVisualBoneAngle(bones.head, angle_zero)
-            self:SetBMBVisualBoneAngle(bones.rightArm, angle_zero)
-            self:SetBMBVisualBoneAngle(bones.leftArm, angle_zero)
+            self:SetBMBVisualBoneAngle(bones.rightArm, Angle(0, 0, armForward))
+            self:SetBMBVisualBoneAngle(bones.leftArm, Angle(0, 0, armForward))
             self:SetBMBVisualBoneAngle(bones.rightLeg, angle_zero)
             self:SetBMBVisualBoneAngle(bones.leftLeg, angle_zero)
 
@@ -175,6 +214,7 @@ if CLIENT then
 
         local speed = self:GetVelocity():Length2D()
         local phase, amount = self:UpdateBMBLimbSwing(speed)
+        self:UpdateBMBZombieStepSound(speed)
 
         -- 腿 + 手臂走路摆（双足通用：腿反相 + 手臂前伸 + 轻微反相摆）
         self:ApplyBMBBipedLocomotion(bones, phase, amount)
@@ -277,6 +317,14 @@ function ENT:CanBMBTarget(target)
     return validTarget(target)
 end
 
+function ENT:GetBMBForcedLookTarget()
+    -- 追击/攻击中头锁死盯玩家；无目标时回落到 base 概率环视。
+    if IsValid(self.TargetEntity) and self.TargetEntity:IsPlayer() then
+        return self.TargetEntity
+    end
+    return nil
+end
+
 function ENT:PlayBMBMeleeGesture(_)
     -- 程序化攻击：标记攻击开始时刻，客户端 UpdateBMBVisualBones 播手臂前挥关键帧。
     self:SetNWFloat("BMBAttackStartedAt", CurTime())
@@ -307,11 +355,32 @@ end
 function ENT:OnBMBMeleeHit(target, _)
     if not IsValid(target) then return end
 
-    if self.Sounds and self.Sounds.Hit then
-        target:EmitSound(randomSound(self.Sounds.Hit), 74, math.random(96, 104), 0.75)
+    local soundName = randomSound(self.Sounds and self.Sounds.Hit)
+    if soundName then
+        target:EmitSound(soundName, 74, math.random(96, 104), 0.82)
     end
 
     self:ApplyBMBPlayerHitFeedback(target)
+end
+
+function ENT:PlayBMBZombieSay(volume)
+    local soundName = randomSound(self.Sounds and self.Sounds.Say)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 72, math.random(92, 108), volume or 0.78)
+end
+
+function ENT:PlayBMBZombieHurt(volume)
+    local soundName = randomSound(self.Sounds and self.Sounds.Hurt)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 72, math.random(95, 105), volume or 0.88)
+end
+
+function ENT:OnBMBHurtSound(damageInfo)
+    if damageInfo and self:Health() <= (damageInfo:GetDamage() or 0) then return end
+
+    self:PlayBMBZombieHurt(0.88)
 end
 
 function ENT:OnBMBInjured(damageInfo, _)
@@ -321,17 +390,14 @@ function ENT:OnBMBInjured(damageInfo, _)
         self.TargetEntity = attacker
         self.NextTargetScanTime = 0
     end
-
-    if self.Sounds and self.Sounds.Hurt then
-        self:EmitSound(randomSound(self.Sounds.Hurt), 72, math.random(95, 105), 0.8)
-    end
 end
 
 function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
-    if self.Sounds and self.Sounds.Death then
-        self:EmitSound(randomSound(self.Sounds.Death), 76, math.random(95, 105), 0.9)
+    local soundName = randomSound(self.Sounds and self.Sounds.Death)
+    if soundName then
+        self:EmitSound(soundName, 76, math.random(95, 105), 0.95)
     end
 
     self:BeginBMBDeath(damageInfo)
@@ -341,8 +407,12 @@ function ENT:ResetBMBAmbientSoundTime()
     self.BMBAmbientSoundTime = -(self.AmbientSoundIntervalTicks or 80)
 end
 
+function ENT:MaybePlayStep()
+    -- Zombie footsteps are client-side and distance-driven from the same speed integration as the procedural legs.
+end
+
 function ENT:MaybePlayIdleSound()
-    if not self.Sounds or not self.Sounds.Idle then return end
+    if not self.Sounds or not self.Sounds.Say then return end
 
     local now = CurTime()
     local tickRate = self.AmbientSoundTickRate or 20
@@ -361,7 +431,7 @@ function ENT:MaybePlayIdleSound()
         end
 
         if math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
-            self:EmitSound(randomSound(self.Sounds.Idle), 72, math.random(92, 108), 0.65)
+            self:PlayBMBZombieSay(0.78)
             self:ResetBMBAmbientSoundTime()
             break
         end

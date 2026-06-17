@@ -143,6 +143,7 @@ Phase 2
 - [x] Zombie Phase 2 hotfix 8：手感细调——Zombie 索敌范围扩到 `TargetRange=1350` / `TargetLoseRange=1725`，同层攻击距离调到 `AttackRange=60`，水平击退降到 `AttackKnockback=210`；共享 `MeleeAttack` 新增可选窄竖直重叠命中，Zombie 用 `AttackVerticalOverlapRange=86` + `AttackVerticalOverlapFlatRange=24` 解决玩家踩头不挨打，同时保持普通 `AttackVerticalRange=28` 防止高一格平台误攻击
 - [x] Zombie Phase 2 hotfix 9：击退距离继续收敛——用户复测 210 水平击退配合 190z 滞空会推出约 4-5 格，目标是 2-3 格；Zombie `AttackKnockback` 改为 150，竖直击飞保持 155 / grounded 190
 - [x] Zombie Phase 2 hotfix 10：Zombie 在 MC 方块顶面追击玩家时被打偶发触发跳跃——Base 新增 `KnockbackUseJump`，Zombie 关闭受击 `loco:Jump()` 并把受击竖直速度置 0；Zombie 攻击玩家的玩家击飞仍走独立 MeleeAttack 参数
+- [x] Zombie MC 音效接入：复制并注册 `mob/zombie` 的 `death/hurt/say/step` 和 `damage/hit1-3`，统一重采样到 44100Hz；Zombie ambient/非致死受击/死亡/命中玩家/脚步都改用模组内 MC OGG，致死受击只播 death 不叠 hurt，脚步和程序化腿摆同源距离驱动，禁用 base 0.5s Source 脚步占位
 - [ ] 复测 Zombie Phase 2：约 1350u 内应能发现玩家；同层约 60u 第一时间扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退约 2-3 格且不再时好时坏；玩家直接踩头会被打，但站高一格平台/隔块目标仍走 chase/path；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；完整 MCSWEP 方块平地/平台中间追击不应显示 `*_cliff` 停住；旧追击、hop、stranded、受击不回归
 - [ ] 重新设计低顶/头顶方块坏 hop：A* hop-edge clearance 方案已撤回（会导致正常 hop 不触发），后续改用更局部的失败记忆/绕路目标或精确分诊
 - [x] 参考本地 Minecraft 源码中的 Zombie AI 做第二轮参数校准（本轮确认 Zombie ambient 走通用 `Mob` 80 tick 递增概率；攻击节奏按用户 Phase 2 手感最终取 1.0s）
@@ -171,7 +172,7 @@ Phase 2
 - [x] Sheep sound 收尾：接入 MC `say1-3`、`step1-5`、`dig/grass1-4`；ambient/受击用 say；吃草咬草用 grass dig；脚步改客户端距离驱动（`speed * FrameTime()` 累积，阈值 35u）对齐腿摆，不再用计时器（待用户复测）
 - [x] 做第一只 Minecraft 风格 Zombie 模型（转换器烘 `mcgm/zombie/zombie.mdl`；确认双足 body 不转；手臂改垂下、不烘 attack rest pose）
 - [x] 僵尸动画走程序化（不烘序列）：base 泛化关键帧采样器 + 双足 locomotion；zombie 换模型、去 `ACT_WALK`、客户端 `UpdateBMBVisualBones`（双足腿臂摆 + lookat + 死亡侧倒 + 攻击前挥关键帧）；摆轴/前伸/攻击/侧倒初值待游戏迭代
-- [ ] 让脚步声和动画帧同步
+- [x] 让脚步声和动画帧同步（当前 sheep/zombie 都走客户端 `speed * FrameTime()` 距离累积，阈值按腿摆半波长调；后续新 mob 继续按各自步态参数接）
 - **Status:** pending
 
 ### Phase 6: 生物扩展

@@ -182,6 +182,9 @@ ENT.LookAtDurationMin = 2.0
 ENT.LookAtDurationMax = 4.0
 ENT.LookAtYawLimit = 70
 ENT.LookAtPitchLimit = 24
+ENT.LookAtPitchSign = 1            -- per-mob: -1 if the model head bone inverts pitch vs the sheep mapping
+ENT.LookAtPitchOffset = 0          -- per-mob: extra pitch bias (degrees) applied before clamp
+ENT.LookAtEyeHeight = 0            -- per-mob: head bone height; pitch is computed from this height so equal-height targets read level
 ENT.LookAtLerpSpeed = 8
 ENT.LookAroundEnabled = true
 ENT.LookAroundIntervalMin = 1.0
@@ -501,6 +504,11 @@ function ENT:UpdateBMBLookAroundController(now)
     self:SetNWFloat("BMBLookAroundUntil", self.BMBNextLookAroundAt + 0.1)
 end
 
+function ENT:GetBMBForcedLookTarget()
+    -- 子类可覆盖：返回一个强制头部锁定的玩家目标（如僵尸追击目标）。默认无（羊等不受影响）。
+    return nil
+end
+
 function ENT:UpdateBMBLookAtController()
     if self.LookAtEnabled == false then
         self:ClearBMBLookAtTarget()
@@ -511,6 +519,15 @@ function ENT:UpdateBMBLookAtController()
     if self:IsBMBLookAtSuppressed() then
         self:ClearBMBLookAtTarget()
         self:ClearBMBLookAroundTarget()
+        return
+    end
+
+    -- 强制目标优先：追击/攻击中头锁死盯玩家，每 think 刷新所以不过期，也不受瞥视距离限制。
+    local forced = self:GetBMBForcedLookTarget()
+    if IsValid(forced) and forced:IsPlayer() then
+        self:ClearBMBLookAroundTarget()
+        self:SetNWInt("BMBLookAtTarget", forced:EntIndex())
+        self:SetNWFloat("BMBLookAtUntil", CurTime() + 0.5)
         return
     end
 
@@ -581,9 +598,15 @@ if CLIENT then
 
     function ENT:ComputeBMBLookAtHeadAngle(target)
         local localTarget = self:WorldToLocal(self:GetBMBLookAtTargetPosition(target))
+        -- 从头部高度（而非脚底原点）算 pitch：玩家与头同高时平视，避免近距离从脚底瞄眼睛产生大仰角。
+        local dz = localTarget.z - (self.LookAtEyeHeight or 0)
         local horizontal = math.max(0.001, math.sqrt(localTarget.x * localTarget.x + localTarget.y * localTarget.y))
         local yaw = math.deg(atan2(localTarget.y, localTarget.x))
-        local pitch = math.deg(atan2(localTarget.z, horizontal))
+        local pitch = math.deg(atan2(dz, horizontal))
+
+        -- Per-mob pitch axis correction: some model head bones invert pitch vs the sheep mapping.
+        -- Defaults (sign 1 / offset 0) leave sheep behavior unchanged.
+        pitch = pitch * (self.LookAtPitchSign or 1) + (self.LookAtPitchOffset or 0)
 
         -- MC sheep model mapping from in-game pose preview:
         -- Head rot X: positive = look left, negative = look right.

@@ -937,3 +937,12 @@
 - Base generalization (client): `BMB.SampleKeyframeAnimation` + keyframe lerp/apply helpers (extracted from sheep eat-grass, shared with zombie attack), and `ENT:ApplyBMBBipedLocomotion` (legs counter-swing + arm forward-hold + counter-swing). Death tip / lookat / look-around / step / poof / disarm reused from base.
 - Zombie rewrite: model swap, dropped `RunActivity=ACT_WALK`, procedural client `UpdateBMBVisualBones` (biped walk + lookat + root side-fall on death + attack forward-swing keyframe via networked `BMBAttackStartedAt`). `check_zombie_phase1.ps1` guard moved to procedural biped. Behavior (chase/attack/sounds) untouched.
 - All swing axes / forward angle / attack / side-fall are initial values, to be tuned in-game like the sheep. glualint (repo + live) + 11 BMB checks + qs 62 tests pass; lua synced to live addon. Authoritative state in `docs/STATE.md`.
+
+## 2026-06-17 Latest Status After Zombie Minecraft Sounds
+
+- Added mod-local MC Zombie sounds from `D:\BMBTools\解包音频\minecraft\sounds\mob\zombie`: `death`, `hurt1-2`, `say1-3`, `step1-5`.
+- Added MC player damage hit sounds from `D:\BMBTools\解包音频\minecraft\sounds\damage\hit1-3.ogg`.
+- All new OGGs are inside `gmod_addon/sound/bmb/...`, registered in `bmb_autorun.lua`, and re-encoded to `44100 Hz mono` to avoid Source sample-rate errors.
+- `bmb_zombie` now uses MC sounds for ambient say, non-lethal accepted hurt, death, melee player hit feedback, and footsteps. Lethal hits skip hurt so the death sound does not stack with hurt. It no longer references Source `npc/zombie/*` or `player/pl_pain*`.
+- Zombie footsteps are now client-side distance-driven from the same `speed * FrameTime()` integration as procedural biped legs (`StepSoundDistance=26`), and `MaybePlayStep()` is overridden so Base's timer-driven placeholder does not play.
+- `scripts/check_zombie_phase2_attack_audio.ps1` guards the sound paths, resource registration, distance-driven stepping, and no-Source-sound regressions. Live addon sync and game retest are still required after checks.

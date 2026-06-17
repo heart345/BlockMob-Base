@@ -636,3 +636,10 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **程序化腿摆临时恢复，但只用新平滑逻辑**：旧的 `speed > 8 then` 硬分支和 `rate` 计时摆腿不回归；当前实现走 Base `UpdateBMBLimbSwing`，sheep 只保留自己的摆轴/摆幅参数。
 - **正式接入时仍不能双写腿**：等转换器 pivot 修好、低速 playback/cycle 方案确定后，再打开 sheep `AnimationSequences` / `AnimationReferenceSpeeds`，同时撤掉客户端 `leg*` 覆盖。模型 sequence 和程序化腿摆不能同时存在。
 - **吃草/看向仍是上层姿态**：当前占位阶段吃草 keyframe 主要覆盖 head；后续真实模型接入时，头部/看向/吃草覆盖应继续和 locomotion sequence 分层处理。
+
+## 2026-06-17: MC sound assets must live in the addon and match Source sample rates
+
+- **不要只引用外部解包目录**：GMod 客户端只能可靠加载 addon 内的 `sound/...` 资源，所以 Zombie 和 sheep 一样要把 Minecraft OGG 复制进 `gmod_addon/sound/bmb/...` 并用 `resource.AddFile` 注册；外部 `D:\BMBTools\解包音频\...` 只作为导入源。
+- **Source 普通 sound 路径对 OGG 采样率挑剔**：sheep 的 `grass4.ogg` 已踩过 48000Hz 报错；新导入的 Zombie/damage OGG 一律重采样为 `44100 Hz mono`，避免游戏里才暴露 `Invalid sample rate`。
+- **程序化动画的脚步阈值可以从相位参数反推**：Base limb phase 是 `speed * FrameTime() * LimbSwingPhaseScale`，一次半波脚步距离约为 `pi / LimbSwingPhaseScale`。sheep `0.09 -> 35u`，Zombie `0.12 -> 26u`，比纯手猜更容易和落脚视觉对齐。
+- **受击声音应挂 accepted damage 钩子，但 lethal 语义是 per-mob**：如果声音只放在 `OnBMBInjured`，致死命中会跳过；把声音入口接到 `OnBMBHurtSound`，再让 `OnBMBInjured` 只做状态/反击逻辑，可以避免非致死双播。Sheep 在 lethal 也要 say，所以无条件播；Zombie 的 death 已有独立音效，所以 `OnBMBHurtSound` 要检查当前血量和本次伤害，致死时跳过 hurt、只播 death。

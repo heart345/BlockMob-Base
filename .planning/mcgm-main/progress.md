@@ -1680,6 +1680,41 @@
 - Verified: glualint (repo + live), all 11 BMB checks pass, qs 62 tests pass; lua synced to live addon, model packaged by converter.
 - Next game retest: legs counter-swing + arms forward-hold/swing (tune `ApplyBMBBipedLocomotion` axis / `BipedArmForwardAngle` if wrong); attack arm-swing; death side-fall (yaw, swap to pitch if it spins); lookat head-only; chase/attack behavior unchanged.
 
+## 2026-06-17 Zombie facing fix: biped QC rotate 180 -> 0
+
+- User: the biped zombie is flipped 180° around the vertical axis -- in game it only shows its back while chasing. Sheep (quadruped) QC uses `$sequence ... rotate 180` to compensate the body 90° stand; biped has no body stand and shouldn't inherit the 180. Fix the biped branch only; leave quadruped 180.
+- Root cause: `source.py make_qc_text` hardcoded `rotate 180` for every entity. Quadruped (sheep, body bind 90°) needs +180 yaw; biped (zombie, body bind 0) faces backward with it.
+- Fix: `make_qc_text` takes a `rotate` param (default 180). `converter.py` computes it from the body bone `bind_pose_rotation` X: `>45°` (quadruped stand) -> 180, else 0. Sheep 90 -> 180 (unchanged), zombie 0 -> 0.
+- Recompiled zombie: `zombie.qc` now `rotate 0`, new `.mdl` packaged to addon. Added a `test_cli` golden asserting zombie QC `rotate 0` / no `rotate 180`. 62 tests OK.
+- Next: confirm zombie faces the player in game.
+
+## 2026-06-17 Zombie Minecraft sound pass
+
+- User request:
+  - Another agent updated files; read latest logs first, then add Zombie sounds like sheep.
+  - Use `D:\BMBTools\解包音频\minecraft\sounds\mob\zombie` for `death`, `hurt`, `say`, and `step`.
+  - Use `D:\BMBTools\解包音频\minecraft\sounds\damage\hit1-3.ogg` for player hurt sounds when Zombie hits a player.
+- Assets copied and normalized:
+  - `gmod_addon/sound/bmb/mob/zombie/death.ogg`
+  - `gmod_addon/sound/bmb/mob/zombie/hurt1-2.ogg`
+  - `gmod_addon/sound/bmb/mob/zombie/say1-3.ogg`
+  - `gmod_addon/sound/bmb/mob/zombie/step1-5.ogg`
+  - `gmod_addon/sound/bmb/damage/hit1-3.ogg`
+  - All 14 new OGGs were re-encoded to `44100 Hz mono` with `D:\oopz\ffmpeg.exe`, matching Source's normal sound sample-rate constraints.
+- Implemented:
+  - `bmb_autorun.lua` registers all new Zombie/damage sound resources with `resource.AddFile`.
+  - `bmb_zombie` `Sounds` now points only at mod-local MC assets: `Say`, `Hurt`, `Death`, `Step`, `Hit`.
+  - Ambient uses `PlayBMBZombieSay()` from the existing MC 80 tick / random.nextInt(1000) probability model.
+  - Accepted damage uses `OnBMBHurtSound()` for non-lethal Zombie hurt only; Zombie checks current health vs incoming damage and skips hurt on lethal hits so death does not stack with hurt. `OnBMBInjured` now only handles retaliation target state and avoids double-playing hurt on non-lethal hits.
+  - Player hit feedback still plays only after a real melee hit, now using `bmb/damage/hit1-3.ogg`.
+  - Zombie footsteps are client-side and distance-driven like sheep: `UpdateBMBZombieStepSound(speed)` accumulates `speed * FrameTime()` in `UpdateBMBVisualBones`; `StepSoundDistance=26` matches the current biped limb half-wave (`pi / LimbSwingPhaseScale`). Zombie overrides `MaybePlayStep()` so Base's fixed 0.5s Source zombie footstep placeholder is silent.
+  - `scripts/check_zombie_phase2_attack_audio.ps1` guards MC sound paths, resource registration, distance-driven footsteps, `OnBMBHurtSound`, and forbids `npc/zombie/` / `player/pl_pain` regressions.
+- Next game retest:
+  1. Ambient Zombie say uses MC `say1-3` in any state.
+  2. Non-lethal accepted hits play MC `hurt1-2`; lethal accepted hits play `death.ogg` without also stacking hurt.
+  3. Actual player melee hits play MC `damage/hit1-3`.
+  4. Footsteps line up with procedural biped foot plants; tune `StepSoundDistance` if the contact point feels early/late.
+
 ## 2026-06-16 Base LookAtPlayerGoal + Sheep head hookup
 
 - User request:
