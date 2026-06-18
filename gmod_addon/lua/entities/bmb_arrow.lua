@@ -1,7 +1,7 @@
 AddCSLuaFile()
 
--- BMB 箭矢弹丸（v1 占位视觉）。纯 GMod trace 物理，不碰体素系统。
--- 服务端手动积分重力 + 沿位移 TraceLine 命中；客户端只画占位模型。
+-- BMB 箭矢弹丸。纯 GMod trace 物理，不碰体素系统。
+-- 服务端手动积分重力 + 沿位移 TraceLine 命中；客户端只画模型。
 ENT.Type = "anim"
 ENT.Base = "base_anim"
 ENT.PrintName = "BMB Arrow"
@@ -9,15 +9,38 @@ ENT.Author = "BMB"
 ENT.Spawnable = false
 ENT.AdminOnly = false
 
--- 占位模型：GMod 自带的小球。换真箭模型是 polish。
-ENT.Model = "models/hunter/misc/sphere025x025.mdl"
+ENT.Model = "models/mcgm/arrow/arrow.mdl"
+ENT.ArrowModelAngleOffset = Angle(0, -90, 0) -- 模型朝向修正（实测：箭模型默认横置，yaw -90 转正对齐飞行方向；vel:Angle() roll 恒 0，可分量加）
 
 -- 弹道参数（手感实测，由 Fire 传入覆盖）：
 ENT.ArrowSpeed = 1168     -- su/s，约 MC 1.6 block/tick × 36.5 × 20
 ENT.ArrowDamage = 6       -- ≈3 心
 ENT.ArrowGravity = 730    -- su/s²，竖直下坠（≈MC 0.05 block/tick²；抛物线补偿配套）
 ENT.ArrowSpread = 3       -- 散布锥角（度）
-ENT.ArrowLifetime = 5     -- 秒，超时自毁
+ENT.ArrowLifetime = 5     -- 秒，飞行中没命中的兜底自毁
+ENT.ArrowStuckLifetime = 15 -- 秒，插在表面后多久移除（防插一地箭把实体堆爆）
+ENT.ArrowEmbedDepth = 2   -- su，命中后沿飞行方向推入表面的深度（箭头埋进、杆和翎露出，可调）
+
+-- 命中音（MC random/bowhit；命中玩家受击 + 插静态表面都播）。
+ENT.HitSounds = {
+    "bmb/random/bowhit1.ogg",
+    "bmb/random/bowhit2.ogg",
+    "bmb/random/bowhit3.ogg",
+    "bmb/random/bowhit4.ogg"
+}
+ENT.HitSoundLevel = 75
+ENT.HitSoundVolume = 0.85
+
+-- 远程诊断日志开关（与骷髅 Fire 共用 bmb_debug_ranged；convar 在 sv_behaviors.lua 创建）。
+local function shouldLogRanged()
+    local cvar = GetConVar and GetConVar("bmb_debug_ranged")
+    return cvar and cvar:GetBool()
+end
+
+local function randomSound(list)
+    if not list or #list == 0 then return nil end
+    return list[math.random(#list)]
+end
 
 function ENT:Initialize()
     self:SetModel(self.Model)
@@ -27,6 +50,7 @@ function ENT:Initialize()
         self:SetSolid(SOLID_NONE)
         self:DrawShadow(false)
         self.BMBArrowVelocity = self.BMBArrowVelocity or vector_origin
+        self.BMBArrowSpawnTime = CurTime()
         self.BMBArrowDie = CurTime() + (self.ArrowLifetime or 5)
         self:NextThink(CurTime())
     end
@@ -50,10 +74,44 @@ if SERVER then
         end
 
         self.BMBArrowVelocity = ang:Forward() * speed
-        self:SetAngles(self.BMBArrowVelocity:Angle())
+        self:SetAngles(self.BMBArrowVelocity:Angle() + (self.ArrowModelAngleOffset or angle_zero))
+    end
+
+    function ENT:PlayBMBArrowHitSound()
+        local snd = randomSound(self.HitSounds)
+        if not snd then return end
+        self:EmitSound(snd, self.HitSoundLevel or 75, math.random(94, 106), self.HitSoundVolume or 0.85)
+    end
+
+    -- 命中静态世界/物体：插在表面（纯视觉 SOLID_NONE，人能穿过），停弹道，起 despawn 计时器。
+    -- 不 SetParent 跟随会动的 prop（静态版覆盖几乎所有情况，跟随那点按需求跳过）；命中生物走扣血+移除分支。
+    function ENT:StickToSurface(hitPos)
+        self.BMBStuck = true
+
+        local vel = self.BMBArrowVelocity or vector_origin
+        local dir = vel:GetNormalized()
+        -- 角度保持命中那刻（已对着表面），位置摆到命中点再沿飞行方向推入一点（箭头埋进表面）。
+        self:SetAngles(dir:Angle() + (self.ArrowModelAngleOffset or angle_zero))
+        self:SetPos(hitPos + dir * (self.ArrowEmbedDepth or 8))
+        self:SetMoveType(MOVETYPE_NONE)
+        self:SetSolid(SOLID_NONE)
+
+        self:PlayBMBArrowHitSound()
+        self.BMBArrowDie = CurTime() + (self.ArrowStuckLifetime or 15)
+        self:NextThink(CurTime())
     end
 
     function ENT:Think()
+        -- 已插在表面：停止弹道积分，只等 despawn。
+        if self.BMBStuck then
+            if CurTime() >= (self.BMBArrowDie or 0) then
+                self:Remove()
+                return
+            end
+            self:NextThink(CurTime())
+            return true
+        end
+
         local dt = FrameTime()
 
         local vel = self.BMBArrowVelocity or vector_origin
@@ -72,7 +130,9 @@ if SERVER then
 
         if tr.Hit then
             local hitEnt = tr.Entity
-            if IsValid(hitEnt) and (hitEnt:IsPlayer() or hitEnt:IsNPC() or hitEnt:IsNextBot() or hitEnt.IsBMBMob) then
+            local isCreature = IsValid(hitEnt) and (hitEnt:IsPlayer() or hitEnt:IsNPC() or hitEnt:IsNextBot() or hitEnt.IsBMBMob)
+
+            if isCreature then
                 local dmg = DamageInfo()
                 dmg:SetDamage(self.ArrowDamage or 6)
                 dmg:SetDamageType(DMG_SLASH)
@@ -81,17 +141,45 @@ if SERVER then
                 dmg:SetDamagePosition(tr.HitPos)
                 dmg:SetDamageForce(vel:GetNormalized() * 100)
                 hitEnt:TakeDamageInfo(dmg)
+
+                self:PlayBMBArrowHitSound()
+
+                if shouldLogRanged() then
+                    print(string.format(
+                        "[BMB ranged] arrow hit %s (damage) pos=(%.0f,%.0f,%.0f) t=%.2fs",
+                        hitEnt:GetClass(),
+                        tr.HitPos.x, tr.HitPos.y, tr.HitPos.z,
+                        CurTime() - (self.BMBArrowSpawnTime or CurTime())))
+                end
+
+                -- 命中生物：扣血后移除，不插。
+                self:Remove()
+                return
             end
 
-            -- 命中世界或生物都移除（插在表面是 polish）。
-            self:Remove()
+            -- 命中静态世界/物体：插在表面，不移除（会动的 prop 不跟随，按需求跳过）。
+            if shouldLogRanged() then
+                print(string.format(
+                    "[BMB ranged] arrow stuck on %s pos=(%.0f,%.0f,%.0f) t=%.2fs",
+                    IsValid(hitEnt) and hitEnt:GetClass() or "world",
+                    tr.HitPos.x, tr.HitPos.y, tr.HitPos.z,
+                    CurTime() - (self.BMBArrowSpawnTime or CurTime())))
+            end
+
+            self:StickToSurface(tr.HitPos)
             return
         end
 
         self:SetPos(newPos)
-        self:SetAngles(vel:Angle())
+        self:SetAngles(vel:Angle() + (self.ArrowModelAngleOffset or angle_zero))
 
         if CurTime() >= (self.BMBArrowDie or 0) then
+            if shouldLogRanged() then
+                local p = self:GetPos()
+                print(string.format(
+                    "[BMB ranged] arrow expired (no hit) pos=(%.0f,%.0f,%.0f)",
+                    p.x, p.y, p.z))
+            end
             self:Remove()
             return
         end

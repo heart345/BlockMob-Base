@@ -19,6 +19,10 @@ if SERVER and not GetConVar("bmb_debug_melee_knockback") then
     CreateConVar("bmb_debug_melee_knockback", "0", FCVAR_ARCHIVE, "Print BMB melee knockback diagnostics.")
 end
 
+if SERVER and not GetConVar("bmb_debug_ranged") then
+    CreateConVar("bmb_debug_ranged", "0", FCVAR_ARCHIVE, "Print BMB ranged (skeleton bow/arrow) diagnostics.")
+end
+
 if SERVER then
     concommand.Add("bmb_melee_knockback_debug", function(ply, _, args)
         if IsValid(ply) and not ply:IsAdmin() then return end
@@ -27,10 +31,23 @@ if SERVER then
         RunConsoleCommand("bmb_debug_melee_knockback", enabled and "1" or "0")
         print("[BMB] melee knockback debug " .. (enabled and "enabled" or "disabled"))
     end)
+
+    concommand.Add("bmb_ranged_debug", function(ply, _, args)
+        if IsValid(ply) and not ply:IsAdmin() then return end
+
+        local enabled = tostring(args and args[1] or "1") ~= "0"
+        RunConsoleCommand("bmb_debug_ranged", enabled and "1" or "0")
+        print("[BMB] ranged debug " .. (enabled and "enabled" or "disabled"))
+    end)
 end
 
 local function shouldLogMeleeKnockback()
     local cvar = GetConVar and GetConVar("bmb_debug_melee_knockback")
+    return cvar and cvar:GetBool()
+end
+
+local function shouldLogRanged()
+    local cvar = GetConVar and GetConVar("bmb_debug_ranged")
     return cvar and cvar:GetBool()
 end
 
@@ -836,7 +853,12 @@ function BMB.Behaviors.RangedAttack.Fire(mob, target)
     if not IsValid(target) then return end
 
     local spawnPos = BMB.Behaviors.RangedAttack.GetArrowSpawnPos(mob)
-    local d = rangedEyePos(target) - spawnPos
+    -- 瞄目标身高的 1/3 处（下半身躯干），不是眼睛——对齐 MC performRangedAttack 的 getY(0.3333)。
+    -- 瞄眼睛会让小幅弧线误差从头顶掠过打不中；瞄躯干更稳命中身体。
+    local tmaxs = target:OBBMaxs()
+    local aimZ = (tmaxs and tmaxs.z or 72) * (mob.RangedAimHeightFrac or 0.3333)
+    local aimPos = target:GetPos() + Vector(0, 0, aimZ)
+    local d = aimPos - spawnPos
     local horiz = math.sqrt(d.x * d.x + d.y * d.y)
     -- 抛物线补偿（无空气阻力的精确提前量，随距离平方增长）：让箭下坠后正好落到目标。
     -- 补偿 Δz = 0.5*g*horiz²/speed²（推导自 z(t)=vz·t-½g·t²=Δ 且 t=horiz/vx）；ArrowArcTuning 微调。
@@ -844,6 +866,23 @@ function BMB.Behaviors.RangedAttack.Fire(mob, target)
     local s = mob.ArrowSpeed or 1168
     d.z = d.z + 0.5 * g * horiz * horiz / (s * s) * (mob.ArrowArcTuning or 1.0)
     local dir = d:GetNormalized()
+
+    if shouldLogRanged() then
+        -- predZerr≈0 说明弹道会正好落到瞄准点（目标 1/3 身高）；偏大=打高、偏小=打低，调 ArrowArcTuning/ArrowSpeed/ArrowGravity。
+        local horizSpeed = s * math.sqrt(dir.x * dir.x + dir.y * dir.y)
+        local tFlight = horizSpeed > 0 and (horiz / horizSpeed) or 0
+        local predImpactZ = spawnPos.z + s * dir.z * tFlight - 0.5 * g * tFlight * tFlight
+        print(string.format(
+            "[BMB ranged] fire %s->%s horiz=%.0f vGap=%.0f arc+=%.0f launchPitch=%.1f spd=%.0f g=%.0f t=%.2fs predZerr=%.1f",
+            mob.GetClass and mob:GetClass() or "?",
+            target.GetClass and target:GetClass() or "?",
+            horiz,
+            aimPos.z - spawnPos.z,
+            0.5 * g * horiz * horiz / (s * s) * (mob.ArrowArcTuning or 1.0),
+            dir:Angle().pitch,
+            s, g, tFlight,
+            predImpactZ - aimPos.z))
+    end
 
     local arrow = ents.Create("bmb_arrow")
     if not IsValid(arrow) then return end
@@ -903,18 +942,108 @@ local function cancelDraw(mob)
     end
 end
 
--- 距离/视线分支：太远或没稳定看见 → chase 接近（阻塞）；否则 aim 停下（M1 不 strafe）。返回 "chase"/"aim"。
-function BMB.Behaviors.RangedAttack.ResolveMovement(mob, target)
+-- Strafe（交战横移/风筝，对应 MC RangedBowAttackGoal.tick）：进入 aim 后绕目标横移 + 按距离前后，
+-- 身体持续面向目标。直接给 loco 速度（非 A*），必须用 IsSteerTargetSafe 探边缘墙，不安全则反向/停住。
+function BMB.Behaviors.RangedAttack.UpdateStrafe(mob, target, dt)
+    if mob.RangedStrafe == false then
+        -- opt-out：原地停下（旧 M1 行为）
+        if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(0, 0) end
+        if mob.loco then mob.loco:SetDesiredSpeed(0) end
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+        return
+    end
+
     local size = blockSize()
     local range = mob.RangedAttackRange or size * (mob.RangedAttackRangeCells or 15)
-    local sightGain = mob.RangedSightGainTime or 1.0
 
     local flat = target:GetPos() - mob:GetPos()
     flat.z = 0
     local dist = flat:Length2D()
-    local seeTime = mob.BMBSeeTime or 0
+    if dist < 1 then
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+        return
+    end
+    local toward = flat / dist
 
-    if dist > range or seeTime < sightGain then
+    -- 初始化 / 从 chase 进入（BMBStrafeTime<0）时重置方向骰子
+    if mob.BMBStrafeTime == nil or mob.BMBStrafeTime < 0 then
+        mob.BMBStrafeTime = 0
+        if mob.BMBStrafeClockwise == nil then mob.BMBStrafeClockwise = (math.random() < 0.5) end
+        if mob.BMBStrafeBackward == nil then mob.BMBStrafeBackward = false end
+    end
+
+    -- 每 ~1.0s 一次方向骰子：30% 翻顺/逆时针、30% 翻前/后
+    mob.BMBStrafeTime = mob.BMBStrafeTime + (dt or 0)
+    if mob.BMBStrafeTime >= (mob.StrafeDiceInterval or 1.0) then
+        if math.random() < 0.3 then mob.BMBStrafeClockwise = not mob.BMBStrafeClockwise end
+        if math.random() < 0.3 then mob.BMBStrafeBackward = not mob.BMBStrafeBackward end
+        mob.BMBStrafeTime = 0
+    end
+
+    -- 距离偏置覆盖前后：> 13 格(√0.75) 不后退、< 7.5 格(√0.25) 后退、中间保留随机
+    if dist > range * 0.866 then
+        mob.BMBStrafeBackward = false
+    elseif dist < range * 0.5 then
+        mob.BMBStrafeBackward = true
+    end
+
+    local function strafeDir(clockwise)
+        local perp = Vector(-toward.y, toward.x, 0) -- 90° CCW
+        if not clockwise then perp = perp * -1 end
+        local fwdSign = mob.BMBStrafeBackward and -1 or 1
+        local moveDir = toward * (fwdSign * (mob.StrafeForwardWeight or 1)) + perp * (mob.StrafeSideWeight or 1)
+        moveDir.z = 0
+        return moveDir
+    end
+
+    local strafeSpeed = mob.StrafeSpeed or (mob.WalkSpeed or 90) * 0.5
+    local lookahead = mob.StrafeLookahead or size
+    local probe = mob.StrafeProbeDistance or (lookahead + size * 0.5)
+
+    local function tryDir(clockwise)
+        local moveDir = strafeDir(clockwise)
+        if moveDir:LengthSqr() < 0.0001 then return nil end
+        moveDir:Normalize()
+        local steer = mob:GetPos() + moveDir * lookahead
+        steer.z = mob:GetPos().z
+        if BMB.Behaviors.Chase.IsSteerTargetSafe(mob, steer, probe) then
+            return steer
+        end
+        return nil
+    end
+
+    -- 当前方向不安全则翻一次圆周方向再试；都不行就站住只面向
+    local steer = tryDir(mob.BMBStrafeClockwise)
+    if not steer then
+        mob.BMBStrafeClockwise = not mob.BMBStrafeClockwise
+        steer = tryDir(mob.BMBStrafeClockwise)
+    end
+
+    if steer and mob.loco then
+        mob:MaintainBMBMoveSpeed(strafeSpeed, strafeSpeed)
+        mob.loco:SetDesiredSpeed(strafeSpeed)
+        mob.loco:Approach(steer, strafeSpeed) -- 驱动横移（也会朝 steer 转向）
+    else
+        if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(0, 0) end
+        if mob.loco then mob.loco:SetDesiredSpeed(0) end
+    end
+
+    -- 身体始终面向目标（在 Approach 之后调用以覆盖其转向），头部由 forced look 锁定
+    if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+end
+
+-- 距离分支：太远 → chase 接近（阻塞）；进入攻击半径 → aim + strafe 风筝。
+-- 接近决策**只看距离**：不要把 SeeTime<1s 也算进 chase——否则贴脸生成时会在攒视线的 1s 里
+-- 一路追到玩家脸上才转 aim。SeeTime 只用于何时放箭（UpdateDrawFire），不决定移动。返回 "chase"/"aim"。
+function BMB.Behaviors.RangedAttack.ResolveMovement(mob, target, dt)
+    local size = blockSize()
+    local range = mob.RangedAttackRange or size * (mob.RangedAttackRangeCells or 15)
+
+    local flat = target:GetPos() - mob:GetPos()
+    flat.z = 0
+    local dist = flat:Length2D()
+
+    if dist > range then
         cancelDraw(mob)
         if mob.SetBMBState then mob:SetBMBState("chase") end
         mob.BMBStrafeTime = -1
@@ -922,12 +1051,11 @@ function BMB.Behaviors.RangedAttack.ResolveMovement(mob, target)
         return "chase"
     end
 
-    -- aim：停止寻路、面向目标（M2 在此接 UpdateStrafe）
+    -- 进入攻击半径：立刻停下进 aim + strafe（贴脸生成会直接后退而不是追到脸上）。
+    -- strafe 的距离偏置会在太近时后退、太远时压近，aim 每 tick 跑使 SeeTime 连续累积到可放箭。
     if mob.SetBMBState then mob:SetBMBState("aim") end
     if mob.SetBMBMoveMode then mob:SetBMBMoveMode("aim") end
-    if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(0, 0) end
-    if mob.loco then mob.loco:SetDesiredSpeed(0) end
-    if mob.FaceTarget then mob:FaceTarget(rangedEyePos(target)) end
+    BMB.Behaviors.RangedAttack.UpdateStrafe(mob, target, dt)
 
     return "aim"
 end
@@ -941,7 +1069,7 @@ function BMB.Behaviors.RangedAttack.Update(mob, target)
 
     local visible = BMB.Behaviors.RangedAttack.UpdateSightMemory(mob, target, dt)
 
-    if BMB.Behaviors.RangedAttack.ResolveMovement(mob, target) == "aim" then
+    if BMB.Behaviors.RangedAttack.ResolveMovement(mob, target, dt) == "aim" then
         BMB.Behaviors.RangedAttack.UpdateDrawFire(mob, target, visible)
     end
 end
