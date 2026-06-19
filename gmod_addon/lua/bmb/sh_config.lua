@@ -21,6 +21,8 @@ BMB.Config.MaxPathIterations = 900
 BMB.Config.PathfinderYieldEvery = 24
 -- MC 普通 LivingEntity/Mob 的 getMaxFallDistance 默认 3；羊未覆写。
 BMB.Config.MaxPathDropCells = 3
+-- 路径缓存 TTL（秒）：缓存路径超过它就重寻路（ShouldRepath 临时桩，见 sv_pathfinder.lua）。
+BMB.Config.PathCacheTTL = 0.75
 -- 到达阈值 = 0.5 个方块（CLAUDE.md），必须 >= PathNodeTolerance，
 -- 否则离终点 [goal, node] 区间时节点推进不了、到达也判不过，mob 会在减速区原地扭
 

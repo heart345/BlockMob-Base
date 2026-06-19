@@ -159,7 +159,43 @@ ENT.Sounds = {
 }
 
 local function randomSound(list)
+    if not list or #list == 0 then return nil end
     return list[math.random(#list)]
+end
+
+local skeletonSoundSets = {
+    bmb_skeleton = ENT.Sounds,
+    bmb_stray = {
+        Idle = {
+            "bmb/mob/stray/idle1.ogg",
+            "bmb/mob/stray/idle2.ogg",
+            "bmb/mob/stray/idle3.ogg",
+            "bmb/mob/stray/idle4.ogg"
+        },
+        Hurt = {
+            "bmb/mob/stray/hurt1.ogg",
+            "bmb/mob/stray/hurt2.ogg",
+            "bmb/mob/stray/hurt3.ogg",
+            "bmb/mob/stray/hurt4.ogg"
+        },
+        Death = {
+            "bmb/mob/stray/death1.ogg",
+            "bmb/mob/stray/death2.ogg"
+        },
+        Step = {
+            "bmb/mob/stray/step1.ogg",
+            "bmb/mob/stray/step2.ogg",
+            "bmb/mob/stray/step3.ogg",
+            "bmb/mob/stray/step4.ogg"
+        },
+        Shoot = {
+            "bmb/mob/skeleton/bow.ogg"
+        }
+    }
+}
+
+function ENT:GetBMBSkeletonSounds()
+    return skeletonSoundSets[self:GetClass()] or self.Sounds or skeletonSoundSets.bmb_skeleton
 end
 
 local function validTarget(target)
@@ -216,7 +252,8 @@ if CLIENT then
 
         self.BMBSkeletonStepDistance = self.BMBSkeletonStepDistance - stepDistance
 
-        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        local sounds = self:GetBMBSkeletonSounds()
+        local soundName = randomSound(sounds and sounds.Step)
         if not soundName then return end
 
         local fullSpeed = math.max((self.StepSoundMinSpeed or 8) + 1, self.RunSpeed or 95)
@@ -363,8 +400,10 @@ if CLIENT then
 
     function ENT:Draw()
         -- 保留 base 的受击/死亡红闪 DrawModel，再画挂在手上的弓。
-        if self.BaseClass and self.BaseClass.Draw then
-            self.BaseClass.Draw(self)
+        local baseMob = scripted_ents.GetStored("bmb_base_mob")
+        local baseTable = baseMob and baseMob.t
+        if baseTable and baseTable.Draw then
+            baseTable.Draw(self)
         else
             self:DrawModel()
         end
@@ -478,11 +517,12 @@ function ENT:GetBMBForcedLookTarget()
 end
 
 function ENT:PlayBMBRangedShootSound()
-    if not self.Sounds or not self.Sounds.Shoot then return end
+    local sounds = self:GetBMBSkeletonSounds()
+    if not sounds or not sounds.Shoot then return end
 
     -- MC: pitch 倍率 1/(rand*0.4+0.8) ≈ 0.833~1.25 → GMod pitch 百分比。
     local pitch = math.Clamp(math.floor(100 / (math.Rand(0, 1) * 0.4 + 0.8)), 1, 255)
-    self:EmitSound(randomSound(self.Sounds.Shoot), 80, pitch, 1.0)
+    self:EmitSound(randomSound(sounds.Shoot), 80, pitch, 1.0)
 end
 
 function ENT:OnBMBInjured(damageInfo, _)
@@ -493,16 +533,18 @@ function ENT:OnBMBInjured(damageInfo, _)
         self.NextTargetScanTime = 0
     end
 
-    if self.Sounds and self.Sounds.Hurt then
-        self:EmitSound(randomSound(self.Sounds.Hurt), 72, math.random(95, 105), 0.8)
+    local sounds = self:GetBMBSkeletonSounds()
+    if sounds and sounds.Hurt then
+        self:EmitSound(randomSound(sounds.Hurt), 72, math.random(95, 105), 0.8)
     end
 end
 
 function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
-    if self.Sounds and self.Sounds.Death then
-        self:EmitSound(randomSound(self.Sounds.Death), 76, math.random(95, 105), 0.9)
+    local sounds = self:GetBMBSkeletonSounds()
+    if sounds and sounds.Death then
+        self:EmitSound(randomSound(sounds.Death), 76, math.random(95, 105), 0.9)
     end
 
     self:BeginBMBDeath(damageInfo)
@@ -517,7 +559,8 @@ function ENT:ResetBMBAmbientSoundTime()
 end
 
 function ENT:MaybePlayIdleSound()
-    if not self.Sounds or not self.Sounds.Idle then return end
+    local sounds = self:GetBMBSkeletonSounds()
+    if not sounds or not sounds.Idle then return end
 
     local now = CurTime()
     local tickRate = self.AmbientSoundTickRate or 20
@@ -536,7 +579,7 @@ function ENT:MaybePlayIdleSound()
         end
 
         if math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
-            self:EmitSound(randomSound(self.Sounds.Idle), 72, math.random(92, 108), 0.6)
+            self:EmitSound(randomSound(sounds.Idle), 72, math.random(92, 108), 0.6)
             self:ResetBMBAmbientSoundTime()
             break
         end

@@ -117,6 +117,41 @@ local function randomSound(list)
     return list[math.random(1, #list)]
 end
 
+local zombieSoundSets = {
+    bmb_zombie = ENT.Sounds,
+    bmb_husk = {
+        Say = {
+            "bmb/mob/husk/idle1.ogg",
+            "bmb/mob/husk/idle2.ogg",
+            "bmb/mob/husk/idle3.ogg"
+        },
+        Hurt = {
+            "bmb/mob/husk/hurt1.ogg",
+            "bmb/mob/husk/hurt2.ogg"
+        },
+        Death = {
+            "bmb/mob/husk/death1.ogg",
+            "bmb/mob/husk/death2.ogg"
+        },
+        Step = {
+            "bmb/mob/husk/step1.ogg",
+            "bmb/mob/husk/step2.ogg",
+            "bmb/mob/husk/step3.ogg",
+            "bmb/mob/husk/step4.ogg",
+            "bmb/mob/husk/step5.ogg"
+        },
+        Hit = {
+            "bmb/damage/hit1.ogg",
+            "bmb/damage/hit2.ogg",
+            "bmb/damage/hit3.ogg"
+        }
+    }
+}
+
+function ENT:GetBMBZombieSounds()
+    return zombieSoundSets[self:GetClass()] or self.Sounds or zombieSoundSets.bmb_zombie
+end
+
 local function validTarget(target)
     if not IsValid(target) then return false end
 
@@ -154,7 +189,8 @@ if CLIENT then
 
         self.BMBZombieStepDistance = self.BMBZombieStepDistance - stepDistance
 
-        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        local sounds = self:GetBMBZombieSounds()
+        local soundName = randomSound(sounds and sounds.Step)
         if not soundName then return end
 
         local fullSpeed = math.max((self.StepSoundMinSpeed or 8) + 1, self.RunSpeed or 95)
@@ -355,7 +391,8 @@ end
 function ENT:OnBMBMeleeHit(target, _)
     if not IsValid(target) then return end
 
-    local soundName = randomSound(self.Sounds and self.Sounds.Hit)
+    local sounds = self:GetBMBZombieSounds()
+    local soundName = randomSound(sounds and sounds.Hit)
     if soundName then
         target:EmitSound(soundName, 74, math.random(96, 104), 0.82)
     end
@@ -364,14 +401,16 @@ function ENT:OnBMBMeleeHit(target, _)
 end
 
 function ENT:PlayBMBZombieSay(volume)
-    local soundName = randomSound(self.Sounds and self.Sounds.Say)
+    local sounds = self:GetBMBZombieSounds()
+    local soundName = randomSound(sounds and sounds.Say)
     if not soundName then return end
 
     self:EmitSound(soundName, 72, math.random(92, 108), volume or 0.78)
 end
 
 function ENT:PlayBMBZombieHurt(volume)
-    local soundName = randomSound(self.Sounds and self.Sounds.Hurt)
+    local sounds = self:GetBMBZombieSounds()
+    local soundName = randomSound(sounds and sounds.Hurt)
     if not soundName then return end
 
     self:EmitSound(soundName, 72, math.random(95, 105), volume or 0.88)
@@ -395,7 +434,8 @@ end
 function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
-    local soundName = randomSound(self.Sounds and self.Sounds.Death)
+    local sounds = self:GetBMBZombieSounds()
+    local soundName = randomSound(sounds and sounds.Death)
     if soundName then
         self:EmitSound(soundName, 76, math.random(95, 105), 0.95)
     end
@@ -412,7 +452,8 @@ function ENT:MaybePlayStep()
 end
 
 function ENT:MaybePlayIdleSound()
-    if not self.Sounds or not self.Sounds.Say then return end
+    local sounds = self:GetBMBZombieSounds()
+    if not sounds or not sounds.Say then return end
 
     local now = CurTime()
     local tickRate = self.AmbientSoundTickRate or 20

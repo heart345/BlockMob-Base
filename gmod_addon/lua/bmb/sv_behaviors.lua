@@ -23,6 +23,10 @@ if SERVER and not GetConVar("bmb_debug_ranged") then
     CreateConVar("bmb_debug_ranged", "0", FCVAR_ARCHIVE, "Print BMB ranged (skeleton bow/arrow) diagnostics.")
 end
 
+if SERVER and not GetConVar("bmb_debug_chase") then
+    CreateConVar("bmb_debug_chase", "0", FCVAR_ARCHIVE, "Print BMB chase pathfinding decision diagnostics.")
+end
+
 if SERVER then
     concommand.Add("bmb_melee_knockback_debug", function(ply, _, args)
         if IsValid(ply) and not ply:IsAdmin() then return end
@@ -38,6 +42,14 @@ if SERVER then
         local enabled = tostring(args and args[1] or "1") ~= "0"
         RunConsoleCommand("bmb_debug_ranged", enabled and "1" or "0")
         print("[BMB] ranged debug " .. (enabled and "enabled" or "disabled"))
+    end)
+
+    concommand.Add("bmb_chase_debug", function(ply, _, args)
+        if IsValid(ply) and not ply:IsAdmin() then return end
+
+        local enabled = tostring(args and args[1] or "1") ~= "0"
+        RunConsoleCommand("bmb_debug_chase", enabled and "1" or "0")
+        print("[BMB] chase debug " .. (enabled and "enabled" or "disabled"))
     end)
 end
 
@@ -498,7 +510,22 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
 
     BMB.Behaviors.MeleeAttack.RememberTargetDirection(mob, target)
 
-    if not BMB.Behaviors.Chase.IsSteerTargetSafe(mob, steerTarget, probeDistance) then
+    local safe, reason = BMB.Behaviors.Chase.IsSteerTargetSafe(mob, steerTarget, probeDistance)
+
+    -- cliff 迟滞：单帧脏读（探针打侧墙、MCSWEP 方块 chunk 边界碰撞重建、整数格量化）会让 chase 在
+    -- 前压↔cliff 间反复横跳，压速把 vel churn 成 0（HUD vel:0.0 卡死）。连续 cliff 持续超过
+    -- CliffHysteresisTime 才真当悬崖压速；之前的瞬时 cliff 容忍、继续前压。wall（hull 实撞）确定、不迟滞。
+    if not safe and reason ~= "wall" then
+        local hyst = mob.CliffHysteresisTime or 0.12
+        mob.BMBCliffSince = mob.BMBCliffSince or CurTime()
+        if (CurTime() - mob.BMBCliffSince) < hyst then
+            safe = true
+        end
+    else
+        mob.BMBCliffSince = nil
+    end
+
+    if not safe then
         if mob.SetBMBState then mob:SetBMBState("chase") end
         if mob.SetBMBMoveMode then mob:SetBMBMoveMode((mode or "chase") .. "_cliff") end
         if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(speed, speed) end
@@ -510,7 +537,7 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
             mob.loco:SetVelocity(Vector(velocity.x * 0.1, velocity.y * 0.1, velocity.z))
         end
 
-        return false, "cliff"
+        return false, reason or "cliff"
     end
 
     if mob.SetBMBState then mob:SetBMBState("chase") end

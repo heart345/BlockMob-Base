@@ -108,6 +108,19 @@ local function targetFromTrace(trace)
 end
 
 local function startTargetMove(mob, target, speed, duration)
+    -- 把点击点 snap 到合法可站立格中心：点到台阶边缘/斜面/不可站处时，A* 的 goal 否则会直接 nil，
+    -- 而 debug 目标是固定点、每次重算都 nil → 卡在 debug_repath 不动（chase 因目标是可站的玩家、
+    -- 且会移动，所以同样地形能上）。先判目标格本身可站，否则找最近可站格。
+    if BMB and BMB.Pathfinder and BMB.BlockWorld and BMB.BlockWorld.BlockToWorld then
+        local standable, cell = BMB.Pathfinder.IsStandablePosition(target, { mob = mob })
+        if standable and cell then
+            target = BMB.BlockWorld.BlockToWorld(cell)
+        elseif BMB.Pathfinder.FindNearestStandable then
+            local snapped = BMB.Pathfinder.FindNearestStandable(target, { mob = mob, searchRadiusCells = 4 })
+            if snapped then target = snapped end
+        end
+    end
+
     local delta = target - mob:GetPos()
     delta.z = 0
 

@@ -13,15 +13,21 @@ list.Set("NPC", "bmb_zombie", {
     Category = "BlockMob Base"
 })
 
+list.Set("NPC", "bmb_husk", {
+    Name = "BMB Prototype Husk",
+    Class = "bmb_husk",
+    Category = "BlockMob Base"
+})
+
 list.Set("NPC", "bmb_skeleton", {
     Name = "BMB Prototype Skeleton",
     Class = "bmb_skeleton",
     Category = "BlockMob Base"
 })
 
-list.Set("NPC", "bmb_wolf", {
-    Name = "BMB Stub Wolf (flee target)",
-    Class = "bmb_wolf",
+list.Set("NPC", "bmb_stray", {
+    Name = "BMB Prototype Stray",
+    Class = "bmb_stray",
     Category = "BlockMob Base"
 })
 

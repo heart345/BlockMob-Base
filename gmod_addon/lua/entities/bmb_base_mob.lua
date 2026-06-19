@@ -63,6 +63,8 @@ ENT.GridSafetyStepScale = 0.5
 ENT.GridSafetyMinStep = 8
 ENT.GridSafetyFootLiftScale = 0.12
 ENT.GridSafetyMinFootLift = 4
+-- cliff 迟滞窗（秒）：连续判 cliff 持续超过它才真当悬崖压速；单帧脏读/整数格量化容忍、继续前压。
+ENT.CliffHysteresisTime = 0.12
 -- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)
 -- while remaining below a full MC block.
 ENT.StepHeight = 28
@@ -2005,6 +2007,18 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         allowPartial = options.allowPartial,
         allowUnsupportedWalk = options.allowUnsupportedWalk or options.allowStrandedStart
     })
+
+    -- chase 诊断（bmb_chase_debug 1）：分清钉死是 A* 无路(nil) / 部分路径(partial) / 还是后续 MoveAlongPath 被拦。
+    local chaseCvar = GetConVar and GetConVar("bmb_debug_chase")
+    if chaseCvar and chaseCvar:GetBool() then
+        local result = "nil"
+        if waypoints and #waypoints > 0 then
+            result = (waypoints.partial and "partial" or "full") .. "(" .. #waypoints .. ")"
+        end
+        print(string.format("[BMB chase] %s findpath dist=%.0f -> %s",
+            self:GetClass(), self:GetPos():Distance(destination), result))
+    end
+
     if not waypoints or #waypoints == 0 then
         return runDirectFallback()
     end
@@ -2123,6 +2137,16 @@ function ENT:GetPathPointAhead(waypoints, cursor, segmentIndex, distance)
 
     for i = segmentIndex, #waypoints - 1 do
         local nextNode = waypoints[i + 1]
+
+        -- carrot-stops-at-vertical-node：carrot 不跨过 hop/drop 垂直节点。垂直跨越（上/下台阶）
+        -- 无法用直线 grid 可见性表达，前推过去会让 carrot 落在台阶上方、被 IsPathGridVisible 直线穿
+        -- 台阶判不可见、二分缩回原地，mob 朝原地"走"= 不动（debug move 远目标尤其明显；wander 路径短
+        -- 少触发，所以 wander 能上台阶而 debug 不能）。停在垂直节点的水平投影，让 mob 走到台阶根/边缘后
+        -- 由 MoveAlongPath 的 hop/drop 流程接管垂直跨越。
+        if self:IsBMBPathVerticalAction(self:GetBMBWaypointAction(waypoints, i + 1)) then
+            return Vector(nextNode.x, nextNode.y, current.z)
+        end
+
         local segment = Vector(nextNode.x - point.x, nextNode.y - point.y, 0)
         local length = segment:Length()
 
@@ -3324,6 +3348,15 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         local activeAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
         local actionNode = waypoints[nodeIndex]
         local verticalAction = self:IsBMBPathVerticalAction(activeAction)
+
+        -- 缓存路径 TTL 过期（ShouldRepath 桩）：只在普通 walk 段（非 hop/drop、无进行中 hop）打断，
+        -- 走失败出口让行为层重寻路，世界变了最多 ~0.75s 自愈；绝不在垂直动作中途打断。
+        if not verticalAction and not self.BMBActiveBlockHop
+            and BMB.Pathfinder.ShouldRepath and BMB.Pathfinder.ShouldRepath(waypoints) then
+            self:RestoreBMBStepHeight()
+            return false
+        end
+
         local pathSpeed, pathCarrotDistance, cornering
         local carrot
 

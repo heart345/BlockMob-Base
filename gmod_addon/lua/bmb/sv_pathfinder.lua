@@ -393,7 +393,9 @@ function pathfinder.FindPath(startPos, goalPos, options)
         openSet[currentKey] = nil
 
         if currentKey == goalKey then
-            return buildWaypoints(blockWorld, cameFrom, cameAction, current)
+            local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, current)
+            waypoints.bornAt = CurTime()
+            return waypoints
         end
 
         closedSet[currentKey] = true
@@ -437,8 +439,20 @@ function pathfinder.FindPath(startPos, goalPos, options)
     if options.allowPartial ~= false and bestKey ~= startKey and bestH < hStart then
         local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, bestCoord)
         waypoints.partial = true
+        waypoints.bornAt = CurTime()
         return waypoints
     end
 
     return nil
+end
+
+-- 路径缓存失效判断（集中单点接口）。**临时桩：只按 TTL**——缓存路径超过 PathCacheTTL 秒就重寻路，
+-- 世界变了路径最多过期 ~0.75s 自愈，且永不走死路。
+-- TODO（等 MCSWEP 出 MC.GetChunkVersion）：改成寻路时给 waypoints 标记经过 chunk 的版本号、
+-- 复用前比对版本，只有路径覆盖的 chunk 真的变了才重算；届时替换本函数实现，
+-- 在那之前不要搭 chunk 版本标记（没有版本可比）。
+function pathfinder.ShouldRepath(waypoints)
+    if not waypoints then return true end
+    local ttl = (BMB.Config and BMB.Config.PathCacheTTL) or 0.75
+    return (CurTime() - (waypoints.bornAt or 0)) > ttl
 end

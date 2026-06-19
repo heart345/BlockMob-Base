@@ -105,6 +105,54 @@ function real.IsSolid(blockCoord)
     return true
 end
 
+-- 连接型方块（玻璃板/栅栏/墙/栏杆/管）顶面是窄碰撞，不适合当 mob 寻路落脚点。
+-- 读 MC.Blocks[id].connection（接口文档的权威连接类型字段），不靠方块名后缀猜。
+local narrowConnectionKinds = {
+    fence = true,
+    fence_gate = true,
+    wall = true,
+    pane = true,
+    bars = true,
+    pipe6 = true
+}
+
+local function isNarrowCollisionBlock(id)
+    if not istable(MC) or not istable(MC.Blocks) then return false end
+    local block = MC.Blocks[id]
+    return block ~= nil and narrowConnectionKinds[block.connection] == true
+end
+
+-- 该格是否提供"可站顶面"（mob 能站在它顶上当支撑）。形状查询全部收在本 adapter：
+--   ① full cube 快路径；② 窄连接碰撞（玻璃板/栅栏/墙）排除；
+--   ③ 否则看 MC.GetCellBlockExtent 的竖直包络 hi（带坐标、邻居已解）：有顶面碰撞即可站。
+-- 半砖/台阶/雪层/楼梯/斜坡都走 ③（斜坡用 extentHi 近似）；≤半格高差由 loco StepHeight 走上去，
+-- 整格高差仍交给 A* hop。
+local function cellProvidesStandableTop(bx, by, bz)
+    if not real.Available() then return false end
+
+    local id = MC.GetBlock(bx, by, bz)
+    if not id or id == 0 then return false end
+
+    local orient = 0
+    if isfunction(MC.GetBlockOrient) then
+        orient = MC.GetBlockOrient(bx, by, bz) or 0
+    end
+
+    if isfunction(MC.BlockIsFullCube) and MC.BlockIsFullCube(id, orient) then
+        return true
+    end
+
+    if isNarrowCollisionBlock(id) then return false end
+
+    if isfunction(MC.GetCellBlockExtent) then
+        local _, hi = MC.GetCellBlockExtent(bx, by, bz)
+        return hi ~= nil
+    end
+
+    -- MCSWEP 未提供 extent 接口时退化为旧行为（只有 full cube 算支撑）。
+    return false
+end
+
 -- 窄 Source 几何比 36u 格子窄时，MC 网格中心可能悬在沿外侧：中心采样没命中
 -- 再用这四个轴向偏移兜一次（HasSupport 用），偏移量约 1/3 格。
 local supportSampleOffsetFractions = {
@@ -122,7 +170,9 @@ function real.HasSupport(blockCoord)
     if not real.Available() then return false end
 
     local below = coord(blockCoord.x, blockCoord.y, (blockCoord.z or 0) - 1)
-    if real.IsSolid(below) then return true end
+    -- 脚下格提供可站顶面（full cube，或半砖/台阶/楼梯/斜坡/雪层等非窄碰撞方块）→ 支撑。
+    -- 以前只认 full cube（real.IsSolid），半砖/台阶被当空气站不上去（接形状查询后修）。
+    if cellProvidesStandableTop(below.x, below.y, below.z) then return true end
 
     local center = real.BlockToWorld(blockCoord)
     local half = blockSize() * 0.5
