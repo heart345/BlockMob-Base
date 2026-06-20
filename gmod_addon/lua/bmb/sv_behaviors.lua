@@ -63,6 +63,11 @@ local function shouldLogRanged()
     return cvar and cvar:GetBool()
 end
 
+local function shouldLogChase()
+    local cvar = GetConVar and GetConVar("bmb_debug_chase")
+    return cvar and cvar:GetBool()
+end
+
 local function formatVector2D(vec)
     if not vec then return "nil" end
     return string.format("(%.1f,%.1f,%.1f)", vec.x or 0, vec.y or 0, vec.z or 0)
@@ -453,10 +458,73 @@ function BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target)
     return targetFlatDistanceSqr(current, targetPos) <= holdRange * holdRange
 end
 
+function BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
+    if not IsValid(mob) then return end
+    mob.BMBChaseDirectCliffBlock = nil
+end
+
+function BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
+    if not IsValid(mob) or not IsValid(target) then return end
+
+    local now = CurTime()
+    local duration = mob.ChaseDirectCliffMemoryDuration or 6.0
+    local cooldown = mob.ChaseDirectCliffMemoryCooldown or 1.2
+
+    mob.BMBChaseDirectCliffBlock = {
+        targetIndex = target:EntIndex(),
+        mobPos = mob:GetPos(),
+        targetPos = target:GetPos(),
+        retryAt = now + cooldown,
+        expiresAt = now + duration
+    }
+
+    if shouldLogChase() then
+        print(string.format("[BMB chase] %s direct cliff cached target=%s cooldown=%.2f duration=%.2f",
+            mob:GetClass(), tostring(target), cooldown, duration))
+    end
+end
+
+function BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target)
+    if not IsValid(mob) or not IsValid(target) then return false end
+
+    local block = mob.BMBChaseDirectCliffBlock
+    if not block then return false end
+
+    if block.targetIndex ~= target:EntIndex() then
+        BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
+        return false
+    end
+
+    local now = CurTime()
+    if now >= (block.expiresAt or 0) then
+        BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
+        return false
+    end
+
+    local size = blockSize()
+    local mobMove = mob.ChaseDirectCliffMemoryMoveDistance
+        or size * (mob.ChaseDirectCliffMemoryMoveCells or 2.0)
+    local targetMove = mob.ChaseDirectCliffMemoryTargetMoveDistance
+        or size * (mob.ChaseDirectCliffMemoryTargetMoveCells or 1.5)
+
+    local mobMoved = block.mobPos
+        and targetFlatDistanceSqr(mob:GetPos(), block.mobPos) >= mobMove * mobMove
+    local targetMoved = block.targetPos
+        and targetFlatDistanceSqr(target:GetPos(), block.targetPos) >= targetMove * targetMove
+
+    if now >= (block.retryAt or 0) and (mobMoved or targetMoved) then
+        BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
+        return false
+    end
+
+    return true
+end
+
 function BMB.Behaviors.Chase.CanDirect(mob, target)
     if not IsValid(mob) or not IsValid(target) then return false end
     if mob.ChasePreferDirect == false then return false end
     if BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target) then return false end
+    if BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target) then return false end
 
     if mob.ChaseDirectRequireLineOfSight ~= false and mob.Visible and not mob:Visible(target) then
         return false
@@ -469,6 +537,11 @@ function BMB.Behaviors.Chase.CanDirect(mob, target)
     local minDistance = mob.ChaseDirectMinDistance or math.max(attackRange * 0.9, size * 0.75)
 
     if distance <= minDistance then return false end
+
+    local maxDistance = mob.ChaseDirectMaxDistance
+        or (mob.ChaseDirectMaxDistanceCells and size * mob.ChaseDirectMaxDistanceCells)
+
+    if maxDistance and maxDistance > 0 and distance > maxDistance then return false end
 
     flat:Normalize()
 
@@ -526,6 +599,10 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
     end
 
     if not safe then
+        if (mode or "chase_direct") == "chase_direct" and reason ~= "wall" then
+            BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
+        end
+
         if mob.SetBMBState then mob:SetBMBState("chase") end
         if mob.SetBMBMoveMode then mob:SetBMBMoveMode((mode or "chase") .. "_cliff") end
         if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(speed, speed) end

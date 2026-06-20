@@ -224,3 +224,8 @@ Phase 2
 - Opus 规格文档路径：`H:\工作视频\20251115毕业\gmod_mc_mob_spec(2).md`
 - MCSWEP 接口文档：`H:\工作视频\20251115毕业\interface-usage.md`
 - BMB/MCSWEP 对接补充：`H:\工作视频\20251115毕业\bmb_mcswep_对接补充.md`
+
+## 2026-06-20 Completed
+
+- [x] Hostile `chase_direct` cliff retry memory: confirmed cliff shortcuts now cache target/mob positions and cooldown, so winding A* routes are not repeatedly interrupted by the same dead straight-line shortcut.
+- [x] Zombie-family `chase_direct` distance tuning: max direct distance capped at 6 cells; long-range chase stays on A*.

@@ -38,6 +38,7 @@ $real = "gmod_addon\lua\bmb\sv_block_world_real.lua"
 $pathfinder = "gmod_addon\lua\bmb\sv_pathfinder.lua"
 $baseMob = "gmod_addon\lua\entities\bmb_base_mob.lua"
 $config = "gmod_addon\lua\bmb\sh_config.lua"
+$zombie = "gmod_addon\lua\entities\bmb_zombie.lua"
 
 # Part A: MCSWEP shape queries wired into the real adapter (pragmatic incremental).
 Assert-Contains $real "function\s+cellProvidesStandableTop\s*\(" "Real adapter must derive a standable-top predicate from MCSWEP shape queries"
@@ -65,6 +66,13 @@ Assert-Contains $behaviors "BMBCliffSince" "ApplySafePressure must debounce tran
 Assert-Contains $behaviors "CliffHysteresisTime" "Cliff hysteresis must use a tunable window"
 Assert-Contains $baseMob "CliffHysteresisTime" "BaseMob must expose the cliff hysteresis window"
 Assert-NotContains $baseMob "IsBMBGridFootDroppable" "Drop tolerance was reverted: chase_direct must yield downhill steps to A*, not dive down them"
+Assert-Contains $behaviors "BMBChaseDirectCliffBlock" "chase_direct must remember confirmed cliff shortcuts so it does not retry the same dead line every segment"
+Assert-Contains $behaviors "RememberDirectCliffBlock" "chase_direct cliff memory must be written when direct pressure confirms a cliff"
+Assert-Contains $behaviors "IsDirectCliffBlocked" "CanDirect must consult direct cliff memory before taking the shortcut"
+Assert-Contains $behaviors "ChaseDirectMaxDistanceCells" "CanDirect must support a max-distance gate so long-range chase can stay on A*"
+Assert-Contains $zombie "ChaseDirectMaxDistanceCells\s*=\s*6" "Zombie direct chase should only take over near the target; far chase stays on A*"
+Assert-Contains $baseMob "ChaseDirectCliffMemoryCooldown" "BaseMob must expose direct cliff shortcut memory cooldown"
+Assert-Contains $baseMob "ChaseDirectCliffMemoryMoveCells" "BaseMob must expose direct cliff shortcut movement threshold"
 
 # Debug tool: snap clicked target to a standable cell (else a fixed unreachable target loops at debug_repath).
 Assert-Contains "gmod_addon\lua\weapons\gmod_tool\stools\bmb_debug.lua" "FindNearestStandable|IsStandablePosition" "Debug move target must snap to a standable cell so A* goal is reachable"

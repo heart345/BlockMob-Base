@@ -23,6 +23,7 @@ ENT.ChaseSegmentTimeout = 2.0
 ENT.ChaseFailureRepathDelay = 0.05
 ENT.ChasePreferDirect = true
 ENT.ChaseDirectDuration = 0.28
+ENT.ChaseDirectMaxDistanceCells = 6
 ENT.ChaseDirectProbeCells = 4
 ENT.ChaseHighTargetHoldCells = 1.65
 ENT.ChaseHighTargetStalkDelay = 0.12

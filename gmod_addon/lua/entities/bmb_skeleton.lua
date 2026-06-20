@@ -191,6 +191,32 @@ local skeletonSoundSets = {
         Shoot = {
             "bmb/mob/skeleton/bow.ogg"
         }
+    },
+    bmb_parched = {
+        Idle = {
+            "bmb/mob/parched/ambient1.ogg",
+            "bmb/mob/parched/ambient2.ogg",
+            "bmb/mob/parched/ambient3.ogg",
+            "bmb/mob/parched/ambient4.ogg"
+        },
+        Hurt = {
+            "bmb/mob/parched/hurt1.ogg",
+            "bmb/mob/parched/hurt2.ogg",
+            "bmb/mob/parched/hurt3.ogg",
+            "bmb/mob/parched/hurt4.ogg"
+        },
+        Death = {
+            "bmb/mob/parched/death.ogg"
+        },
+        Step = {
+            "bmb/mob/parched/step1.ogg",
+            "bmb/mob/parched/step2.ogg",
+            "bmb/mob/parched/step3.ogg",
+            "bmb/mob/parched/step4.ogg"
+        },
+        Shoot = {
+            "bmb/mob/skeleton/bow.ogg"
+        }
     }
 }
 

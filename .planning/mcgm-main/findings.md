@@ -653,3 +653,10 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **`Player:SetVelocity` 叠加语义**（已有教训）对箭击退不重要（箭伤害走 DamageInfo + DamageForce，不直接 SetVelocity 玩家）。
 - **Flee threat 参数是 PanicGoal↔AvoidEntityGoal 的开关**：同一个 Flee.Run，不传 threat = 随机近点恐慌（与方向无关），传 threat = 只收离威胁更远的候选。逃威胁优先级高于攻击且 return、不清 target。
 - **占位模型先行解耦风险**（用户强调）：远程逻辑先挂僵尸占位模型验证，模型重烘（双足 rotate 0 + 手臂中性化）是独立轨；两轨都好了再 swap `ENT.Model`。M1 测试只判对错，不判 strafe 风筝手感。
+
+## 2026-06-20: Direct shortcut failures need memory
+
+- **绕路中反复 `chase_direct_cliff` 不一定是 A* 坏**：如果 A* 已能绕开悬崖，而 hostile 每隔一小段又直扑同一条 cliff，问题是 direct shortcut 没记住“这条线刚试过是死的”。
+- **记忆应挂在 shortcut 层，不要改 A*/cliff 检测**：`chase_direct` 经 `ApplySafePressure` 确认 cliff 后缓存目标 EntIndex、mob 位置、target 位置、冷却和过期；`CanDirect` 先查缓存，位置没明显变化就让 A* 继续走。
+- **远距离不要过早丢开 A***：`chase_direct` 适合近距离视线压迫；复杂结构里远距离 direct 会太早无视 A* 的绕路意图。用 per-mob `ChaseDirectMaxDistanceCells` 收紧入口，Zombie 先定 6 格。
+- **不要把非 shortcut 压迫混进来**：`attack_ready` / `chase_repath` 仍可用 `ApplySafePressure` 防掉崖，但不写 direct shortcut memory，避免攻击贴边和 A* 失败兜底被同一块缓存意外压住。

@@ -946,3 +946,12 @@
 - `bmb_zombie` now uses MC sounds for ambient say, non-lethal accepted hurt, death, melee player hit feedback, and footsteps. Lethal hits skip hurt so the death sound does not stack with hurt. It no longer references Source `npc/zombie/*` or `player/pl_pain*`.
 - Zombie footsteps are now client-side distance-driven from the same `speed * FrameTime()` integration as procedural biped legs (`StepSoundDistance=26`), and `MaybePlayStep()` is overridden so Base's timer-driven placeholder does not play.
 - `scripts/check_zombie_phase2_attack_audio.ps1` guards the sound paths, resource registration, distance-driven stepping, and no-Source-sound regressions. Live addon sync and game retest are still required after checks.
+
+## 2026-06-20 Latest Status After Hostile Direct Cliff Memory
+
+- Fixed hostile chase shortcut churn on winding cliff routes without changing A* or cliff detection.
+- Shared `Chase` now caches a confirmed `chase_direct` cliff failure as `BMBChaseDirectCliffBlock` keyed by target EntIndex and the mob/target positions at failure time.
+- `CanDirect` skips the shortcut while the cache is active; it only retries after cooldown plus meaningful mob/target movement, or after the memory expires.
+- Base defaults expose cooldown/duration/movement thresholds; Zombie, Skeleton, Husk, Stray, and Parched inherit it through shared chase. Passive mobs are unaffected unless they opt into `ChasePreferDirect`.
+- `attack_ready` and `chase_repath` still use safe pressure but do not write direct shortcut memory.
+- Follow-up: `Chase.CanDirect` gained an optional max-distance gate; Zombie family sets `ChaseDirectMaxDistanceCells=6`, so far chase stays on A* and only near chase switches to direct. Skeleton/Stray/Parched stay unchanged after Parched passed user testing.

@@ -1860,3 +1860,16 @@
 - IMPORTANT incident: earlier `robocopy /MIR` deleted converter-only models on D (sheep/zombie); recovered by rebaking. Sync is now `cp -rf` only (never /MIR) — converter outputs models/materials ONLY to D, not in the C repo.
 - Verified: glualint on changed Lua; unittest 62 OK; cp -rf to D; D has bmb_skeleton/bmb_arrow + skeleton model; sheep/zombie models intact; C/D zombie identical (sound agent's work preserved).
 - Files: NEW bmb_skeleton.lua, bmb_arrow.lua; MODIFIED sv_behaviors.lua, mcgm_autorun.lua, geo.py, test_mc2source_pipeline.py, docs/STATE.md, CLAUDE.md, qs/CURRENT_HANDOFF.md, .planning/*.
+
+## 2026-06-20 Hostile chase direct cliff memory
+
+- User found hostile mobs on winding/cliff paths repeatedly tried to abandon A* and run straight at the player, hit the same real cliff, fall back to A*, then retry the same dead shortcut.
+- Diagnosis: cliff detection and A* route are doing the right thing; `chase_direct` had no memory that the current straight line to this target had already failed.
+- Fixed in shared `BMB.Behaviors.Chase`:
+  - `ApplySafePressure(..., "chase_direct")` writes `BMBChaseDirectCliffBlock` after cliff hysteresis confirms a direct cliff failure.
+  - `CanDirect` checks that memory before attempting the direct shortcut.
+  - Memory is keyed by target EntIndex plus mob/target positions, with cooldown, expiry, and movement thresholds.
+  - `attack_ready` and `chase_repath` do not write this shortcut memory.
+- Base defaults: `ChaseDirectCliffMemoryCooldown=1.2`, `Duration=6.0`, mob move threshold `2.0` cells, target move threshold `1.5` cells.
+- Guard: `scripts/check_block_shape_pathing.ps1` now asserts direct cliff memory remains wired.
+- Follow-up tuning: `Chase.CanDirect` now accepts optional `ChaseDirectMaxDistance` / `ChaseDirectMaxDistanceCells`; Zombie family sets `ChaseDirectMaxDistanceCells=6` so long-range chase stays on A* and direct only takes over nearby. Skeleton/Stray/Parched are unchanged.
