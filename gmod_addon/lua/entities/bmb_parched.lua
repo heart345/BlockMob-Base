@@ -5,10 +5,11 @@ AddCSLuaFile()
 -- 避免继承链/热加载时串回 skeleton 或 stray 音效。
 ENT.Base = "bmb_skeleton"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Parched"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Parched"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/parched/parched.mdl"
+ENT.StartHealth = 100

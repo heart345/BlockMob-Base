@@ -2,15 +2,15 @@ AddCSLuaFile()
 
 ENT.Base = "bmb_base_mob"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Skeleton"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Skeleton"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 -- M1 轨2 已重烘骷髅模型（手臂中性化 + 双足 rotate 0）。若模型有问题，回退占位：models/mcgm/zombie/zombie.mdl。
 ENT.Model = "models/mcgm/skeleton/skeleton.mdl"
-ENT.StartHealth = 20
+ENT.StartHealth = 100
 ENT.WalkSpeed = 90
 ENT.RunSpeed = 120
 ENT.Acceleration = 420
@@ -224,16 +224,6 @@ function ENT:GetBMBSkeletonSounds()
     return skeletonSoundSets[self:GetClass()] or self.Sounds or skeletonSoundSets.bmb_skeleton
 end
 
-local function validTarget(target)
-    if not IsValid(target) then return false end
-
-    if target:IsPlayer() then
-        return target:Alive()
-    end
-
-    return false
-end
-
 if CLIENT then
     -- 弓挂手 offset 实时调（拖到贴合手再写回 ENT.BowAttachPos/Ang/BowScale 烘死）：
     CreateClientConVar("bmb_bow_off_x", "0", true, false)
@@ -421,7 +411,11 @@ if CLIENT then
         bow:SetAngles(ang)
         bow:SetModelScale(scale or 1, 0)
         bow:SetupBones()
-        bow:DrawModel()
+        if self.DrawBMBModelWithMCLight then
+            self:DrawBMBModelWithMCLight(bow)
+        else
+            bow:DrawModel()
+        end
     end
 
     function ENT:Draw()
@@ -486,6 +480,8 @@ function ENT:RunBehaviour()
     while true do
         if self.BMBDead then
             return
+        elseif self.MaintainBMBFreeze and self:MaintainBMBFreeze() then
+            coroutine.wait(0.05)
         elseif self.BMBHeld then
             self:SetBMBState("held")
             coroutine.wait(0.2)
@@ -532,11 +528,11 @@ function ENT:RunBMBSkeletonAI()
 end
 
 function ENT:CanBMBTarget(target)
-    return validTarget(target)
+    return self:IsBMBCombatTarget(target)
 end
 
 function ENT:GetBMBForcedLookTarget()
-    if IsValid(self.TargetEntity) and self.TargetEntity:IsPlayer() then
+    if self:CanBMBTarget(self.TargetEntity) then
         return self.TargetEntity
     end
     return nil
@@ -552,13 +548,6 @@ function ENT:PlayBMBRangedShootSound()
 end
 
 function ENT:OnBMBInjured(damageInfo, _)
-    local attacker = damageInfo:GetAttacker()
-
-    if self:CanBMBTarget(attacker) then
-        self.TargetEntity = attacker
-        self.NextTargetScanTime = 0
-    end
-
     local sounds = self:GetBMBSkeletonSounds()
     if sounds and sounds.Hurt then
         self:EmitSound(randomSound(sounds.Hurt), 72, math.random(95, 105), 0.8)

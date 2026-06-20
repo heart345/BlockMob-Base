@@ -32,7 +32,7 @@ GarrysMod/garrysmod/addons/mc_mobs_in_gmod
 然后进沙盒地图，生成：
 
 ```text
-MCGM Prototype Zombie
+BMB Zombie
 ```
 
 ## 为什么从小做起

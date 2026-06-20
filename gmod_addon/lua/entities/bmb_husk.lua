@@ -5,13 +5,14 @@ AddCSLuaFile()
 -- 所有行为参数全部复用；Sounds 覆盖为 husk 自己的 idle/hurt/death/step。
 ENT.Base = "bmb_zombie"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Husk"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Husk"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/husk/husk.mdl"
+ENT.StartHealth = 100
 
 ENT.Sounds = {
     Say = {
@@ -46,16 +47,6 @@ local function randomSound(list)
     return list[math.random(1, #list)]
 end
 
-local function validTarget(target)
-    if not IsValid(target) then return false end
-
-    if target:IsPlayer() then
-        return target:Alive()
-    end
-
-    return false
-end
-
 function ENT:PlayBMBZombieSay(volume)
     local sounds = self:GetBMBZombieSounds()
     local soundName = randomSound(sounds and sounds.Say)
@@ -76,15 +67,6 @@ function ENT:OnBMBHurtSound(damageInfo)
     if damageInfo and self:Health() <= (damageInfo:GetDamage() or 0) then return end
 
     self:PlayBMBZombieHurt(0.88)
-end
-
-function ENT:OnBMBInjured(damageInfo, _)
-    local attacker = damageInfo:GetAttacker()
-
-    if validTarget(attacker) then
-        self.TargetEntity = attacker
-        self.NextTargetScanTime = 0
-    end
 end
 
 function ENT:OnKilled(damageInfo)

@@ -5,7 +5,7 @@ AddCSLuaFile()
 ENT.Type = "anim"
 ENT.Base = "base_anim"
 ENT.PrintName = "BMB Arrow"
-ENT.Author = "BMB"
+ENT.Author = "Heart#"
 ENT.Spawnable = false
 ENT.AdminOnly = false
 

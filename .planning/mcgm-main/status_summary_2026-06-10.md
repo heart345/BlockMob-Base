@@ -955,3 +955,22 @@
 - Base defaults expose cooldown/duration/movement thresholds; Zombie, Skeleton, Husk, Stray, and Parched inherit it through shared chase. Passive mobs are unaffected unless they opt into `ChasePreferDirect`.
 - `attack_ready` and `chase_repath` still use safe pressure but do not write direct shortcut memory.
 - Follow-up: `Chase.CanDirect` gained an optional max-distance gate; Zombie family sets `ChaseDirectMaxDistanceCells=6`, so far chase stays on A* and only near chase switches to direct. Skeleton/Stray/Parched stay unchanged after Parched passed user testing.
+
+## 2026-06-20 Latest Status After Base Retaliation Targets
+
+- Added common base retaliation: non-lethal accepted damage from a valid combat attacker writes the shared `TargetEntity`, overriding the default player target.
+- Arrow damage already credits the shooter (`BMBArrowOwner`) as attacker, so a zombie hit by a skeleton-family arrow targets the skeleton, not the arrow entity.
+- Zombie/Skeleton `CanBMBTarget` now accepts generic combat targets through `IsBMBCombatTarget`; forced look follows any current target. Husk/Stray use base retaliation instead of player-only duplicate injury targeting; Parched inherits Skeleton.
+- Retaliation target sticks through existing target validity (dead/invalid/out of lose range), not a short timer. Same-class retaliation is allowed by default through `RetaliateSameClass=true`.
+
+## 2026-06-20 Latest Status After Screenshot Controls
+
+- BMB now respects Source `notarget`: player targets with `FL_NOTARGET` are invalid in both `SeekTarget.IsValid` and base combat-target validation.
+- Added `bmb_freeze 1/0` server convar. While enabled, base freezes movement/look-at every tick and Sheep/Zombie/Skeleton behavior loops pause at the top, so inherited mobs freeze too.
+- Intended icon workflow: pose/spawn mobs, run `bmb_freeze 1`, enable `notarget`/noclip for the photographer, capture, then `bmb_freeze 0`.
+
+## 2026-06-20 Latest Status After MCSWEP Lighting Compat
+
+- Friend's light addon exposes client `MC.SampleLighting` and `mc_light_enable 1/0`; BMB now samples that brightness in base model Draw.
+- `DrawBMBModelWithMCLight` multiplies normal draw and hurt/death red flash by the sampled MC brightness. With `mc_light_enable 0` or no MC lighting addon, brightness is 1 and BMB renders as before.
+- Skeleton-family held bow also uses the same helper so it darkens with the mob model.

@@ -2,14 +2,14 @@ AddCSLuaFile()
 
 ENT.Base = "bmb_base_mob"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Sheep"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Sheep"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/sheep/sheep.mdl"
-ENT.StartHealth = 20
+ENT.StartHealth = 50
 -- 死亡序列：纯客户端脚本化骨骼倾倒（不再用物理尸体施力，避免方向随机/不稳）。
 -- UsePhysicsCorpseOnDeath / DeathPoof* 用 base 默认（base 已是 false + Java poof 默认）。
 ENT.DeathRemoveDelay = 1.5              -- 倒下约 0.55s + 侧躺约 0.95s 后移除
@@ -423,7 +423,9 @@ function ENT:RunBehaviour()
 
         local fleeThreat = IsValid(self.FleeThreat) and self.FleeThreat or self.FleeThreatPosition
 
-        if self.BMBHeld then
+        if self.MaintainBMBFreeze and self:MaintainBMBFreeze() then
+            coroutine.wait(0.05)
+        elseif self.BMBHeld then
             -- 物理枪持握中：行为整体挂起（拎在手里不乱蹬腿、不触发吃草/游荡；
             -- loco 缴械在 base Think 里做），松手后下一轮恢复正常调度
             self:SetBMBState("held")

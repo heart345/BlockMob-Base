@@ -229,3 +229,6 @@ Phase 2
 
 - [x] Hostile `chase_direct` cliff retry memory: confirmed cliff shortcuts now cache target/mob positions and cooldown, so winding A* routes are not repeatedly interrupted by the same dead straight-line shortcut.
 - [x] Zombie-family `chase_direct` distance tuning: max direct distance capped at 6 cells; long-range chase stays on A*.
+- [x] Base retaliation target override: accepted damage from a valid combat attacker writes shared `TargetEntity`, enabling Zombie/Skeleton/Husk/Stray/Parched friendly-fire retaliation without per-pair logic.
+- [x] Screenshot controls: BMB targeting respects Source `notarget`, and `bmb_freeze` freezes BMB mobs for NPC icon staging.
+- [x] MCSWEP lighting compatibility: BMB model Draw samples `MC.SampleLighting` and modulates mob/bow brightness with `mc_light_enable`.

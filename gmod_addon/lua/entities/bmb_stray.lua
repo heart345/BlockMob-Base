@@ -6,13 +6,14 @@ AddCSLuaFile()
 -- idle/hurt/death/step。弓射击仍用通用 MC bow，箭命中音走 bmb_arrow 的 bowhit。
 ENT.Base = "bmb_skeleton"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Stray"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Stray"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/stray/stray.mdl"
+ENT.StartHealth = 100
 
 ENT.Sounds = {
     Idle = {
@@ -45,25 +46,6 @@ ENT.Sounds = {
 local function randomSound(list)
     if not list or #list == 0 then return nil end
     return list[math.random(1, #list)]
-end
-
-local function validTarget(target)
-    if not IsValid(target) then return false end
-
-    if target:IsPlayer() then
-        return target:Alive()
-    end
-
-    return false
-end
-
-function ENT:OnBMBInjured(damageInfo, _)
-    local attacker = damageInfo:GetAttacker()
-
-    if validTarget(attacker) then
-        self.TargetEntity = attacker
-        self.NextTargetScanTime = 0
-    end
 end
 
 function ENT:OnBMBHurtSound(damageInfo)

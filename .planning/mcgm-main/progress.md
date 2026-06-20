@@ -1873,3 +1873,42 @@
 - Base defaults: `ChaseDirectCliffMemoryCooldown=1.2`, `Duration=6.0`, mob move threshold `2.0` cells, target move threshold `1.5` cells.
 - Guard: `scripts/check_block_shape_pathing.ps1` now asserts direct cliff memory remains wired.
 - Follow-up tuning: `Chase.CanDirect` now accepts optional `ChaseDirectMaxDistance` / `ChaseDirectMaxDistanceCells`; Zombie family sets `ChaseDirectMaxDistanceCells=6` so long-range chase stays on A* and direct only takes over nearby. Skeleton/Stray/Parched are unchanged.
+
+## 2026-06-20 Base retaliation targets
+
+- User wanted skeleton-family arrows that hit zombies to make zombies prioritize the shooter over the player, and then skeletons hit by zombies to shoot the zombie back.
+- Confirmed arrow damage already credits the shooter: `bmb_arrow` sets `DamageInfo` attacker to `BMBArrowOwner`, not the arrow entity.
+- Implemented one base rule instead of zombie-vs-skeleton special cases:
+  - `bmb_base_mob` now has `IsBMBCombatTarget`, `CanBMBRetaliateAgainst`, and `TryBMBRetaliate`.
+  - Non-lethal accepted damage reads `damageInfo:GetAttacker()`, validates it through the mob's `CanBMBTarget`, and writes the shared `TargetEntity`.
+  - Retaliation is sticky through the existing target validity rules: keep target until dead/invalid/out of lose range, then fall back to normal player scan.
+  - `RetaliateSameClass=true` by default allows same-class friendly-fire chaos; set false per mob for MC-style suppression.
+- Zombie/Skeleton `CanBMBTarget` now accepts generic combat targets via base, not only players; forced look follows any current target.
+- Husk/Stray player-only local injury targeting was removed so they inherit the base rule. Parched inherits Skeleton.
+- Guard: new `scripts/check_retaliation_targets.ps1`.
+
+## 2026-06-20 Screenshot helpers: notarget + bmb_freeze
+
+- Problem: Source `notarget` and `ai_disabled` do not affect BMB Lua NextBot logic. BMB scans players itself and runs its own behavior coroutines.
+- Fixed:
+  - `SeekTarget.IsValid` treats `player:IsFlagSet(FL_NOTARGET)` as invalid, so `notarget` players are skipped and current player targets are dropped.
+  - Base `IsBMBCombatTarget` also respects `FL_NOTARGET`, preventing damage retaliation from re-locking a notarget player.
+  - Added server convar `bmb_freeze 1/0` for screenshots. Base `MaintainBMBFreeze` interrupts active movement, clears look-at, zeroes desired/actual velocity, and publishes `state/mode=frozen`.
+  - Sheep/Zombie/Skeleton `RunBehaviour` loops check `MaintainBMBFreeze` at the top; Husk/Stray/Parched inherit through Zombie/Skeleton.
+- Guard: new `scripts/check_notarget_freeze.ps1`.
+
+## 2026-06-20 MCSWEP lighting compatibility
+
+- Friend's lighting addon lives at `D:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\addons\mcswep-codex-light-source-version`.
+- Confirmed interface:
+  - Console `mc_light_enable 1/0` writes client cvar `mc_light_enabled`.
+  - Blocks use `MC.SampleLighting(bx, by, bz, selfEmission)` while building `vertexcolor` IMeshes.
+  - When lighting is disabled, `MC.SampleLighting` returns brightness `1`, so callers can safely always sample.
+- BMB mobs are models, not MC chunk meshes, so they do not inherit block vertex colours automatically.
+- Implemented draw-time compatibility in base:
+  - `GetBMBMCLightBrightness()` samples `MC.WorldToCell(self:GetBMBMCLightSamplePos())` around the mob body center.
+  - `DrawBMBModelWithMCLight()` multiplies `render.SetColorModulation` by sampled brightness, draws, then restores white.
+  - Normal draw and hurt/death red flash both use the helper.
+  - Skeleton-family held bow uses the same helper so the bow does not stay bright in dark caves.
+- Missing MC addon or `mc_light_enable 0` naturally yields brightness `1` / no visual change.
+- Guard: new `scripts/check_mc_lighting_compat.ps1`.

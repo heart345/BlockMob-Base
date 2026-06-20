@@ -1,7 +1,8 @@
 BMB = BMB or {}
-BMB.Version = "0.1.0"
+BMB.Version = "1.0.0"
 
 local resourceFiles = {
+    "materials/icon16/bmb.png",
     "sound/bmb/mob/sheep/say1.ogg",
     "sound/bmb/mob/sheep/say2.ogg",
     "sound/bmb/mob/sheep/say3.ogg",
@@ -109,7 +110,7 @@ addServerFile("bmb/sv_behaviors.lua")
 addServerFile("bmb/sv_debug_tools.lua")
 
 list.Set("NPC", "bmb_sheep", {
-    Name = "BMB Prototype Sheep",
+    Name = "BMB Sheep",
     Class = "bmb_sheep",
     Category = "BlockMob Base"
 })

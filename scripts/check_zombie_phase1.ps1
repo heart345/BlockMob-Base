@@ -34,8 +34,15 @@ function Assert-NotContains([string]$relativePath, [string]$pattern, [string]$me
     }
 }
 
+function Assert-Missing([string]$relativePath, [string]$message) {
+    $path = Join-Path $Root $relativePath
+    if (Test-Path -LiteralPath $path) {
+        Add-Failure("${relativePath}: $message")
+    }
+}
+
 $zombie = "gmod_addon\lua\entities\bmb_zombie.lua"
-$legacyZombie = "gmod_addon\lua\entities\mcgm_zombie.lua"
+$base = "gmod_addon\lua\entities\bmb_base_mob.lua"
 $behaviors = "gmod_addon\lua\bmb\sv_behaviors.lua"
 $autorun = "gmod_addon\lua\autorun\mcgm_autorun.lua"
 $state = "docs\STATE.md"
@@ -43,7 +50,7 @@ $claude = "CLAUDE.md"
 $plan = ".planning\mcgm-main\task_plan.md"
 
 Assert-Contains $zombie 'ENT\.Base\s*=\s*"bmb_base_mob"' "new zombie must inherit BMB base, not the legacy base_nextbot prototype"
-Assert-Contains $zombie 'ENT\.PrintName\s*=\s*"BMB Prototype Zombie"' "new zombie should expose a distinct spawnable BMB prototype"
+Assert-Contains $zombie 'ENT\.PrintName\s*=\s*"BMB Zombie"' "new zombie should expose the release spawn name"
 Assert-Contains $zombie "TargetRange" "zombie should define target acquisition range"
 Assert-Contains $zombie "AttackRange" "zombie should define melee range"
 Assert-Contains $zombie "AttackRange\s*=\s*60" "zombie melee range should be slightly longer than the legacy贴脸 38u value"
@@ -79,7 +86,8 @@ Assert-Contains $zombie "BMB\.Behaviors\.MeleeAttack" "zombie state machine shou
 Assert-Contains $zombie "RunBMBKnockback" "zombie should respect base knockback priority before normal hostile steering"
 Assert-Contains $zombie "RunBMBDebugMove" "debug movement should still override hostile AI for testing"
 Assert-Contains $zombie "RunBMBStrandedRecovery" "stranded recovery should still override hostile AI"
-Assert-Contains $zombie "OnBMBInjured" "zombie should be able to retaliate when damaged"
+Assert-Contains $base "function\s+ENT:TryBMBRetaliate" "retaliation should live in BaseMob instead of zombie-only injury code"
+Assert-Contains $base "TryBMBRetaliate\(damageInfo\)" "accepted damage should ask BaseMob to retarget valid attackers"
 Assert-Contains $zombie "TargetEntity" "zombie should keep target state in the entity state machine"
 Assert-Contains $zombie "MeleeAttack\.Try" "zombie attack should go through the reusable melee module"
 Assert-Contains $zombie "chase_repath" "failed chase segments should keep target and replan shortly instead of dropping to idle/wander"
@@ -107,6 +115,7 @@ Assert-Contains $behaviors "AttackVerticalRange" "melee behavior should check ve
 Assert-Contains $behaviors "MeleeAttack\.IsInRange\(mob,\s*target\)" "chase should use melee range semantics for attack_ready, including vertical range"
 Assert-Contains $behaviors "ChaseSegmentTimeout" "chase should have a segment timeout separate from the scan/repath interval"
 Assert-Contains $behaviors "AttackMoveSpeed" "melee behavior should preserve movement budget while attacking"
+Assert-Contains $behaviors "MaintainBMBMoveSpeed\(attackMoveSpeed" "melee attack should keep forward pressure with attackMoveSpeed"
 Assert-Contains $behaviors 'ApplySafePressure\(mob,\s*target,\s*attackMoveSpeed,\s*"attack_ready"' "attack_ready should keep pressure through cliff-safe steering instead of direct target steering"
 Assert-Contains $behaviors "chase_direct" "open line-of-sight chase should publish chase_direct mode"
 Assert-Contains $behaviors "chase_stalk" "unreachable high targets should publish chase_stalk mode"
@@ -122,12 +131,13 @@ Assert-Contains $behaviors "timer\.Simple" "melee attack should support a windup
 Assert-Contains $behaviors "hitDelay\s*<=\s*0" "melee attack should support instant hits for Phase 2 zombie"
 Assert-Contains $behaviors "NextMeleeAttackTime" "melee attack should enforce cooldown"
 Assert-NotContains $behaviors "BMBMeleeLockUntil" "melee attack should not install a hard movement lock"
-Assert-NotContains $behaviors "MaintainBMBMoveSpeed\s*\(\s*0" "hostile attack/chase should not publish speed 0 during normal melee pressure"
 
 Assert-Contains $autorun 'list\.Set\("NPC",\s*"bmb_zombie"' "spawn menu should register the new BMB zombie"
 Assert-Contains $autorun 'Class\s*=\s*"bmb_zombie"' "spawn menu should point at bmb_zombie"
+Assert-NotContains $autorun "mcgm_zombie" "legacy mcgm_zombie must not be registered for release"
+Assert-NotContains $autorun "Minecraft in GMod" "legacy Minecraft in GMod category must not be registered for release"
 
-Assert-Contains $legacyZombie 'ENT\.Base\s*=\s*"base_nextbot"' "legacy zombie should remain clearly legacy until removed in a separate cleanup"
+Assert-Missing "gmod_addon\lua\entities\mcgm_zombie.lua" "legacy navmesh prototype should be removed for release"
 Assert-Contains $state "Zombie" "STATE.md should record the zombie migration status"
 Assert-Contains $claude "SeekTarget / Chase" "CLAUDE.md should continue documenting hostile shared behavior modules"
 Assert-Contains $plan "Phase 3: Zombie" "task plan should track the zombie migration phase"

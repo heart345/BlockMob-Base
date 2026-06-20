@@ -660,3 +660,21 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **记忆应挂在 shortcut 层，不要改 A*/cliff 检测**：`chase_direct` 经 `ApplySafePressure` 确认 cliff 后缓存目标 EntIndex、mob 位置、target 位置、冷却和过期；`CanDirect` 先查缓存，位置没明显变化就让 A* 继续走。
 - **远距离不要过早丢开 A***：`chase_direct` 适合近距离视线压迫；复杂结构里远距离 direct 会太早无视 A* 的绕路意图。用 per-mob `ChaseDirectMaxDistanceCells` 收紧入口，Zombie 先定 6 格。
 - **不要把非 shortcut 压迫混进来**：`attack_ready` / `chase_repath` 仍可用 `ApplySafePressure` 防掉崖，但不写 direct shortcut memory，避免攻击贴边和 A* 失败兜底被同一块缓存意外压住。
+
+## 2026-06-20: Retaliation is a base target override
+
+- **“被谁打就打谁”应该写在 Base，不该拆成 Zombie 打 Skeleton / Skeleton 打 Zombie 两套**：伤害入口拿 `damageInfo:GetAttacker()`，通过当前 mob 的 `CanBMBTarget`，然后写共享 `TargetEntity`，两边互殴自然出现。
+- **箭必须 credit shooter**：`bmb_arrow` 的 attacker 是 `BMBArrowOwner`，否则被射中的 mob 会追一支马上消失的箭。
+- **主动扫描和还击是两件事**：`SeekTarget.Find` 仍只主动扫描玩家；mob 目标只来自受击还击。这样不会让敌怪无缘无故互相找架，但流弹/近战命中会改目标。
+- **粘性复用现有目标有效性**：还击目标保持到死亡、失效或超出 `TargetLoseRange`，不额外加短计时器抢回玩家。
+
+## 2026-06-20: Screenshot controls must be BMB-native
+
+- **Source `notarget` 只写玩家 flag，BMB 必须自己读**：Lua NextBot 不走 CAI NPC 选敌，所以 `SeekTarget.IsValid` 要显式跳过 `FL_NOTARGET` 玩家；base combat target 也要跳过，避免受击还击重新锁。
+- **`ai_disabled` 不管 BMB 行为协程**：摆拍应使用 BMB 自己的 `bmb_freeze`，在 base Think 和各 RunBehaviour 顶部同时拦，既归零速度又停掉行为推进。
+
+## 2026-06-20: MC lighting for models is draw-time modulation
+
+- **MC 方块光影是 mesh vertexcolor，模型不会自动继承**：朋友的光影在 `MC.SampleLighting` 里给方块 mesh 顶点 brightness；BMB mob 是 Source model，只能在 Draw 时采样当前格并 `render.SetColorModulation`。
+- **不要改模型材质/转换器来适配光影**：base Draw 统一乘 brightness，`mc_light_enable 0` 时 `SampleLighting` 返回 1，外观自然回原样。
+- **附属 clientside model 也要乘同一 brightness**：Skeleton 手上的弓不是 mob 主模型，必须通过同一个 helper 画，否则洞穴里会亮得穿帮。

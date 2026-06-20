@@ -2,14 +2,14 @@ AddCSLuaFile()
 
 ENT.Base = "bmb_base_mob"
 ENT.Type = "nextbot"
-ENT.PrintName = "BMB Prototype Zombie"
-ENT.Author = "BMB"
+ENT.PrintName = "BMB Zombie"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/zombie/zombie.mdl"
-ENT.StartHealth = 20
+ENT.StartHealth = 100
 ENT.WalkSpeed = 65
 ENT.RunSpeed = 70
 ENT.Acceleration = 420
@@ -153,16 +153,6 @@ function ENT:GetBMBZombieSounds()
     return zombieSoundSets[self:GetClass()] or self.Sounds or zombieSoundSets.bmb_zombie
 end
 
-local function validTarget(target)
-    if not IsValid(target) then return false end
-
-    if target:IsPlayer() then
-        return target:Alive()
-    end
-
-    return false
-end
-
 if CLIENT then
     local zombieAnimations = {
         -- 攻击：双臂从水平基线上抬再回水平（roll 偏移，同 armForward 轴，叠加在 BipedArmForwardAngle 上；更负=抬更高）。抬/落都放慢。
@@ -291,6 +281,8 @@ function ENT:RunBehaviour()
     while true do
         if self.BMBDead then
             return
+        elseif self.MaintainBMBFreeze and self:MaintainBMBFreeze() then
+            coroutine.wait(0.05)
         elseif self.BMBHeld then
             self:SetBMBState("held")
             coroutine.wait(0.2)
@@ -351,12 +343,12 @@ function ENT:RunBMBZombieAI()
 end
 
 function ENT:CanBMBTarget(target)
-    return validTarget(target)
+    return self:IsBMBCombatTarget(target)
 end
 
 function ENT:GetBMBForcedLookTarget()
-    -- 追击/攻击中头锁死盯玩家；无目标时回落到 base 概率环视。
-    if IsValid(self.TargetEntity) and self.TargetEntity:IsPlayer() then
+    -- Chase/attack locks the head to the current combat target; idle falls back to base look-around.
+    if self:CanBMBTarget(self.TargetEntity) then
         return self.TargetEntity
     end
     return nil
@@ -421,15 +413,6 @@ function ENT:OnBMBHurtSound(damageInfo)
     if damageInfo and self:Health() <= (damageInfo:GetDamage() or 0) then return end
 
     self:PlayBMBZombieHurt(0.88)
-end
-
-function ENT:OnBMBInjured(damageInfo, _)
-    local attacker = damageInfo:GetAttacker()
-
-    if self:CanBMBTarget(attacker) then
-        self.TargetEntity = attacker
-        self.NextTargetScanTime = 0
-    end
 end
 
 function ENT:OnKilled(damageInfo)

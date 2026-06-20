@@ -15,12 +15,16 @@ if SERVER then
     if not GetConVar("bmb_debug_hop_log") then
         CreateConVar("bmb_debug_hop_log", "0", FCVAR_ARCHIVE, "Print BlockHop launch/apex/result diagnostics.")
     end
+
+    if not GetConVar("bmb_freeze") then
+        CreateConVar("bmb_freeze", "0", 0, "Freeze all BMB mobs for screenshots.")
+    end
 end
 
 ENT.Base = "base_nextbot"
 ENT.Type = "nextbot"
 ENT.PrintName = "BMB Base Mob"
-ENT.Author = "BMB"
+ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = false
 ENT.AdminOnly = true
@@ -69,6 +73,8 @@ ENT.ChaseDirectCliffMemoryCooldown = 1.2
 ENT.ChaseDirectCliffMemoryDuration = 6.0
 ENT.ChaseDirectCliffMemoryMoveCells = 2.0
 ENT.ChaseDirectCliffMemoryTargetMoveCells = 1.5
+ENT.RetaliateOnDamage = true
+ENT.RetaliateSameClass = true
 -- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)
 -- while remaining below a full MC block.
 ENT.StepHeight = 28
@@ -260,14 +266,56 @@ local function atan2(y, x)
 end
 
 if CLIENT then
+    function ENT:GetBMBMCLightSamplePos()
+        local mins, maxs = self:OBBMins(), self:OBBMaxs()
+        local frac = self.MCLightSampleHeightFrac or 0.55
+
+        return self:GetPos() + Vector(0, 0, Lerp(frac, mins.z or 0, maxs.z or 48))
+    end
+
+    function ENT:GetBMBMCLightBrightness()
+        if not MC or not MC.WorldToCell or not MC.SampleLighting then return 1 end
+
+        local now = CurTime()
+        if self.BMBMCLightNextSampleAt and now < self.BMBMCLightNextSampleAt then
+            return self.BMBMCLightBrightness or 1
+        end
+
+        local pos = self:GetBMBMCLightSamplePos()
+        local bx, by, bz = MC.WorldToCell(pos)
+        local brightness = MC.SampleLighting(bx, by, bz, self.MCLightEmission or 0)
+
+        brightness = math.Clamp(tonumber(brightness) or 1, 0, 1)
+        self.BMBMCLightBrightness = brightness
+        self.BMBMCLightNextSampleAt = now + (self.MCLightSampleInterval or 0.08)
+
+        return brightness
+    end
+
+    function ENT:DrawBMBModelWithMCLight(modelEnt, r, g, b)
+        local brightness = self:GetBMBMCLightBrightness()
+
+        render.SetColorModulation(
+            (r or 1) * brightness,
+            (g or 1) * brightness,
+            (b or 1) * brightness
+        )
+
+        if IsValid(modelEnt) then
+            modelEnt:DrawModel()
+        else
+            self:DrawModel()
+        end
+
+        render.SetColorModulation(1, 1, 1)
+    end
+
     function ENT:Draw()
         local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
         if self:GetNWBool("BMBDead", false) and deathUntil > CurTime() and self.DeathKeepRed ~= false then
             local gb = 1 - (self.HurtFlashRedAmount or 0.65)
 
-            render.SetColorModulation(1, gb, gb)
-            self:DrawModel()
-            render.SetColorModulation(1, 1, 1)
+            self:DrawBMBModelWithMCLight(self, 1, gb, gb)
             return
         end
 
@@ -276,13 +324,11 @@ if CLIENT then
         if flashUntil > CurTime() then
             local gb = 1 - (self.HurtFlashRedAmount or 0.65)
 
-            render.SetColorModulation(1, gb, gb)
-            self:DrawModel()
-            render.SetColorModulation(1, 1, 1)
+            self:DrawBMBModelWithMCLight(self, 1, gb, gb)
             return
         end
 
-        self:DrawModel()
+        self:DrawBMBModelWithMCLight(self)
     end
 end
 
@@ -1207,6 +1253,42 @@ function ENT:RunBMBInitialIdle()
     return true
 end
 
+function ENT:IsBMBFreezeEnabled()
+    local cvar = GetConVar and GetConVar("bmb_freeze")
+    return cvar and cvar:GetBool()
+end
+
+function ENT:MaintainBMBFreeze()
+    if CLIENT or self.BMBDead then return false end
+
+    if not self:IsBMBFreezeEnabled() then
+        if self.BMBFrozenByConVar then
+            self.BMBFrozenByConVar = false
+            self:ClearBMBMovementInterrupt()
+        end
+
+        return false
+    end
+
+    if not self.BMBFrozenByConVar then
+        self.BMBFrozenByConVar = true
+        self:InterruptBMBMovement()
+    end
+
+    self:SetBMBState("frozen")
+    self:SetBMBMoveMode("frozen")
+    self:ClearBMBLookAtTarget()
+    self:UpdateBMBApproachDebug(nil, 0)
+    self:MaintainBMBMoveSpeed(0, 0)
+
+    if self.loco then
+        if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(0) end
+        if self.loco.SetVelocity then self.loco:SetVelocity(vector_origin) end
+    end
+
+    return true
+end
+
 function ENT:RunBehaviour()
     while true do
         coroutine.wait(0.2)
@@ -1236,6 +1318,11 @@ function ENT:Think()
             end
 
             self:UpdateBMBSequenceAnimationFromState()
+            self:NextThink(CurTime())
+            return true
+        end
+
+        if self:MaintainBMBFreeze() then
             self:NextThink(CurTime())
             return true
         end
@@ -3927,6 +4014,53 @@ function ENT:PlayBMBAnimation(name)
     end
 end
 
+function ENT:IsBMBCombatTarget(target)
+    if not IsValid(target) or target == self then return false end
+
+    if target:IsPlayer() then
+        if FL_NOTARGET and target.IsFlagSet and target:IsFlagSet(FL_NOTARGET) then
+            return false
+        end
+
+        return target:Alive()
+    end
+
+    local isNextBot = target.IsNextBot and target:IsNextBot()
+    if target.IsBMBMob or target:IsNPC() or isNextBot then
+        if target.BMBDead then return false end
+        if target.Health and target:Health() <= 0 then return false end
+        return true
+    end
+
+    return false
+end
+
+function ENT:CanBMBRetaliateAgainst(attacker)
+    if self.RetaliateOnDamage == false then return false end
+    if not self.CanBMBTarget then return false end
+    if not self:IsBMBCombatTarget(attacker) then return false end
+
+    if self.RetaliateSameClass == false and attacker:GetClass() == self:GetClass() then
+        return false
+    end
+
+    return self:CanBMBTarget(attacker)
+end
+
+function ENT:TryBMBRetaliate(damageInfo)
+    if not damageInfo then return false end
+
+    local attacker = damageInfo:GetAttacker()
+    if not self:CanBMBRetaliateAgainst(attacker) then return false end
+
+    self.TargetEntity = attacker
+    self.BMBRetaliationTarget = attacker
+    self.BMBRetaliationStartedAt = CurTime()
+    self.NextTargetScanTime = 0
+
+    return true
+end
+
 function ENT:OnInjured(damageInfo, context)
     if CLIENT then return end
 
@@ -3938,6 +4072,7 @@ function ENT:OnInjured(damageInfo, context)
     end
 
     self:PlayBMBAnimation("hurt")
+    self:TryBMBRetaliate(damageInfo)
 
     if self.OnBMBInjured then
         self:OnBMBInjured(damageInfo, wasFleeing)
@@ -3969,6 +4104,8 @@ function ENT:StopBMBMovementOnDeath()
     self.BMBKnockbackActivitySpeed = nil
     self.BMBKnockbackLocoSpeed = nil
     self.TargetEntity = nil
+    self.BMBRetaliationTarget = nil
+    self.BMBRetaliationStartedAt = nil
 
     self:SetNWBool("BMBDead", true)
     self:SetNWFloat("BMBDesiredSpeed", 0)

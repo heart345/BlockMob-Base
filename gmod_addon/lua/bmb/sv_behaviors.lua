@@ -278,6 +278,10 @@ local function isAliveTarget(target)
     if not IsValid(target) then return false end
 
     if target:IsPlayer() then
+        if FL_NOTARGET and target.IsFlagSet and target:IsFlagSet(FL_NOTARGET) then
+            return false
+        end
+
         return target:Alive()
     end
 
