@@ -9,7 +9,7 @@ ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/zombie/zombie.mdl"
-ENT.StartHealth = 100
+ENT.StartHealth = 70
 ENT.WalkSpeed = 65
 ENT.RunSpeed = 70
 ENT.Acceleration = 420

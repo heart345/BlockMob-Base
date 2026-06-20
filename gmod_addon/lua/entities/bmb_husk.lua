@@ -12,7 +12,7 @@ ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/husk/husk.mdl"
-ENT.StartHealth = 100
+ENT.StartHealth = 70
 
 ENT.Sounds = {
     Say = {

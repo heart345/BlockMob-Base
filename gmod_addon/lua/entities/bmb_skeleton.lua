@@ -10,7 +10,7 @@ ENT.AdminOnly = false
 
 -- M1 轨2 已重烘骷髅模型（手臂中性化 + 双足 rotate 0）。若模型有问题，回退占位：models/mcgm/zombie/zombie.mdl。
 ENT.Model = "models/mcgm/skeleton/skeleton.mdl"
-ENT.StartHealth = 100
+ENT.StartHealth = 70
 ENT.WalkSpeed = 90
 ENT.RunSpeed = 120
 ENT.Acceleration = 420

@@ -13,7 +13,7 @@ ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/stray/stray.mdl"
-ENT.StartHealth = 100
+ENT.StartHealth = 70
 
 ENT.Sounds = {
     Idle = {

@@ -12,4 +12,4 @@ ENT.Spawnable = true
 ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/parched/parched.mdl"
-ENT.StartHealth = 100
+ENT.StartHealth = 70
