@@ -1886,6 +1886,37 @@
 - Guard: `scripts/check_block_shape_pathing.ps1` now asserts chase_repath memory/give-up wiring.
 - Live retune: Zombie fallback already uses `TryRepathPressure`; the remaining `chase_repath_cliff` loop was because old thresholds were too eager. A* detour movement exceeded 2 cells after the 1.2s cooldown and cleared the memory before the mob had actually rounded the cliff. Defaults are now `ChaseDirectCliffMemoryCooldown=3.0`, `Duration=25.0`, mob move threshold `6.0` cells, target move threshold `2.0` cells, with `bmb_chase_cliff_memory_*` and `bmb_chase_repath_cliff_giveup_time` convars for in-game tuning.
 
+## 2026-06-21 Wolf Phase 0 start
+
+- User provided `H:\工作视频\20251115毕业\wolf_plan.md` and wants wolf built phase by phase.
+- Scope confirmed for Phase 0 only:
+  - Replace the old `bmb_wolf` flee-test `base_anim` cube with a real `bmb_base_mob` NextBot.
+  - Keep behavior thin: freeze/held/knockback/debug/stranded/initial idle/wander. No prey targeting, pack, or leap yet.
+  - Reuse Base LookAt, Base continuous limb swing, Base death poof/tip flow, and BMB A* Wander.
+- Implemented Lua side:
+  - `gmod_addon/lua/entities/bmb_wolf.lua` now references `models/mcgm/wolf/wolf.mdl`, has wolf-sized hull/speeds, client bone cache for `head/body/upperBody/leg0-3/tail`, procedural diagonal four-leg swing, death side-tip, and silent `MaybePlayStep()` until the wolf sound pass.
+  - `gmod_addon/lua/autorun/mcgm_autorun.lua` registers `BMB Wolf` in the NPC menu.
+  - `scripts/check_wolf_phase0.ps1` guards against the old stub returning and against Phase 1+ combat/pack/leap logic being mixed into Phase 0.
+- Model/converter side:
+  - Bedrock samples contain `wolf.entity.json`, `wolf.geo.json`, and normal `textures/entity/wolf/wolf.png`.
+  - Initial `wolf_setup` rest-pose bake was wrong in game: it baked setup position too, making body/legs sink while the head stayed high.
+  - `qs/mc2source/geo.py` now uses a wolf-specific structural layout instead: only body/upperBody get total rotation `(90,0,0)`, while body/upperBody/legs/tail `bind_pose_position` stays zero.
+  - Added `test_wolf_structural_layout_rotates_body_without_sinking_parts` to lock body/upperBody rotation without setup-position sinking.
+  - `python -m unittest discover -s tests` in `C:\Users\ADMIN\Documents\qs` passes: 64 tests OK.
+  - `.\mc2source.cmd wolf` compiled and packaged `models/mcgm/wolf/wolf.mdl` plus `.vvd/.vtx/.phy` and material files into the D live addon.
+- Live addon:
+  - Synced `gmod_addon/lua/entities/bmb_wolf.lua` and `gmod_addon/lua/autorun/mcgm_autorun.lua` to D.
+  - D addon now has `models/mcgm/wolf/wolf.*` and `materials/models/mcgm/wolf/wolf.vtf`.
+- Retest:
+  - Spawn `BMB Wolf`: should be visible MC wolf, wander on BMB A*, support debug move/freezing, and no longer be the old cube stub.
+  - Check four-leg axis, look-at pitch/yaw, and death side-tip in game; tune Lua bone axes if needed.
+- User retest: legs are now correct, but body/tail posture still needs tuning; tail was hanging nearly 90 degrees down while vanilla should droop closer to 60 degrees.
+  - Kept the corrected wolf model/converter bind pose unchanged so legs do not sink again.
+  - Added client-side pose controls for `body`, `upperBody`, and `tail` in `bmb_wolf.lua` (`bmb_wolf_<part>_rot_*` / `bmb_wolf_<part>_pos_*`).
+  - Default tested pose: `bmb_wolf_tail_rot_z=-45`, `bmb_wolf_tail_pos_z=0`, and `bmb_wolf_upper_body_pos_z=-10`.
+  - Tail movement follows vanilla MC-style side swing on `bmb_wolf_tail_rot_x`: walk/run adds a natural `-40..40` swing, while idle stays centered at `rot_x=0`; no `rot_z` up/down swing.
+  - `scripts/check_wolf_phase0.ps1` now guards the wolf pose controls and tail default.
+
 ## 2026-06-20 Base retaliation targets
 
 - User wanted skeleton-family arrows that hit zombies to make zombies prioritize the shooter over the player, and then skeletons hit by zombies to shoot the zombie back.

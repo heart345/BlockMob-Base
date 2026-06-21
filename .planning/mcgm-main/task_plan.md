@@ -233,3 +233,18 @@ Phase 2
 - [x] Base retaliation target override: accepted damage from a valid combat attacker writes shared `TargetEntity`, enabling Zombie/Skeleton/Husk/Stray/Parched friendly-fire retaliation without per-pair logic.
 - [x] Screenshot controls: BMB targeting respects Source `notarget`, and `bmb_freeze` freezes BMB mobs for NPC icon staging.
 - [x] MCSWEP lighting compatibility: BMB model Draw samples `MC.SampleLighting` and modulates mob/bow brightness with `mc_light_enable`.
+
+## 2026-06-21 Wolf Plan
+
+- [~] Wolf Phase 0 basic mob:
+  - [x] Replace old `bmb_wolf` stub cube with a real `bmb_base_mob` NextBot.
+  - [x] Register `BMB Wolf` in NPC menu.
+  - [x] Add thin wander/debug/freeze/stranded behavior scheduler.
+  - [x] Add client four-leg visual bones, Base LookAt, and death side-tip.
+  - [x] Add `scripts/check_wolf_phase0.ps1` guard.
+  - [x] Add converter wolf structural rest-pose support, compile `models/mcgm/wolf/wolf.mdl`, and sync to D live addon.
+  - [ ] Test in GMod and tune wolf bone axes/step gait if needed.
+- [ ] Wolf Phase 1 prey targeting: active hunt list, exclusions, chase + melee.
+- [ ] Wolf Phase 2 prey reactions: skeleton-family flee/retaliate and sheep panic on wolf bite.
+- [ ] Wolf Phase 3 shared leap module.
+- [ ] Wolf Phase 4 shared pack module.

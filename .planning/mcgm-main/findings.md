@@ -679,3 +679,10 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **MC 方块光影是 mesh vertexcolor，模型不会自动继承**：朋友的光影在 `MC.SampleLighting` 里给方块 mesh 顶点 brightness；BMB mob 是 Source model，只能在 Draw 时采样当前格并 `render.SetColorModulation`。
 - **不要改模型材质/转换器来适配光影**：base Draw 统一乘 brightness，`mc_light_enable 0` 时 `SampleLighting` 返回 1，外观自然回原样。
 - **附属 clientside model 也要乘同一 brightness**：Skeleton 手上的弓不是 mob 主模型，必须通过同一个 helper 画，否则洞穴里会亮得穿帮。
+
+## 2026-06-21: Wolf Phase 0 should replace the old stub, not extend it
+
+- **`bmb_wolf` 以前是 Skeleton 逃狼测试桩**：旧实现是 `base_anim` 小方块，只保证类名含 `wolf`。正式狼应直接替换这个类名为 `bmb_base_mob` NextBot，这样 Skeleton 的 `FindNearestWolfThreat()` 预留逻辑会自然继续生效。
+- **Wolf 只需要 setup 的旋转，不要烘 setup 的 position**：Bedrock `wolf_setup -> animation.wolf.setup` 里既有 body/upperBody 90°，也有 body/legs/tail position。把整段动画当通用 rest pose 会把 position 烘进 Source bind pose，游戏里表现为 body/legs 整组下陷、head 留在上方。正确做法是转换器的 wolf structural layout 只给 `body` / `upperBody` 设置总旋转 `(90,0,0)`，所有 `bind_pose_position` 保持 0；腿/尾位置交给原始 geo。
+- **Wolf 尾巴默认下垂角和摆动走客户端姿势层**：实测默认用 `bmb_wolf_tail_rot_z=-45`、`bmb_wolf_tail_pos_z=0`；走/跑时尾巴只在 `rot_x` 轴自然摆 `-40..40`，不要用 `rot_z` 做上下摆。不要为了尾巴重新烘 `wolf_setup` position，否则会重现身体/腿下陷。
+- **Phase 0 只做基础移动和视觉骨骼**：不要把 prey targeting、leap、pack 先塞进 wolf 实体。薄调度链走 freeze/held/knockback/debug/stranded/initial idle/wander；combat 从 Phase 1 开始，leap/pack 必须是共享模块。
