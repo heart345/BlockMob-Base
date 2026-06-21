@@ -1870,9 +1870,21 @@
   - `CanDirect` checks that memory before attempting the direct shortcut.
   - Memory is keyed by target EntIndex plus mob/target positions, with cooldown, expiry, and movement thresholds.
   - `attack_ready` and `chase_repath` do not write this shortcut memory.
-- Base defaults: `ChaseDirectCliffMemoryCooldown=1.2`, `Duration=6.0`, mob move threshold `2.0` cells, target move threshold `1.5` cells.
+- Base defaults were later retuned after live cliff testing; see 2026-06-21 follow-up below.
 - Guard: `scripts/check_block_shape_pathing.ps1` now asserts direct cliff memory remains wired.
 - Follow-up tuning: `Chase.CanDirect` now accepts optional `ChaseDirectMaxDistance` / `ChaseDirectMaxDistanceCells`; Zombie family sets `ChaseDirectMaxDistanceCells=6` so long-range chase stays on A* and direct only takes over nearby. Skeleton/Stray/Parched are unchanged.
+
+## 2026-06-21 Hostile chase repath cliff memory follow-up
+
+- User found the remaining flicker was `path` <-> `chase_repath_cliff`, not only `chase_direct_cliff`.
+- Diagnosis: the first cliff memory only covered `chase_direct`; Zombie's A*-failure fallback still did `ApplySafePressure(..., "chase_repath")`, so it retried the same dead straight line after each path attempt.
+- Fixed in shared `BMB.Behaviors.Chase` without touching A* or cliff/support detection:
+  - `ShouldRememberCliffMode()` now writes the same `BMBChaseDirectCliffBlock` for `chase_direct` and `chase_repath`, but still excludes `attack_ready`.
+  - New `TryRepathPressure()` checks `IsDirectCliffBlocked()` before applying `chase_repath` direct pressure; blocked attempts publish `chase_repath_blocked` instead of flickering `chase_repath_cliff`.
+  - Memory duration default is now 25s, a long dynamic-world fallback retry instead of removing time expiry.
+  - If A* remains false and repath direct pressure is blocked for `ChaseRepathCliffBlockedGiveUpTime` (default 4s), the mob briefly drops the target/retargets so it can return to wander instead of pinning itself to the cliff.
+- Guard: `scripts/check_block_shape_pathing.ps1` now asserts chase_repath memory/give-up wiring.
+- Live retune: Zombie fallback already uses `TryRepathPressure`; the remaining `chase_repath_cliff` loop was because old thresholds were too eager. A* detour movement exceeded 2 cells after the 1.2s cooldown and cleared the memory before the mob had actually rounded the cliff. Defaults are now `ChaseDirectCliffMemoryCooldown=3.0`, `Duration=25.0`, mob move threshold `6.0` cells, target move threshold `2.0` cells, with `bmb_chase_cliff_memory_*` and `bmb_chase_repath_cliff_giveup_time` convars for in-game tuning.
 
 ## 2026-06-20 Base retaliation targets
 

@@ -322,7 +322,14 @@ function ENT:RunBMBZombieAI()
 
             self:SetBMBState("chase")
             self:SetBMBMoveMode("chase_repath")
-            if BMB.Behaviors.Chase.ApplySafePressure then
+            if BMB.Behaviors.Chase.TryRepathPressure then
+                BMB.Behaviors.Chase.TryRepathPressure(
+                    self,
+                    self.TargetEntity,
+                    self.RunSpeed,
+                    self.ChaseRepathProbeDistance or self:GetBMBBlockSize() * 1.5
+                )
+            elseif BMB.Behaviors.Chase.ApplySafePressure then
                 BMB.Behaviors.Chase.ApplySafePressure(
                     self,
                     self.TargetEntity,

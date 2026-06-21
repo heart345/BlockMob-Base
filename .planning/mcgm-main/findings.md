@@ -657,9 +657,10 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 ## 2026-06-20: Direct shortcut failures need memory
 
 - **绕路中反复 `chase_direct_cliff` 不一定是 A* 坏**：如果 A* 已能绕开悬崖，而 hostile 每隔一小段又直扑同一条 cliff，问题是 direct shortcut 没记住“这条线刚试过是死的”。
-- **记忆应挂在 shortcut 层，不要改 A*/cliff 检测**：`chase_direct` 经 `ApplySafePressure` 确认 cliff 后缓存目标 EntIndex、mob 位置、target 位置、冷却和过期；`CanDirect` 先查缓存，位置没明显变化就让 A* 继续走。
+- **记忆应挂在直线前压层，不要改 A*/cliff 检测**：`chase_direct` 和 Zombie 的 `chase_repath` 经 `ApplySafePressure` 确认 cliff 后缓存目标 EntIndex、mob 位置、target 位置、冷却和过期；`CanDirect` / `TryRepathPressure` 先查缓存，位置没明显变化就让 A* 继续走。
+- **位移清除门槛不能太小**：旧 1.2s/2 格会被 A* 绕路移动本身触发，表现为刚写 memory 下一轮又读成 false，mode 仍反复停在 `chase_repath_cliff` 而不是进 `chase_repath_blocked`。默认应偏保守（当前 3s/6 格），并给 convar 供真图调。
 - **远距离不要过早丢开 A***：`chase_direct` 适合近距离视线压迫；复杂结构里远距离 direct 会太早无视 A* 的绕路意图。用 per-mob `ChaseDirectMaxDistanceCells` 收紧入口，Zombie 先定 6 格。
-- **不要把非 shortcut 压迫混进来**：`attack_ready` / `chase_repath` 仍可用 `ApplySafePressure` 防掉崖，但不写 direct shortcut memory，避免攻击贴边和 A* 失败兜底被同一块缓存意外压住。
+- **不要把近战贴边压迫混进来**：`attack_ready` 仍可用 `ApplySafePressure` 防掉崖，但不写 direct shortcut memory，避免近战贴边被同一块缓存意外压住；`chase_repath` 会写 memory，因为它正是 A* 失败后反复撞同一条 cliff 的来源。
 
 ## 2026-06-20: Retaliation is a base target override
 

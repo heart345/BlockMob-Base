@@ -69,10 +69,12 @@ ENT.GridSafetyFootLiftScale = 0.12
 ENT.GridSafetyMinFootLift = 4
 -- cliff 迟滞窗（秒）：连续判 cliff 持续超过它才真当悬崖压速；单帧脏读/整数格量化容忍、继续前压。
 ENT.CliffHysteresisTime = 0.12
-ENT.ChaseDirectCliffMemoryCooldown = 1.2
-ENT.ChaseDirectCliffMemoryDuration = 6.0
-ENT.ChaseDirectCliffMemoryMoveCells = 2.0
-ENT.ChaseDirectCliffMemoryTargetMoveCells = 1.5
+ENT.ChaseDirectCliffMemoryCooldown = 3.0
+ENT.ChaseDirectCliffMemoryDuration = 25.0
+ENT.ChaseDirectCliffMemoryMoveCells = 6.0
+ENT.ChaseDirectCliffMemoryTargetMoveCells = 2.0
+ENT.ChaseRepathCliffBlockedGiveUpTime = 4.0
+ENT.ChaseRepathCliffBlockedRetargetDelay = 1.5
 ENT.RetaliateOnDamage = true
 ENT.RetaliateSameClass = true
 -- Source locomotion step height, intentionally absolute: 28u stays above a 36.5u half slab (18.25u)

@@ -27,6 +27,26 @@ if SERVER and not GetConVar("bmb_debug_chase") then
     CreateConVar("bmb_debug_chase", "0", FCVAR_ARCHIVE, "Print BMB chase pathfinding decision diagnostics.")
 end
 
+if SERVER and not GetConVar("bmb_chase_cliff_memory_cooldown") then
+    CreateConVar("bmb_chase_cliff_memory_cooldown", "3.0", FCVAR_ARCHIVE, "Seconds before a cached chase cliff shortcut may be reconsidered.")
+end
+
+if SERVER and not GetConVar("bmb_chase_cliff_memory_duration") then
+    CreateConVar("bmb_chase_cliff_memory_duration", "25.0", FCVAR_ARCHIVE, "Maximum seconds to keep a cached chase cliff shortcut failure.")
+end
+
+if SERVER and not GetConVar("bmb_chase_cliff_memory_move_cells") then
+    CreateConVar("bmb_chase_cliff_memory_move_cells", "6.0", FCVAR_ARCHIVE, "Mob movement in block cells required before retrying a cached chase cliff shortcut.")
+end
+
+if SERVER and not GetConVar("bmb_chase_cliff_memory_target_cells") then
+    CreateConVar("bmb_chase_cliff_memory_target_cells", "2.0", FCVAR_ARCHIVE, "Target movement in block cells required before retrying a cached chase cliff shortcut.")
+end
+
+if SERVER and not GetConVar("bmb_chase_repath_cliff_giveup_time") then
+    CreateConVar("bmb_chase_repath_cliff_giveup_time", "4.0", FCVAR_ARCHIVE, "Seconds of cached repath cliff blockage before dropping the current chase target.")
+end
+
 if SERVER then
     concommand.Add("bmb_melee_knockback_debug", function(ply, _, args)
         if IsValid(ply) and not ply:IsAdmin() then return end
@@ -66,6 +86,13 @@ end
 local function shouldLogChase()
     local cvar = GetConVar and GetConVar("bmb_debug_chase")
     return cvar and cvar:GetBool()
+end
+
+local function getConVarFloat(name, fallback)
+    local cvar = GetConVar and GetConVar(name)
+    if not cvar then return fallback end
+
+    return cvar:GetFloat()
 end
 
 local function formatVector2D(vec)
@@ -471,9 +498,17 @@ function BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
     if not IsValid(mob) or not IsValid(target) then return end
 
     local now = CurTime()
-    local duration = mob.ChaseDirectCliffMemoryDuration or 6.0
-    local cooldown = mob.ChaseDirectCliffMemoryCooldown or 1.2
+    local duration = getConVarFloat(
+        "bmb_chase_cliff_memory_duration",
+        mob.ChaseDirectCliffMemoryDuration or 25.0
+    )
+    local cooldown = getConVarFloat(
+        "bmb_chase_cliff_memory_cooldown",
+        mob.ChaseDirectCliffMemoryCooldown or 3.0
+    )
 
+    -- This suppresses both chase_direct shortcuts and chase_repath direct pressure.
+    -- A* remains free to keep following/repairing a path around the blocked line.
     mob.BMBChaseDirectCliffBlock = {
         targetIndex = target:EntIndex(),
         mobPos = mob:GetPos(),
@@ -500,16 +535,22 @@ function BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target)
     end
 
     local now = CurTime()
-    if now >= (block.expiresAt or 0) then
+    if block.expiresAt and block.expiresAt > 0 and now >= block.expiresAt then
         BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
         return false
     end
 
     local size = blockSize()
-    local mobMove = mob.ChaseDirectCliffMemoryMoveDistance
-        or size * (mob.ChaseDirectCliffMemoryMoveCells or 2.0)
-    local targetMove = mob.ChaseDirectCliffMemoryTargetMoveDistance
-        or size * (mob.ChaseDirectCliffMemoryTargetMoveCells or 1.5)
+    local mobMoveCells = getConVarFloat(
+        "bmb_chase_cliff_memory_move_cells",
+        mob.ChaseDirectCliffMemoryMoveCells or 6.0
+    )
+    local targetMoveCells = getConVarFloat(
+        "bmb_chase_cliff_memory_target_cells",
+        mob.ChaseDirectCliffMemoryTargetMoveCells or 2.0
+    )
+    local mobMove = mob.ChaseDirectCliffMemoryMoveDistance or size * mobMoveCells
+    local targetMove = mob.ChaseDirectCliffMemoryTargetMoveDistance or size * targetMoveCells
 
     local mobMoved = block.mobPos
         and targetFlatDistanceSqr(mob:GetPos(), block.mobPos) >= mobMove * mobMove
@@ -522,6 +563,12 @@ function BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target)
     end
 
     return true
+end
+
+function BMB.Behaviors.Chase.ShouldRememberCliffMode(mode)
+    mode = mode or "chase_direct"
+
+    return mode == "chase_direct" or mode == "chase_repath"
 end
 
 function BMB.Behaviors.Chase.CanDirect(mob, target)
@@ -603,7 +650,7 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
     end
 
     if not safe then
-        if (mode or "chase_direct") == "chase_direct" and reason ~= "wall" then
+        if BMB.Behaviors.Chase.ShouldRememberCliffMode(mode) and reason ~= "wall" then
             BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
         end
 
@@ -632,6 +679,49 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
     if mob.MaybePlayStep then mob:MaybePlayStep() end
 
     return true
+end
+
+function BMB.Behaviors.Chase.TryRepathPressure(mob, target, speed, probeDistance)
+    if not IsValid(mob) or not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return false, "invalid"
+    end
+
+    if BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target) then
+        local now = CurTime()
+        mob.BMBChaseRepathBlockedSince = mob.BMBChaseRepathBlockedSince or now
+
+        if mob.SetBMBState then mob:SetBMBState("chase") end
+        if mob.SetBMBMoveMode then mob:SetBMBMoveMode("chase_repath_blocked") end
+        if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(speed or mob.RunSpeed or mob.WalkSpeed, speed or mob.RunSpeed or mob.WalkSpeed) end
+        if mob.UpdateMoveActivity then mob:UpdateMoveActivity(speed or mob.RunSpeed or mob.WalkSpeed, speed or mob.RunSpeed or mob.WalkSpeed) end
+        if mob.UpdateBMBApproachDebug then mob:UpdateBMBApproachDebug(target:GetPos(), 0) end
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+
+        local giveUpTime = getConVarFloat(
+            "bmb_chase_repath_cliff_giveup_time",
+            mob.ChaseRepathCliffBlockedGiveUpTime or 4.0
+        )
+        if giveUpTime > 0 and now - mob.BMBChaseRepathBlockedSince >= giveUpTime then
+            mob.TargetEntity = nil
+            mob.BMBChaseRepathBlockedSince = nil
+            mob.NextTargetScanTime = now + (mob.ChaseRepathCliffBlockedRetargetDelay or 1.5)
+
+            if mob.SetBMBState then mob:SetBMBState("wander") end
+            if mob.SetBMBMoveMode then mob:SetBMBMoveMode("chase_repath_giveup") end
+        end
+
+        return false, "direct_cliff_blocked"
+    end
+
+    mob.BMBChaseRepathBlockedSince = nil
+
+    return BMB.Behaviors.Chase.ApplySafePressure(
+        mob,
+        target,
+        speed or mob.RunSpeed or mob.WalkSpeed,
+        "chase_repath",
+        probeDistance or (mob.GetBMBBlockSize and mob:GetBMBBlockSize() * 1.5) or blockSize() * 1.5
+    )
 end
 
 function BMB.Behaviors.Chase.RunDirect(mob, target, speed)
