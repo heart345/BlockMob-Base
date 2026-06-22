@@ -80,11 +80,11 @@ ENT.BlockHopAllowCloseLaunch = true
 ENT.LookAtPitchSign = -1
 ENT.LookAtPitchLimit = 35
 ENT.LookAtEyeHeight = 64            -- 头部高度，pitch 从此高度算，玩家与头同高时平视（不再近距离猛仰头）
--- Chasing zombies should not turn ordinary hurt knockback into a locomotion jump on MC block tops.
-ENT.KnockbackUseJump = false
-ENT.KnockbackVerticalSpeedScale = 0
-ENT.KnockbackVerticalMinSpeed = 0
-ENT.KnockbackVerticalMaxSpeed = 0
+-- Hop launch is now grounded-gated, so hostile hurt knockback can keep MC-style lift.
+ENT.KnockbackUseJump = true
+ENT.KnockbackVerticalSpeedScale = 6
+ENT.KnockbackVerticalMinSpeed = 170
+ENT.KnockbackVerticalMaxSpeed = 240
 
 ENT.Sounds = {
     Say = {

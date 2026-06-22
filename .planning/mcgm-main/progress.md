@@ -1186,8 +1186,8 @@
   - On MC block tops, that temporary locomotion jump state can be picked up visually/behaviorally as a stray jump or connect awkwardly to chase/hop logic.
 - Implemented:
   - Added `KnockbackUseJump` to BaseMob. Default remains `true`, preserving sheep/friendly mob hurt lift behavior.
-  - Zombie sets `KnockbackUseJump=false`.
-  - Zombie also sets hurt knockback vertical lift scale/min/max to 0, so normal damage knockback is horizontal-only.
+  - Historical mitigation: Zombie temporarily set `KnockbackUseJump=false` and hurt knockback vertical lift scale/min/max to 0 so normal damage knockback was horizontal-only.
+  - Superseded later by the strict block-hop launch grounded gate; hostile hurt lift is restored.
   - Zombie attacking the player is unaffected; player knockback/vertical launch is still controlled by `AttackVerticalKnockback` / `AttackGroundedVerticalKnockback` in shared `MeleeAttack`.
 - Next game retest:
   1. Let Zombie chase on a flat MC block platform, hit it repeatedly, and confirm it only slides/gets pushed horizontally.
@@ -1913,9 +1913,94 @@
 - User retest: legs are now correct, but body/tail posture still needs tuning; tail was hanging nearly 90 degrees down while vanilla should droop closer to 60 degrees.
   - Kept the corrected wolf model/converter bind pose unchanged so legs do not sink again.
   - Added client-side pose controls for `body`, `upperBody`, and `tail` in `bmb_wolf.lua` (`bmb_wolf_<part>_rot_*` / `bmb_wolf_<part>_pos_*`).
-  - Default tested pose: `bmb_wolf_tail_rot_z=-45`, `bmb_wolf_tail_pos_z=0`, and `bmb_wolf_upper_body_pos_z=-10`.
+  - Default tested pose is now code-owned: tail base `Angle(0,0,-45)` / `pos=0`, upperBody base `pos_z=-10`. Client convars are offsets only (`bmb_wolf_<part>_offset_*`) so old archived zero values cannot erase the shipped pose.
   - Tail movement follows vanilla MC-style side swing on `bmb_wolf_tail_rot_x`: walk/run adds a natural `-40..40` swing, while idle stays centered at `rot_x=0`; no `rot_z` up/down swing.
   - `scripts/check_wolf_phase0.ps1` now guards the wolf pose controls and tail default.
+
+## 2026-06-22 Wolf Phase 1 prey targeting
+
+- User corrections to the external wolf plan:
+  - Parched is 焦骸 and already exists in BMB; Wither Skeleton is 凋零骷髅 and has not been added yet. Do not introduce a third Chinese name.
+  - Bogged/沼骸 should later be a Skeleton-family skin/behavior variant, like Skeleton, Stray, and Parched.
+  - Phase 4 pack/flank behavior is not a hard requirement because BMB NPCs already collide with each other.
+- Implemented Phase 1 as a narrow wolf-only hostile slice:
+  - `bmb_wolf` now owns `WolfPreyClasses` with the current prey allowlist: `bmb_sheep`, `bmb_skeleton`, `bmb_stray`, and `bmb_parched`.
+  - `FindNearestWolfPrey()` scans entities in range instead of using `SeekTarget.Find()`, because the shared seeker is player-oriented.
+  - `CanBMBTarget()` accepts only that prey allowlist, so base retaliation cannot make wolves attack unrelated mobs or players.
+  - `RunBMBWolfAI()` keeps the Phase 0 scheduler but swaps the no-target branch to prey scan -> shared `MeleeAttack.Try` -> shared `Chase.Run` -> shared repath pressure -> wander.
+  - No Phase 2 prey reactions yet: skeleton-family flee/retaliate and sheep panic tuning remain separate.
+  - No Phase 3 leap and no Phase 4 pack logic.
+- User retest: wolf chase works, but chase should switch to MC `wolf_angry` texture and deleted prey should not leave wolf stuck in `chase`.
+  - Packaged `materials/models/mcgm/wolf/wolf_angry.vtf/.vmt` from Bedrock samples (`wolf_angry.png` kept only as source art).
+  - Added `bmb_wolf_angry_texture` client cvar and `WolfAngryTextureOnChase` entity switch (default on) so future tame-state rules can suppress angry texture even while chasing.
+  - Client Draw wraps the base BMB Draw in `render.MaterialOverride(Material("models/mcgm/wolf/wolf_angry"))`, preserving MC light modulation and hurt/death red flash.
+  - Wolf sets `BMBWolfAngry` while it has a valid prey target; it clears the NW bool when target disappears or chase drops.
+  - Wolf bite damage changed from 4 to 10 HP.
+  - Shared `Chase.Run` now re-checks `SeekTarget.IsValid()` after the direct chase segment and before `target:GetPos()`, preventing the `Tried to use a NULL entity!` crash/stuck chase when a prey entity is deleted mid-chase.
+- User retest found two follow-ups:
+  - Raw PNG material override made the wolf invisible, so angry texture now uses real Source `wolf_angry.vtf/.vmt`.
+  - Old archived pose convars could reset upperBody/tail defaults to zero; pose defaults are now code-owned base pose, and convars only add offsets. Death/tip pose also preserves body/upperBody/tail base pose instead of resetting everything to zero.
+
+## 2026-06-22 Wolf Phase 2 first slice - retaliation reactions
+
+- User clarified this slice should stay small:
+  - Sheep panic-on-wolf-bite is already covered by ordinary BMB `Flee`; no sheep logic changed.
+  - Add skeleton-family retaliation after being hit.
+  - Add wild wolf retaliation against players who attack it, but keep it switchable for future tame-state behavior.
+- Implemented wolf player retaliation without turning wolves into active player hunters:
+  - Added `WolfRetaliatePlayers=true` entity switch plus server cvar `bmb_wolf_retaliate_players 1/0`.
+  - `CanBMBTarget()` now accepts normal wolf prey, or a valid player while the retaliation switch is on; active scans stay prey-only so players are reached only through the base damage-retaliation path.
+  - `FindNearestWolfPrey()` active scan now explicitly filters `IsBMBWolfPrey(ent)` before `SeekTarget.IsValid`, so nearby players are not selected unless they damaged the wolf first.
+- Implemented skeleton-family hit-back priority:
+  - Added `RunBMBSkeletonRetaliationTarget()` in `bmb_skeleton`; Stray and Parched inherit it.
+  - A valid `BMBRetaliationTarget` now runs ranged combat before the wolf-flee branch, so a skeleton hit by a wolf can shoot back instead of always fleeing.
+  - While touching the function, a damaged encoded-comment block that had swallowed the actual ranged update call was bypassed with a clean later `RunBMBSkeletonAI()` definition.
+- Guards updated:
+  - `scripts/check_wolf_phase0.ps1` now also checks the Phase 2 wolf retaliation switch and prey-only active scan.
+  - `scripts/check_retaliation_targets.ps1` now checks skeleton-family retaliation priority.
+
+## 2026-06-22 Wolf Phase 3 first slice - shared leap
+
+- Implemented shared `BMB.Behaviors.Leap` in `sv_behaviors.lua`.
+  - `Leap.IsEligible(mob, target)` checks target validity, grounded state, cooldown/attempt interval, optional line of sight, min/max flat distance, vertical delta, and a leap-specific wall/body path-clear hull trace.
+  - `Leap.Try(mob, target)` handles chance/cooldown, sets `state/mode=leap`, faces target, remembers melee direction, calls `loco:Jump()`, writes a bounded launch velocity, briefly commits the leap, then returns to the normal behavior loop.
+  - The module is parameter-only; future mobs can opt in without copying wolf-specific code.
+- Wolf opts into the shared leap:
+  - After source-code comparison/user test, wolf leap now ignores cliff/support checks for close pounces but still rejects blocked wall/body paths.
+  - Distance window: `LeapMinDistanceCells=1.2`, `LeapMaxDistanceCells=3.6`.
+  - Vertical gates: `LeapMaxUpCells=0.25` (do not pounce when target is meaningfully above), `LeapMaxDownCells=1.4`.
+  - Launch/timing: `LeapHorizontalSpeed=300`, `LeapVerticalSpeed=225`, `LeapChance=0.45`, cooldown `2.2-4.0s`, commit `0.28s`.
+  - `RunBMBWolfAI()` tries melee first, then shared leap, then normal shared Chase.
+  - Angry material remains active in `leap` state so the texture does not flicker during a pounce.
+- Guard:
+  - `scripts/check_wolf_phase0.ps1` now checks shared leap module, wolf opt-in parameters, path-clear wall check, launch velocity, and no ranged-behavior regression.
+
+## 2026-06-22 Wolf Phase 4 first slice - shared pack/flank
+
+- Implemented shared `BMB.Behaviors.Pack` in `sv_behaviors.lua`.
+  - `Pack.GetMembers(mob, target)` discovers same-class members around the prey that are actually targeting the same entity.
+  - `Pack.GetFlankDestination(mob, target)` assigns stable EntIndex-based ring slots around the target and snaps them to nearby standable cells with `FindNearestStandable`.
+  - `Pack.Run(mob, target)` runs a short A* slice to that flank slot, then returns to normal behavior; failure falls back to ordinary Chase.
+- Wolf opts in with `PackEnabled=true`, `PackMinMembers=2`, `PackFlankRadiusCells=1.65`, and tries pack after melee/leap but before ordinary Chase.
+- Design kept intentionally soft: no hard surround lock, no A*/cliff changes, no persistent slot cache.
+- Guard:
+  - `scripts/check_wolf_phase0.ps1` now allows Phase 4 Pack while still forbidding ranged behavior.
+
+## 2026-06-22 Wolf Phase 4 hotfix - overlap separation and group retaliation
+
+- User retest confirmed wolves tend to approach from different directions, but any BMB mobs stacked on the same spot could deadlock at `vel=0`.
+- Implemented BaseMob overlap separation:
+  - `MaintainBMBMobSeparation()` runs for living, unheld, unfrozen BMB mobs in server Think.
+  - It detects nearby alive BMB mobs with overlapping horizontal collision radii and similar z height.
+  - It applies a small safe horizontal separation velocity/Approach without changing targets or interrupting the current behavior.
+  - Exact same-position pairs use a deterministic opposite push direction based on EntIndex so both sides do not choose the same direction.
+- Implemented reusable group retaliation alert:
+  - `BMB.Behaviors.Pack.AlertAlliesOnRetaliation(mob, attacker)` writes the attacker into nearby same-class allies as `TargetEntity` / `BMBRetaliationTarget`.
+  - Base `TryBMBRetaliate()` calls the hook after its own retaliation target is accepted.
+  - Wolf enables `PackRetaliationAlertEnabled=true` with `PackRetaliationAlertRadiusCells=8.0`, so attacking one wolf calls nearby wolves onto the player.
+  - This is intentionally generic for future Zombie Pigman-style group anger.
+- Guard:
+  - `scripts/check_wolf_phase0.ps1` now checks base separation and pack retaliation alert wiring.
 
 ## 2026-06-20 Base retaliation targets
 
@@ -1955,3 +2040,10 @@
   - Skeleton-family held bow uses the same helper so the bow does not stay bright in dark caves.
 - Missing MC addon or `mc_light_enable 0` naturally yields brightness `1` / no visual change.
 - Guard: new `scripts/check_mc_lighting_compat.ps1`.
+
+## 2026-06-22 Hostile hurt lift restored after hop gate
+
+- Problem: hostile mobs had incoming-damage vertical knockback disabled because chase could trigger block hop while airborne.
+- Fixed first: Base block-hop launch now uses `IsBMBBlockHopLaunchGrounded()` and `StartBMBBlockHop()` refuses airborne launches before `loco:Jump()`. Blocked launches are not counted as started attempts.
+- Payoff: Zombie/Husk and Skeleton/Stray/Parched restored `KnockbackUseJump=true` with 170-240u/s vertical hurt lift.
+- Guards updated: `scripts/check_hop_debug_gap_regressions.ps1`, `scripts/check_damage_iframes_knockback.ps1`, `scripts/check_zombie_phase2_attack_audio.ps1`.

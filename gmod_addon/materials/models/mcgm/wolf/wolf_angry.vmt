@@ -1,0 +1,5 @@
+"VertexLitGeneric"
+{
+    "$basetexture" "models/mcgm/wolf/wolf_angry"
+    "$model" "1"
+}

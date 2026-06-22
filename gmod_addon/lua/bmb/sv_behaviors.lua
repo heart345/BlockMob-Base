@@ -6,6 +6,8 @@ BMB.Behaviors.Flee = BMB.Behaviors.Flee or {}
 BMB.Behaviors.EatGrass = BMB.Behaviors.EatGrass or {}
 BMB.Behaviors.SeekTarget = BMB.Behaviors.SeekTarget or {}
 BMB.Behaviors.Chase = BMB.Behaviors.Chase or {}
+BMB.Behaviors.Leap = BMB.Behaviors.Leap or {}
+BMB.Behaviors.Pack = BMB.Behaviors.Pack or {}
 BMB.Behaviors.MeleeAttack = BMB.Behaviors.MeleeAttack or {}
 BMB.Behaviors.RangedAttack = BMB.Behaviors.RangedAttack or {}
 
@@ -473,6 +475,197 @@ function BMB.Behaviors.SeekTarget.Find(mob, currentTarget)
     return bestTarget
 end
 
+local packSlotAngles = { 180, -110, 110, -55, 55, 0 }
+
+local function getPackDistance(mob, distanceField, cellsField, fallbackCells)
+    local distance = mob[distanceField]
+    if distance and distance > 0 then return distance end
+
+    local cells = mob[cellsField]
+    if cells and cells > 0 then return blockSize() * cells end
+
+    return blockSize() * fallbackCells
+end
+
+local function rotateFlatDirection(direction, degrees)
+    if not direction then return nil end
+
+    local radians = math.rad(degrees or 0)
+    local sin = math.sin(radians)
+    local cos = math.cos(radians)
+    local rotated = Vector(
+        direction.x * cos - direction.y * sin,
+        direction.x * sin + direction.y * cos,
+        0
+    )
+
+    if rotated:LengthSqr() <= MIN_VALID_DIRECTION_SQR then return nil end
+
+    rotated:Normalize()
+    return rotated
+end
+
+function BMB.Behaviors.Pack.GetMembers(mob, target)
+    if not IsValid(mob) or not IsValid(target) then return {} end
+
+    local radius = getPackDistance(mob, "PackMemberRadius", "PackMemberRadiusCells", 6.0)
+    local packClass = mob.PackClass or mob:GetClass()
+    local members = {}
+
+    for _, ent in ipairs(ents.FindInSphere(target:GetPos(), radius)) do
+        if IsValid(ent)
+            and ent:GetClass() == packClass
+            and not ent.BMBDead
+            and ent.PackEnabled ~= false
+            and (ent == mob or ent.TargetEntity == target) then
+            table.insert(members, ent)
+        end
+    end
+
+    table.sort(members, function(a, b)
+        return a:EntIndex() < b:EntIndex()
+    end)
+
+    return members
+end
+
+function BMB.Behaviors.Pack.GetSlotIndex(mob, members)
+    for index, member in ipairs(members or {}) do
+        if member == mob then return index end
+    end
+
+    return 1
+end
+
+function BMB.Behaviors.Pack.GetAnchorDirection(mob, target)
+    local forward = target.GetForward and target:GetForward() or nil
+    if forward then
+        forward.z = 0
+        if forward:LengthSqr() > MIN_VALID_DIRECTION_SQR then
+            forward:Normalize()
+            return forward
+        end
+    end
+
+    return normalizedFlatDirection(target:GetPos(), mob:GetPos()) or Vector(1, 0, 0)
+end
+
+function BMB.Behaviors.Pack.GetFlankDestination(mob, target)
+    if not IsValid(mob) or mob.PackEnabled == false then return nil, "disabled" end
+    if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return nil, "invalid"
+    end
+
+    local members = BMB.Behaviors.Pack.GetMembers(mob, target)
+    if #members < (mob.PackMinMembers or 2) then return nil, "solo" end
+
+    local mobPos = mob:GetPos()
+    local targetPos = target:GetPos()
+    local flatDistanceSqr = targetFlatDistanceSqr(mobPos, targetPos)
+    local attackRange = mob.AttackRange or mob.MeleeRange or blockSize()
+    local minRange = mob.PackMinRange or attackRange * (mob.PackMinRangeScale or 1.45)
+    local maxRange = getPackDistance(mob, "PackEngageRange", "PackEngageRangeCells", 7.0)
+
+    if flatDistanceSqr <= minRange * minRange then return nil, "attack_window" end
+    if flatDistanceSqr > maxRange * maxRange then return nil, "too_far" end
+
+    local slotIndex = BMB.Behaviors.Pack.GetSlotIndex(mob, members)
+    local slotAngle = packSlotAngles[((slotIndex - 1) % #packSlotAngles) + 1]
+    local anchor = BMB.Behaviors.Pack.GetAnchorDirection(mob, target)
+    local direction = rotateFlatDirection(anchor, slotAngle)
+    if not direction then return nil, "direction" end
+
+    local radius = getPackDistance(mob, "PackFlankRadius", "PackFlankRadiusCells", 1.65)
+    local candidate = Vector(
+        targetPos.x + direction.x * radius,
+        targetPos.y + direction.y * radius,
+        targetPos.z
+    )
+
+    if BMB.Pathfinder and BMB.Pathfinder.FindNearestStandable then
+        local standable = BMB.Pathfinder.FindNearestStandable(candidate, {
+            mob = mob,
+            searchRadiusCells = mob.PackSlotSearchRadiusCells or 2,
+            searchDownCells = mob.PackSlotSearchDownCells or 2,
+            searchUpCells = mob.PackSlotSearchUpCells or 1
+        })
+
+        if standable then candidate = standable end
+    end
+
+    return candidate, "pack_flank", slotIndex, #members
+end
+
+function BMB.Behaviors.Pack.Run(mob, target)
+    local destination, reason, slotIndex, memberCount = BMB.Behaviors.Pack.GetFlankDestination(mob, target)
+    if not destination then return false, reason end
+
+    local speed = mob.PackMoveSpeed or mob.RunSpeed or mob.WalkSpeed
+    local attackRange = mob.AttackRange or mob.MeleeRange or blockSize()
+    local segmentTime = mob.PackSegmentTimeout or math.min(mob.ChaseSegmentTimeout or 0.8, 0.55)
+    local minPathSpeed
+
+    if mob.GetBMBRunActivityThreshold then
+        minPathSpeed = mob:GetBMBRunActivityThreshold() + (mob.ChaseMinPathSpeedPadding or 1)
+        minPathSpeed = math.min(speed, minPathSpeed)
+    end
+
+    if mob.SetBMBState then mob:SetBMBState("chase") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("pack_flank") end
+    if mob.UpdateBMBApproachDebug then mob:UpdateBMBApproachDebug(destination, slotIndex or 0) end
+    if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+
+    local pathResult = mob:MoveToWorldPosition(destination, speed, {
+        skipSourcePath = true,
+        allowPartial = true,
+        acceptPartial = true,
+        timeout = segmentTime,
+        goalTolerance = math.max(attackRange * 0.55, blockSize() * 0.45),
+        moveIntentSpeed = speed,
+        minPathSpeed = minPathSpeed
+    })
+
+    if pathResult then
+        if mob.SetBMBMoveMode then mob:SetBMBMoveMode("pack_flank") end
+        if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+        return true, reason, slotIndex, memberCount
+    end
+
+    return false, "path_failed"
+end
+
+function BMB.Behaviors.Pack.AlertAlliesOnRetaliation(mob, attacker)
+    if not IsValid(mob) or not IsValid(attacker) then return 0 end
+    if mob.PackRetaliationAlertEnabled == false then return 0 end
+
+    local radius = getPackDistance(mob, "PackRetaliationAlertRadius", "PackRetaliationAlertRadiusCells", 8.0)
+    local packClass = mob.PackClass or mob:GetClass()
+    local alerted = 0
+
+    for _, ally in ipairs(ents.FindInSphere(mob:GetPos(), radius)) do
+        if IsValid(ally)
+            and ally ~= mob
+            and ally:GetClass() == packClass
+            and not ally.BMBDead
+            and ally.PackRetaliationAlertEnabled ~= false
+            and (not ally.CanBMBTarget or ally:CanBMBTarget(attacker)) then
+            ally.TargetEntity = attacker
+            ally.BMBRetaliationTarget = attacker
+            ally.BMBRetaliationStartedAt = CurTime()
+            ally.NextTargetScanTime = 0
+            ally.BMBInitialIdleUntil = 0
+
+            if ally.SetNWBool and ally.WolfAngryTextureOnChase ~= nil then
+                ally:SetNWBool("BMBWolfAngry", true)
+            end
+
+            alerted = alerted + 1
+        end
+    end
+
+    return alerted
+end
+
 function BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target)
     if not IsValid(mob) or not IsValid(target) then return false end
 
@@ -773,6 +966,153 @@ function BMB.Behaviors.Chase.StalkHighTarget(mob, target)
     return true
 end
 
+local function getLeapDistance(mob, distanceField, cellsField, fallbackCells)
+    local distance = mob[distanceField]
+    if distance and distance > 0 then return distance end
+
+    local cells = mob[cellsField]
+    if cells and cells > 0 then return blockSize() * cells end
+
+    return blockSize() * fallbackCells
+end
+
+local function isLeapGrounded(mob)
+    if not IsValid(mob) then return false end
+    if mob.IsBMBOnGround then return mob:IsBMBOnGround() end
+    if mob.loco and mob.loco.IsOnGround then return mob.loco:IsOnGround() end
+    return true
+end
+
+function BMB.Behaviors.Leap.IsPathClear(mob, target, direction, distance)
+    if not IsValid(mob) or not IsValid(target) or not direction or not distance then return false end
+    if not util or not util.TraceHull then return true end
+
+    local height = mob.LeapBlockTraceHeight or mob.GroundProbeHeight or blockSize() * 0.8
+    local hullScale = mob.LeapSafetyHullScale or mob.SafetyHullScale or 0.8
+    local forwardDistance = math.max(1, distance - (mob.LeapTargetStopDistance or blockSize() * 0.45))
+    local startPos = mob:GetPos() + Vector(0, 0, height)
+    local endPos = mob:GetPos() + direction * forwardDistance + Vector(0, 0, height)
+    local traceFilter = function(ent)
+        if ent == target then return false end
+        if mob.ShouldSafetyTraceHit then return mob:ShouldSafetyTraceHit(ent) end
+        return ent ~= mob
+    end
+
+    local wallTrace = util.TraceHull({
+        start = startPos,
+        endpos = endPos,
+        mins = Vector(mob.CollisionMins.x * hullScale, mob.CollisionMins.y * hullScale, -height * 0.35),
+        maxs = Vector(mob.CollisionMaxs.x * hullScale, mob.CollisionMaxs.y * hullScale, height * 0.45),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    return not (wallTrace.Hit and not wallTrace.StartSolid)
+end
+
+function BMB.Behaviors.Leap.IsEligible(mob, target)
+    if not IsValid(mob) or mob.BMBDead or mob.BMBHeld then return false, "mob_invalid" end
+    if mob.LeapEnabled == false then return false, "disabled" end
+    if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return false, "target_invalid"
+    end
+    if mob.BMBMoveInterrupt then return false, "interrupted" end
+    if not isLeapGrounded(mob) then return false, "airborne" end
+
+    local now = CurTime()
+    if now < (mob.NextBMBLeapTime or 0) then return false, "cooldown" end
+    if now < (mob.NextBMBLeapAttemptTime or 0) then return false, "attempt_wait" end
+
+    if mob.LeapRequireLineOfSight ~= false and mob.Visible and not mob:Visible(target) then
+        return false, "sight"
+    end
+
+    local mobPos = mob:GetPos()
+    local targetPos = target:GetPos()
+    local flat = targetFlatDistanceSqr(mobPos, targetPos)
+    local minDistance = getLeapDistance(mob, "LeapMinDistance", "LeapMinDistanceCells", 1.75)
+    local maxDistance = getLeapDistance(mob, "LeapMaxDistance", "LeapMaxDistanceCells", 4.5)
+
+    if flat < minDistance * minDistance then return false, "too_close" end
+    if flat > maxDistance * maxDistance then return false, "too_far" end
+
+    local vertical = targetPos.z - mobPos.z
+    local maxUp = getLeapDistance(mob, "LeapMaxUpDistance", "LeapMaxUpCells", 0.25)
+    local maxDown = getLeapDistance(mob, "LeapMaxDownDistance", "LeapMaxDownCells", 1.25)
+    if vertical > maxUp then return false, "too_high" end
+    if vertical < -maxDown then return false, "too_low" end
+
+    local direction = normalizedFlatDirection(mobPos, targetPos)
+    if not direction then return false, "direction" end
+
+    if mob.LeapIgnoreCliff ~= false then
+        if not BMB.Behaviors.Leap.IsPathClear(mob, target, direction, math.sqrt(flat)) then
+            return false, "blocked"
+        end
+    elseif mob.IsMovementTargetSafe then
+        local distance = math.sqrt(flat)
+        local probe = math.min(distance, getLeapDistance(mob, "LeapSafetyProbeDistance", "LeapSafetyProbeCells", 2.25))
+        local probeTarget = mobPos + direction * probe
+        probeTarget.z = mobPos.z
+
+        if not mob:IsMovementTargetSafe(probeTarget, probe) then return false, "unsafe" end
+    end
+
+    return true, direction
+end
+
+function BMB.Behaviors.Leap.Try(mob, target)
+    local ok, directionOrReason = BMB.Behaviors.Leap.IsEligible(mob, target)
+    if not ok then return false, directionOrReason end
+
+    local now = CurTime()
+    local chance = mob.LeapChance
+    if chance == nil then chance = 1 end
+    if chance < 1 and math.Rand(0, 1) > chance then
+        mob.NextBMBLeapAttemptTime = now + (mob.LeapAttemptInterval or 0.45)
+        return false, "chance"
+    end
+
+    local direction = directionOrReason
+    local cooldownMin = mob.LeapCooldownMin or mob.LeapCooldown or 2.0
+    local cooldownMax = mob.LeapCooldownMax or mob.LeapCooldown or 3.5
+    if cooldownMax < cooldownMin then cooldownMax = cooldownMin end
+
+    local horizontalSpeed = mob.LeapHorizontalSpeed
+        or blockSize() * (mob.LeapHorizontalSpeedCellsPerSecond or 6.5)
+    local verticalSpeed = mob.LeapVerticalSpeed
+        or blockSize() * (mob.LeapVerticalSpeedCellsPerSecond or 4.8)
+    local velocity = direction * horizontalSpeed + Vector(0, 0, verticalSpeed)
+
+    mob.NextBMBLeapTime = now + math.Rand(cooldownMin, cooldownMax)
+    mob.NextBMBLeapAttemptTime = mob.NextBMBLeapTime
+
+    if mob.InterruptBMBMovement then mob:InterruptBMBMovement() end
+    if mob.SetBMBState then mob:SetBMBState("leap") end
+    if mob.SetBMBMoveMode then mob:SetBMBMoveMode("leap") end
+    if mob.MaintainBMBMoveSpeed then mob:MaintainBMBMoveSpeed(horizontalSpeed, horizontalSpeed) end
+    if mob.UpdateBMBApproachDebug then mob:UpdateBMBApproachDebug(target:GetPos(), horizontalSpeed) end
+    if mob.FaceTarget then mob:FaceTarget(target:GetPos()) end
+    BMB.Behaviors.MeleeAttack.RememberTargetDirection(mob, target)
+
+    if mob.loco then
+        if mob.loco.Jump then mob.loco:Jump() end
+        if mob.loco.SetVelocity then mob.loco:SetVelocity(velocity) end
+        if mob.loco.Approach then mob.loco:Approach(mob:GetPos() + direction * blockSize(), horizontalSpeed) end
+    end
+
+    coroutine.wait(mob.LeapCommitTime or 0.28)
+    if IsValid(mob) then
+        if mob.ClearBMBMovementInterrupt then
+            mob:ClearBMBMovementInterrupt()
+        else
+            mob.BMBMoveInterrupt = false
+        end
+    end
+
+    return true, "leap"
+end
+
 function BMB.Behaviors.MeleeAttack.IsInRange(mob, target, rangeOverride, verticalRangeOverride)
     if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
         return false
@@ -970,6 +1310,10 @@ function BMB.Behaviors.Chase.Run(mob, target)
         local directResult = BMB.Behaviors.Chase.RunDirect(mob, target, speed)
         if directResult then return true end
         if mob.BMBMoveInterrupt then return false end
+    end
+
+    if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then
+        return false
     end
 
     local segmentTime = mob.ChaseSegmentTimeout or mob.ChaseRepathInterval or 0.75

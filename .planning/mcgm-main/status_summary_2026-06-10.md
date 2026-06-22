@@ -850,8 +850,8 @@
   - Chasing Zombie resumes chase immediately, so that temporary jump state can bleed into chase/hop behavior on MC block tops.
 - Implemented:
   - Added BaseMob `KnockbackUseJump` switch. Default stays true for existing friendly mob hurt-lift behavior.
-  - Zombie sets `KnockbackUseJump=false`.
-  - Zombie normal hurt knockback vertical lift is 0, making incoming damage knockback horizontal-only.
+  - Historical mitigation: Zombie temporarily set `KnockbackUseJump=false`.
+  - Superseded later by a strict block-hop launch grounded gate; hostile hurt vertical lift is restored.
   - Zombie melee player launch is unchanged and still uses `AttackVerticalKnockback` / `AttackGroundedVerticalKnockback`.
 - Next game retest:
   1. Hit a chasing Zombie repeatedly on flat MC blocks; it should not jump from damage.

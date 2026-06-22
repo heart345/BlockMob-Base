@@ -142,7 +142,8 @@ Phase 2
 - [x] Zombie Phase 2 hotfix 7：修 `ApplyTargetKnockback` 把 normalized 单位方向 `LengthSqr()==1` 当无效方向早退；方向验证统一改 epsilon，并记录 `direction_nil/direction_invalid`
 - [x] Zombie Phase 2 hotfix 8：手感细调——Zombie 索敌范围扩到 `TargetRange=1350` / `TargetLoseRange=1725`，同层攻击距离调到 `AttackRange=60`，水平击退降到 `AttackKnockback=210`；共享 `MeleeAttack` 新增可选窄竖直重叠命中，Zombie 用 `AttackVerticalOverlapRange=86` + `AttackVerticalOverlapFlatRange=24` 解决玩家踩头不挨打，同时保持普通 `AttackVerticalRange=28` 防止高一格平台误攻击
 - [x] Zombie Phase 2 hotfix 9：击退距离继续收敛——用户复测 210 水平击退配合 190z 滞空会推出约 4-5 格，目标是 2-3 格；Zombie `AttackKnockback` 改为 150，竖直击飞保持 155 / grounded 190
-- [x] Zombie Phase 2 hotfix 10：Zombie 在 MC 方块顶面追击玩家时被打偶发触发跳跃——Base 新增 `KnockbackUseJump`，Zombie 关闭受击 `loco:Jump()` 并把受击竖直速度置 0；Zombie 攻击玩家的玩家击飞仍走独立 MeleeAttack 参数
+- [x] Zombie Phase 2 hotfix 10（历史）：Zombie 在 MC 方块顶面追击玩家时被打偶发触发跳跃——当时 Base 新增 `KnockbackUseJump`，Zombie 临时关闭受击 `loco:Jump()` 并把受击竖直速度置 0；后续已由严格 hop launch grounded gate 取代
+- [x] Hostile hurt lift payoff：Base block hop 发起层加严格落地 gate 后，Zombie/Husk 与 Skeleton/Stray/Parched 恢复 `KnockbackUseJump=true` 和 170-240u/s 受击竖直上抬
 - [x] Zombie MC 音效接入：复制并注册 `mob/zombie` 的 `death/hurt/say/step` 和 `damage/hit1-3`，统一重采样到 44100Hz；Zombie ambient/非致死受击/死亡/命中玩家/脚步都改用模组内 MC OGG，致死受击只播 death 不叠 hurt，脚步和程序化腿摆同源距离驱动，禁用 base 0.5s Source 脚步占位
 - [ ] 复测 Zombie Phase 2：约 1350u 内应能发现玩家；同层约 60u 第一时间扣血；连续攻击约 1.0s 一次；命中有玩家受伤音效、轻微屏幕晃动、击退和小击飞，站地面/跳起两种情况都能体现 z 击飞，水平击退约 2-3 格且不再时好时坏；玩家直接踩头会被打，但站高一格平台/隔块目标仍走 chase/path；held/debug/stranded/chase/wander 中都能偶尔叫；高台边缘/窄桥桥头不再直线追玩家掉下去；完整 MCSWEP 方块平地/平台中间追击不应显示 `*_cliff` 停住；旧追击、hop、stranded、受击不回归
 - [ ] 重新设计低顶/头顶方块坏 hop：A* hop-edge clearance 方案已撤回（会导致正常 hop 不触发），后续改用更局部的失败记忆/绕路目标或精确分诊
@@ -236,15 +237,38 @@ Phase 2
 
 ## 2026-06-21 Wolf Plan
 
-- [~] Wolf Phase 0 basic mob:
+- [x] Wolf Phase 0 basic mob:
   - [x] Replace old `bmb_wolf` stub cube with a real `bmb_base_mob` NextBot.
   - [x] Register `BMB Wolf` in NPC menu.
   - [x] Add thin wander/debug/freeze/stranded behavior scheduler.
   - [x] Add client four-leg visual bones, Base LookAt, and death side-tip.
   - [x] Add `scripts/check_wolf_phase0.ps1` guard.
   - [x] Add converter wolf structural rest-pose support, compile `models/mcgm/wolf/wolf.mdl`, and sync to D live addon.
-  - [ ] Test in GMod and tune wolf bone axes/step gait if needed.
-- [ ] Wolf Phase 1 prey targeting: active hunt list, exclusions, chase + melee.
-- [ ] Wolf Phase 2 prey reactions: skeleton-family flee/retaliate and sheep panic on wolf bite.
-- [ ] Wolf Phase 3 shared leap module.
-- [ ] Wolf Phase 4 shared pack module.
+  - [x] Test in GMod and tune wolf body/tail pose and tail gait.
+- [~] Wolf Phase 1 prey targeting: active hunt list, exclusions, chase + melee.
+  - [x] Wolf prey allowlist covers current mobs: Sheep, Skeleton, Stray, and Parched.
+  - [x] Reuse shared Chase + MeleeAttack; no player targeting, no zombie-family targeting, no pack/leap.
+  - [x] User confirmed wolf enters chase and hunts prey.
+  - [x] Add angry chase texture switch (`bmb_wolf_angry_texture`, default on) using packaged Source `wolf_angry.vtf/.vmt`.
+  - [x] Change wolf bite damage to 10 HP per hit.
+  - [x] Fix deleted prey during chase: shared Chase re-validates target before `target:GetPos()`.
+  - [ ] Test in GMod: angry texture appears during chase/attack, clears when prey dies/disappears, and deleted prey returns wolf to wander.
+- [~] Wolf Phase 2 prey reactions: skeleton-family flee/retaliate and sheep panic on wolf bite.
+  - Naming correction: Parched = 焦骸 and already exists; Wither Skeleton = 凋零骷髅 and is not implemented yet. Do not introduce a third Chinese name.
+  - Future Bogged/沼骸 should be a Skeleton-family skin/behavior variant like Skeleton, Stray, and Parched.
+  - [x] Sheep panic on wolf bite needs no special code yet; ordinary BMB Flee covers the current requirement.
+  - [x] Skeleton-family retaliation priority: valid base `BMBRetaliationTarget` shoots before wolf-flee logic.
+  - [x] Wild wolf player retaliation: players are valid targets only after damaging the wolf, guarded by `WolfRetaliatePlayers` and `bmb_wolf_retaliate_players`.
+  - [ ] Game retest: skeleton/stray/parched hit by wolf should shoot back; wolf should ignore passive nearby players but chase a player who attacks it, and `bmb_wolf_retaliate_players 0` should disable that player retaliation.
+- [~] Wolf Phase 3 shared leap module.
+  - [x] Add shared `BMB.Behaviors.Leap` with eligibility + launch split.
+  - [x] Wolf opts into leap with close/medium distance, line-of-sight, grounded, vertical-delta, cooldown/chance, and wall/body path-clear gates while allowing short-gap pounces.
+  - [x] Wolf keeps angry texture during `leap` state.
+  - [ ] Game retest: wolf should occasionally pounce from near-medium range, can cross close small gaps, should not pounce when target is above/blocked/too far, should not chain-jump constantly, and still bite/chase normally if leap is unavailable.
+- [~] Wolf Phase 4 shared pack module.
+  - [x] Add shared lightweight `BMB.Behaviors.Pack` module for same-target member discovery and flank slot selection.
+  - [x] Wolf opts in after melee/leap and before ordinary chase; pack only engages with 2+ wolves and falls back to chase on failure.
+  - [x] Base mob overlap separation: all BMB mobs get a lightweight per-tick push when stacked, preventing multi-mob overlap deadlocks.
+  - [x] Shared pack retaliation alert: wolf can call nearby wolves into combat when a player attacks one; future Zombie Pigman can reuse the same hook.
+  - [x] Pack/flank behavior remains a soft design target, not a strict formation system while BMB NPCs have real mutual collision.
+  - [ ] Game retest: two or more wolves should spread around one prey target without harming single-wolf chase/leap.

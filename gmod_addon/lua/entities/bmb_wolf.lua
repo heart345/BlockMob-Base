@@ -20,6 +20,9 @@ ENT.Acceleration = 360
 ENT.Deceleration = 460
 ENT.CollisionMins = Vector(-11, -11, 0)
 ENT.CollisionMaxs = Vector(11, 11, 32)
+ENT.MobSeparationRadiusScale = 1.45
+ENT.MobSeparationApproachDistance = 24
+ENT.MobSeparationMaxSpeed = 125
 
 ENT.WanderDistanceMinCells = 4
 ENT.WanderDistanceMaxCells = 10
@@ -30,6 +33,64 @@ ENT.WanderFailurePauseMin = 0.5
 ENT.WanderFailurePauseMax = 1.3
 ENT.InitialIdleMin = 1.5
 ENT.InitialIdleMax = 4.0
+ENT.TargetRange = 820
+ENT.TargetLoseRange = 1050
+ENT.TargetScanInterval = 0.35
+ENT.ChaseRepathInterval = 0.45
+ENT.ChaseSegmentTimeout = 1.2
+ENT.ChaseFailureRepathDelay = 0.06
+ENT.ChasePreferDirect = true
+ENT.ChaseDirectDuration = 0.24
+ENT.ChaseDirectMaxDistanceCells = 5
+ENT.ChaseDirectProbeCells = 4
+ENT.AttackRange = 52
+ENT.AttackVerticalRange = 26
+ENT.AttackVerticalOverlapRange = 62
+ENT.AttackVerticalOverlapFlatRange = 22
+ENT.AttackDamage = 10
+ENT.AttackCooldown = 0.85
+ENT.AttackHitDelay = 0
+ENT.AttackMoveSpeed = 120
+ENT.AttackHitSlop = 14
+ENT.AttackKnockback = 90
+ENT.AttackVerticalKnockback = 75
+ENT.AttackGroundedVerticalKnockback = 110
+ENT.LeapEnabled = true
+ENT.LeapIgnoreCliff = true
+ENT.LeapMinDistanceCells = 1.2
+ENT.LeapMaxDistanceCells = 3.6
+ENT.LeapMaxUpCells = 0.25
+ENT.LeapMaxDownCells = 1.4
+ENT.LeapTargetStopDistance = 18
+ENT.LeapHorizontalSpeed = 300
+ENT.LeapVerticalSpeed = 225
+ENT.LeapChance = 0.45
+ENT.LeapAttemptInterval = 0.45
+ENT.LeapCooldownMin = 2.2
+ENT.LeapCooldownMax = 4.0
+ENT.LeapCommitTime = 0.28
+ENT.PackEnabled = true
+ENT.PackMinMembers = 2
+ENT.PackMemberRadiusCells = 6.0
+ENT.PackEngageRangeCells = 7.0
+ENT.PackFlankRadiusCells = 1.65
+ENT.PackMinRangeScale = 1.45
+ENT.PackSegmentTimeout = 0.5
+ENT.PackSlotSearchRadiusCells = 2
+ENT.PackRetaliationAlertEnabled = true
+ENT.PackRetaliationAlertRadiusCells = 8.0
+
+ENT.AmbientSoundIntervalTicks = 80
+ENT.AmbientSoundChanceDenominator = 1000
+ENT.AmbientSoundTickRate = 20
+ENT.AmbientSoundMaxCatchupTicks = 4
+ENT.StepSoundDistance = 31
+ENT.StepSoundMinSpeed = 8
+ENT.StepSoundLevel = 62
+ENT.StepSoundVolumeMin = 0.55
+ENT.StepSoundVolumeMax = 0.92
+ENT.StepSoundPitchMin = 88
+ENT.StepSoundPitchMax = 112
 
 ENT.LimbSwingMinAmount = 0.2
 ENT.LimbSwingPhaseScale = 0.12
@@ -38,34 +99,141 @@ ENT.WolfTailSwingXDegrees = 40
 ENT.LookAtEyeHeight = 27
 ENT.LookAtPitchLimit = 22
 ENT.LookAroundPitchLimit = 12
+ENT.WolfAngryTextureOnChase = true
+ENT.WolfRetaliatePlayers = true
+ENT.WolfNormalMaterial = "models/mcgm/wolf/wolf"
+ENT.WolfAngryMaterial = "models/mcgm/wolf/wolf_angry"
+
+ENT.Sounds = {
+    Step = {
+        "bmb/mob/wolf/step1.ogg",
+        "bmb/mob/wolf/step2.ogg",
+        "bmb/mob/wolf/step3.ogg",
+        "bmb/mob/wolf/step4.ogg",
+        "bmb/mob/wolf/step5.ogg"
+    },
+    Hit = {
+        "bmb/damage/hit1.ogg",
+        "bmb/damage/hit2.ogg",
+        "bmb/damage/hit3.ogg"
+    }
+}
+
+local function randomSound(list)
+    if not list or #list == 0 then return nil end
+    return list[math.random(1, #list)]
+end
+
+local wolfSoundVariants = { "angry", "big", "classic", "cute", "grumpy", "puglin", "sad" }
+local wolfSoundVariantWeights = {
+    angry = 10 / 3,
+    big = 10 / 3,
+    classic = 80,
+    cute = 10 / 3,
+    grumpy = 10 / 3,
+    puglin = 10 / 3,
+    sad = 10 / 3
+}
+local wolfSoundSets = {}
+
+local function makeWolfVariantSounds(variant)
+    local prefix = "bmb/mob/wolf/" .. variant .. "/"
+
+    return {
+        Bark = {
+            prefix .. "bark1.ogg",
+            prefix .. "bark2.ogg",
+            prefix .. "bark3.ogg"
+        },
+        Growl = {
+            prefix .. "growl1.ogg",
+            prefix .. "growl2.ogg",
+            prefix .. "growl3.ogg"
+        },
+        Hurt = {
+            prefix .. "hurt1.ogg",
+            prefix .. "hurt2.ogg",
+            prefix .. "hurt3.ogg"
+        },
+        Death = {
+            prefix .. "death.ogg"
+        }
+    }
+end
+
+for _, variant in ipairs(wolfSoundVariants) do
+    wolfSoundSets[variant] = makeWolfVariantSounds(variant)
+end
+
+function ENT:ChooseBMBWolfSoundVariant()
+    local total = 0
+    for _, variant in ipairs(wolfSoundVariants) do
+        total = total + (wolfSoundVariantWeights[variant] or 1)
+    end
+
+    local roll = math.Rand(0, total)
+    local accumulated = 0
+    for _, variant in ipairs(wolfSoundVariants) do
+        accumulated = accumulated + (wolfSoundVariantWeights[variant] or 1)
+        if roll <= accumulated then return variant end
+    end
+
+    return "classic"
+end
+
+function ENT:GetBMBWolfSoundVariant()
+    local variant = self.BMBWolfSoundVariant
+    if not variant or not wolfSoundSets[variant] then
+        variant = self:GetNWString("BMBWolfSoundVariant", "classic")
+    end
+
+    if not wolfSoundSets[variant] then variant = "classic" end
+    return variant
+end
+
+function ENT:GetBMBWolfSounds()
+    return wolfSoundSets[self:GetBMBWolfSoundVariant()] or wolfSoundSets.classic
+end
+
+if SERVER then
+    ENT.WolfRetaliatePlayersConVar = CreateConVar(
+        "bmb_wolf_retaliate_players",
+        "1",
+        FCVAR_ARCHIVE,
+        "Allow wild BMB wolves to target players who damage them."
+    )
+end
 
 if CLIENT then
     local zeroAngle = Angle(0, 0, 0)
     local zeroVector = Vector(0, 0, 0)
     local wolfBoneNames = { "root", "body", "upperBody", "head", "leg0", "leg1", "leg2", "leg3", "tail" }
+    local wolfBasePose = {
+        body = { angle = Angle(0, 0, 0), pos = Vector(0, 0, 0) },
+        upperBody = { angle = Angle(0, 0, 0), pos = Vector(0, 0, -10) },
+        tail = { angle = Angle(0, 0, -45), pos = Vector(0, 0, 0) }
+    }
     local wolfPoseConVars = {}
+    local angryTextureConVar = CreateClientConVar("bmb_wolf_angry_texture", "1", true, false)
 
-    local function createWolfPoseConVars(prefix, defaultAngle, defaultPos)
-        defaultAngle = defaultAngle or zeroAngle
-        defaultPos = defaultPos or zeroVector
-
+    local function createWolfPoseOffsetConVars(prefix)
         return {
             angle = {
-                x = CreateClientConVar(prefix .. "_rot_x", tostring(defaultAngle.p), true, false),
-                y = CreateClientConVar(prefix .. "_rot_y", tostring(defaultAngle.y), true, false),
-                z = CreateClientConVar(prefix .. "_rot_z", tostring(defaultAngle.r), true, false)
+                x = CreateClientConVar(prefix .. "_offset_rot_x", "0", true, false),
+                y = CreateClientConVar(prefix .. "_offset_rot_y", "0", true, false),
+                z = CreateClientConVar(prefix .. "_offset_rot_z", "0", true, false)
             },
             pos = {
-                x = CreateClientConVar(prefix .. "_pos_x", tostring(defaultPos.x), true, false),
-                y = CreateClientConVar(prefix .. "_pos_y", tostring(defaultPos.y), true, false),
-                z = CreateClientConVar(prefix .. "_pos_z", tostring(defaultPos.z), true, false)
+                x = CreateClientConVar(prefix .. "_offset_pos_x", "0", true, false),
+                y = CreateClientConVar(prefix .. "_offset_pos_y", "0", true, false),
+                z = CreateClientConVar(prefix .. "_offset_pos_z", "0", true, false)
             }
         }
     end
 
-    wolfPoseConVars.body = createWolfPoseConVars("bmb_wolf_body", zeroAngle, zeroVector)
-    wolfPoseConVars.upperBody = createWolfPoseConVars("bmb_wolf_upper_body", zeroAngle, Vector(0, 0, -10))
-    wolfPoseConVars.tail = createWolfPoseConVars("bmb_wolf_tail", Angle(0, 0, -45), zeroVector)
+    wolfPoseConVars.body = createWolfPoseOffsetConVars("bmb_wolf_body")
+    wolfPoseConVars.upperBody = createWolfPoseOffsetConVars("bmb_wolf_upper_body")
+    wolfPoseConVars.tail = createWolfPoseOffsetConVars("bmb_wolf_tail")
 
     local function setBoneAngle(ent, boneId, angle)
         if not boneId then return end
@@ -85,10 +253,36 @@ if CLIENT then
         return Vector(convars.x:GetFloat(), convars.y:GetFloat(), convars.z:GetFloat())
     end
 
-    local function applyWolfPose(ent, boneId, poseConVars)
-        if not boneId or not poseConVars then return end
-        setBoneAngle(ent, boneId, angleFromConVars(poseConVars.angle))
-        setBonePosition(ent, boneId, vectorFromConVars(poseConVars.pos))
+    local function addAngles(base, offset)
+        return Angle(
+            (base and base.p or 0) + (offset and offset.p or 0),
+            (base and base.y or 0) + (offset and offset.y or 0),
+            (base and base.r or 0) + (offset and offset.r or 0)
+        )
+    end
+
+    local function addVectors(base, offset)
+        return Vector(
+            (base and base.x or 0) + (offset and offset.x or 0),
+            (base and base.y or 0) + (offset and offset.y or 0),
+            (base and base.z or 0) + (offset and offset.z or 0)
+        )
+    end
+
+    local function getWolfPose(poseName)
+        local base = wolfBasePose[poseName] or {}
+        local offsets = wolfPoseConVars[poseName]
+
+        return addAngles(base.angle or zeroAngle, offsets and angleFromConVars(offsets.angle) or zeroAngle),
+            addVectors(base.pos or zeroVector, offsets and vectorFromConVars(offsets.pos) or zeroVector)
+    end
+
+    local function applyWolfPose(ent, boneId, poseName)
+        if not boneId then return end
+
+        local angle, pos = getWolfPose(poseName)
+        setBoneAngle(ent, boneId, angle)
+        setBonePosition(ent, boneId, pos)
     end
 
     local function resetWolfBones(ent, bones)
@@ -127,6 +321,9 @@ if CLIENT then
         local state = self:GetNWString("BMBState", "idle")
         if state == "dead" or self:GetNWBool("BMBDead", false) then
             resetWolfBones(self, bones)
+            applyWolfPose(self, bones.body, "body")
+            applyWolfPose(self, bones.upperBody, "upperBody")
+            applyWolfPose(self, bones.tail, "tail")
 
             if bones.root then
                 local startedAt = self:GetNWFloat("BMBStateStartedAt", CurTime())
@@ -142,8 +339,8 @@ if CLIENT then
 
         setBoneAngle(self, bones.root, zeroAngle)
         setBonePosition(self, bones.root, zeroVector)
-        applyWolfPose(self, bones.body, wolfPoseConVars.body)
-        applyWolfPose(self, bones.upperBody, wolfPoseConVars.upperBody)
+        applyWolfPose(self, bones.body, "body")
+        applyWolfPose(self, bones.upperBody, "upperBody")
 
         if not self:UpdateBMBLookAtHeadPose(bones.head) then
             setBoneAngle(self, bones.head, zeroAngle)
@@ -153,16 +350,83 @@ if CLIENT then
         local speed = self:GetVelocity():Length2D()
         local phase, swingAmount = self:UpdateBMBLimbSwing(speed)
         local legSwing = math.sin(phase) * (self.WolfLegSwingMax or 28) * swingAmount
-        local tailAngle = angleFromConVars(wolfPoseConVars.tail.angle)
+        local tailAngle, tailPos = getWolfPose("tail")
         tailAngle.p = tailAngle.p + math.sin(phase) * (self.WolfTailSwingXDegrees or 40) * swingAmount
         setBoneAngle(self, bones.tail, tailAngle)
-        setBonePosition(self, bones.tail, vectorFromConVars(wolfPoseConVars.tail.pos))
+        setBonePosition(self, bones.tail, tailPos)
 
         -- Same diagonal pair convention as MC wolf leg_default: leg0/leg3 together, leg1/leg2 opposite.
         setBoneAngle(self, bones.leg0, Angle(0, 0, legSwing))
         setBoneAngle(self, bones.leg3, Angle(0, 0, legSwing))
         setBoneAngle(self, bones.leg1, Angle(0, 0, -legSwing))
         setBoneAngle(self, bones.leg2, Angle(0, 0, -legSwing))
+
+        self:UpdateBMBWolfStepSound(speed)
+    end
+
+    function ENT:UpdateBMBWolfStepSound(speed)
+        speed = speed or self:GetVelocity():Length2D()
+
+        if speed <= (self.StepSoundMinSpeed or 8) then
+            self.BMBWolfStepDistance = 0
+            return
+        end
+
+        local stepDistance = self.StepSoundDistance or 31
+        self.BMBWolfStepDistance = (self.BMBWolfStepDistance or 0) + speed * FrameTime()
+        if self.BMBWolfStepDistance < stepDistance then return end
+
+        self.BMBWolfStepDistance = self.BMBWolfStepDistance - stepDistance
+
+        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        if not soundName then return end
+
+        local fullSpeed = math.max((self.StepSoundMinSpeed or 8) + 1, self.RunSpeed or 135)
+        local speedFrac = math.Clamp((speed - (self.StepSoundMinSpeed or 8)) / (fullSpeed - (self.StepSoundMinSpeed or 8)), 0, 1)
+        local volume = Lerp(speedFrac, self.StepSoundVolumeMin or 0.55, self.StepSoundVolumeMax or 0.92)
+        self:EmitSound(soundName, self.StepSoundLevel or 62, math.random(self.StepSoundPitchMin or 88, self.StepSoundPitchMax or 112), volume)
+    end
+
+    function ENT:GetBMBWolfAngryMaterial()
+        local materialPath = self.WolfAngryMaterial or ""
+        if materialPath == "" then return nil end
+
+        if self.BMBWolfAngryMaterialPath ~= materialPath then
+            self.BMBWolfAngryMaterialPath = materialPath
+            self.BMBWolfAngryMaterial = Material(materialPath, "smooth")
+        end
+
+        if not self.BMBWolfAngryMaterial or self.BMBWolfAngryMaterial:IsError() then return nil end
+        return self.BMBWolfAngryMaterial
+    end
+
+    function ENT:ShouldUseBMBWolfAngryMaterial()
+        local state = self:GetNWString("BMBState", "idle")
+        return self.WolfAngryTextureOnChase ~= false
+            and angryTextureConVar:GetBool()
+            and self:GetNWBool("BMBWolfAngry", false)
+            and (state == "chase" or state == "attack" or state == "leap")
+    end
+
+    function ENT:Draw()
+        local angryMaterial = self:ShouldUseBMBWolfAngryMaterial() and self:GetBMBWolfAngryMaterial() or nil
+        if angryMaterial then render.MaterialOverride(angryMaterial) end
+
+        local base = scripted_ents.GetStored("bmb_base_mob")
+        if base and base.t and base.t.Draw then
+            base.t.Draw(self)
+        elseif self.DrawBMBModelWithMCLight then
+            self:DrawBMBModelWithMCLight()
+        else
+            self:DrawModel()
+        end
+
+        if angryMaterial then render.MaterialOverride(nil) end
+    end
+
+    -- Kept as a named hook point for future tame-state texture rules.
+    function ENT:UpdateBMBWolfMaterial()
+        return self:ShouldUseBMBWolfAngryMaterial()
     end
 end
 
@@ -171,11 +435,255 @@ function ENT:Initialize()
 
     self:BaseInitialize()
     self:SetBMBState("idle")
+    self.TargetEntity = nil
+    self.NextTargetScanTime = 0
+    self.NextMeleeAttackTime = 0
+    self.BMBWolfSoundVariant = self:ChooseBMBWolfSoundVariant()
+    self:SetNWString("BMBWolfSoundVariant", self.BMBWolfSoundVariant)
+    self:ResetBMBAmbientSoundTime()
+    self.BMBNextAmbientSoundTickAt = CurTime() + math.Rand(0, 1 / (self.AmbientSoundTickRate or 20))
     self.BMBInitialIdleUntil = CurTime() + math.Rand(self.InitialIdleMin or 1.5, self.InitialIdleMax or 4.0)
 end
 
 function ENT:MaybePlayStep()
-    -- Wolf Phase 0 has no sound pass yet; keep Base's placeholder zombie footstep silent.
+    -- Wolf footsteps are client-side and distance-driven from the procedural leg phase.
+end
+
+function ENT:OnBMBMeleeHit(target, _)
+    if not IsValid(target) then return end
+    if not target:IsPlayer() then return end
+
+    local soundName = randomSound(self.Sounds and self.Sounds.Hit)
+    if soundName then
+        target:EmitSound(soundName, 74, math.random(96, 104), 0.82)
+    end
+end
+
+function ENT:ShouldBMBWolfUseGrowlSound()
+    return IsValid(self.TargetEntity)
+        or self:GetNWBool("BMBWolfAngry", false)
+        or CurTime() < (self.BMBWolfGrowlUntil or 0)
+end
+
+function ENT:PlayBMBWolfHurtSound(volume)
+    local sounds = self:GetBMBWolfSounds()
+    local soundName = randomSound(sounds and sounds.Hurt)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 72, math.random(95, 105), volume or 0.86)
+end
+
+function ENT:OnBMBHurtSound(damageInfo)
+    self.BMBWolfGrowlUntil = CurTime() + 3.0
+    if damageInfo and self:Health() - damageInfo:GetDamage() <= 0 then return end
+
+    self:PlayBMBWolfHurtSound(0.9)
+end
+
+function ENT:PlayBMBWolfDeathSound()
+    local sounds = self:GetBMBWolfSounds()
+    local soundName = randomSound(sounds and sounds.Death)
+    if soundName then
+        self:EmitSound(soundName, 76, math.random(95, 105), 0.95)
+    end
+end
+
+function ENT:OnKilled(damageInfo)
+    if CLIENT then return end
+
+    self:PlayBMBWolfDeathSound()
+    self:BeginBMBDeath(damageInfo)
+end
+
+function ENT:ResetBMBAmbientSoundTime()
+    self.BMBAmbientSoundTime = -(self.AmbientSoundIntervalTicks or 80)
+end
+
+function ENT:MaybePlayIdleSound()
+    local sounds = self:GetBMBWolfSounds()
+    if not sounds then return end
+
+    local now = CurTime()
+    local tickRate = self.AmbientSoundTickRate or 20
+    local tickInterval = 1 / tickRate
+    local nextTick = self.BMBNextAmbientSoundTickAt or now
+    if now < nextTick then return end
+
+    local ticks = math.floor((now - nextTick) / tickInterval) + 1
+    ticks = math.Clamp(ticks, 1, self.AmbientSoundMaxCatchupTicks or 4)
+
+    for _ = 1, ticks do
+        local soundTime = self.BMBAmbientSoundTime
+        if soundTime == nil then
+            soundTime = -(self.AmbientSoundIntervalTicks or 80)
+        end
+
+        local soundList = self:ShouldBMBWolfUseGrowlSound() and sounds.Growl or sounds.Bark
+        if soundList and math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
+            local soundName = randomSound(soundList)
+            if soundName then
+                local volume = self:ShouldBMBWolfUseGrowlSound() and 0.72 or 0.68
+                self:EmitSound(soundName, 72, math.random(92, 108), volume)
+            end
+            self:ResetBMBAmbientSoundTime()
+            soundTime = self.BMBAmbientSoundTime
+        end
+
+        self.BMBAmbientSoundTime = soundTime + 1
+    end
+
+    self.BMBNextAmbientSoundTickAt = nextTick + ticks * tickInterval
+    if self.BMBNextAmbientSoundTickAt < now - tickInterval then
+        self.BMBNextAmbientSoundTickAt = now + tickInterval
+    end
+end
+
+ENT.WolfPreyClasses = {
+    bmb_sheep = true,
+    bmb_skeleton = true,
+    bmb_stray = true,
+    bmb_parched = true
+}
+
+function ENT:IsBMBWolfPrey(target)
+    if not IsValid(target) or target == self then return false end
+    if target.BMBDead then return false end
+    if target.Health and target:Health() <= 0 then return false end
+
+    local class = target:GetClass()
+    if not class then return false end
+
+    return self.WolfPreyClasses and self.WolfPreyClasses[class] == true
+end
+
+function ENT:ShouldBMBWolfRetaliatePlayer(target)
+    if self.WolfRetaliatePlayers == false then return false end
+    if not IsValid(target) or not target:IsPlayer() then return false end
+
+    local convar = self.WolfRetaliatePlayersConVar
+    if convar and not convar:GetBool() then return false end
+
+    return self:IsBMBCombatTarget(target)
+end
+
+function ENT:CanBMBTarget(target)
+    return self:IsBMBWolfPrey(target) or self:ShouldBMBWolfRetaliatePlayer(target)
+end
+
+function ENT:FindNearestWolfPrey(currentTarget)
+    local loseRange = self.TargetLoseRange or (self.TargetRange or 820) * 1.25
+    if BMB.Behaviors.SeekTarget.IsValid(self, currentTarget, loseRange) then
+        return currentTarget
+    end
+
+    local now = CurTime()
+    if self.NextTargetScanTime and now < self.NextTargetScanTime then return nil end
+    self.NextTargetScanTime = now + (self.TargetScanInterval or 0.35)
+
+    local range = self.TargetRange or 820
+    local origin = self:GetPos()
+    local bestTarget
+    local bestDistance = range * range
+
+    for _, ent in ipairs(ents.FindInSphere(origin, range)) do
+        if self:IsBMBWolfPrey(ent) and BMB.Behaviors.SeekTarget.IsValid(self, ent, range) then
+            local distance = origin:DistToSqr(ent:GetPos())
+            if distance < bestDistance then
+                bestTarget = ent
+                bestDistance = distance
+            end
+        end
+    end
+
+    return bestTarget
+end
+
+function ENT:GetBMBForcedLookTarget()
+    if self:CanBMBTarget(self.TargetEntity) then
+        return self.TargetEntity
+    end
+    return nil
+end
+
+function ENT:ShouldBreakBMBWolfInitialIdle()
+    local retaliation = self.BMBRetaliationTarget
+    if self:CanBMBTarget(retaliation)
+        and BMB.Behaviors.SeekTarget.IsValid(self, retaliation, self.TargetLoseRange or self.TargetRange) then
+        self.TargetEntity = retaliation
+        return true
+    end
+
+    local prey = self:FindNearestWolfPrey(self.TargetEntity)
+    if IsValid(prey) then
+        self.TargetEntity = prey
+        return true
+    end
+
+    return false
+end
+
+function ENT:RunBMBInitialIdle()
+    if self:ShouldBreakBMBWolfInitialIdle() then
+        self.BMBInitialIdleUntil = 0
+        self:SetNWBool("BMBWolfAngry", true)
+        return false
+    end
+
+    local idleUntil = self.BMBInitialIdleUntil
+    if not idleUntil or CurTime() >= idleUntil then return false end
+
+    self:SetBMBState("idle")
+    self:InterruptibleWait(math.min(0.2, math.max(0, idleUntil - CurTime())))
+    return true
+end
+
+function ENT:RunBMBWolfAI()
+    self.TargetEntity = self:FindNearestWolfPrey(self.TargetEntity)
+    self:SetNWBool("BMBWolfAngry", IsValid(self.TargetEntity))
+
+    if not IsValid(self.TargetEntity) then
+        self.TargetEntity = nil
+        self:SetBMBState("wander")
+        BMB.Behaviors.Wander.Run(self)
+        self:SetNWBool("BMBWolfAngry", IsValid(self.TargetEntity))
+        return
+    end
+
+    if BMB.Behaviors.MeleeAttack.Try(self, self.TargetEntity) then
+        coroutine.wait(0.05)
+        return
+    end
+
+    if BMB.Behaviors.Leap.Try(self, self.TargetEntity) then
+        return
+    end
+
+    if BMB.Behaviors.Pack.Run(self, self.TargetEntity) then
+        return
+    end
+
+    self:SetBMBState("chase")
+    if not BMB.Behaviors.Chase.Run(self, self.TargetEntity) then
+        if BMB.Behaviors.SeekTarget.IsValid(self, self.TargetEntity, self.TargetLoseRange or self.TargetRange) then
+            if BMB.Behaviors.Chase.StalkHighTarget(self, self.TargetEntity) then return end
+
+            self:SetBMBState("chase")
+            self:SetBMBMoveMode("chase_repath")
+            if BMB.Behaviors.Chase.TryRepathPressure then
+                BMB.Behaviors.Chase.TryRepathPressure(
+                    self,
+                    self.TargetEntity,
+                    self.RunSpeed,
+                    self.ChaseRepathProbeDistance or self:GetBMBBlockSize() * 1.5
+                )
+            end
+            coroutine.wait(self.ChaseFailureRepathDelay or 0.08)
+        else
+            self.TargetEntity = nil
+            self:SetNWBool("BMBWolfAngry", false)
+            self:InterruptibleWait(math.Rand(0.25, 0.55))
+        end
+    end
 end
 
 function ENT:RunBehaviour()
@@ -197,8 +705,7 @@ function ENT:RunBehaviour()
             self.BMBDebugMoveActive = false
         else
             self.BMBDebugMoveActive = false
-            self:SetBMBState("wander")
-            BMB.Behaviors.Wander.Run(self)
+            self:RunBMBWolfAI()
         end
 
         coroutine.yield()

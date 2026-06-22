@@ -628,7 +628,7 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 
 - **`loco:Jump()` 是状态开关，不只是视觉上抬**：Base hurt knockback 为了让羊有 MC 式受击上抬，会在 grounded hit 时调用 `loco:Jump()`。这会把 NextBot locomotion 切到 jumping/climbing 语义，后续一两 tick 里 `UpdateBMBActivityFromLocomotion`、chase 和 path_hop 都会看到“刚进入跳跃态”。
 - **追击态最容易暴露这个串味**：Zombie 被玩家打时通常马上保持 target 并回到 chase；如果站在 MC 方块顶面，短 knockback 后 chase/hop 管线立刻接管，受击上抬就可能被看成一次莫名跳跃。非追击状态因为没有马上接强移动，现象不明显。
-- **受击上抬必须按 mob opt-in**：友好/被动生物可保留 `KnockbackUseJump=true` 的上抬手感；Zombie 这类敌对追击怪当前关闭受击 jump-state，并把普通受击竖直速度置 0，只保留水平击退。注意这不影响 Zombie 命中玩家时给玩家的竖直击飞，那是独立的 melee player knockback。
+- **受击上抬由 hop 发起 gate 兜底**：早期为避开 chase 中空中误触 hop，Zombie 这类敌对追击怪曾关闭受击 jump-state 并把普通受击竖直速度置 0。现在 block hop 发起已要求严格落地，敌对家族可恢复 `KnockbackUseJump=true` 和 MC 式竖直上抬；Zombie 命中玩家时给玩家的竖直击飞仍是独立的 melee player knockback。
 
 ## 2026-06-15: Sheep sequence hookup is parked until the exporter is stable
 
@@ -680,9 +680,36 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **不要改模型材质/转换器来适配光影**：base Draw 统一乘 brightness，`mc_light_enable 0` 时 `SampleLighting` 返回 1，外观自然回原样。
 - **附属 clientside model 也要乘同一 brightness**：Skeleton 手上的弓不是 mob 主模型，必须通过同一个 helper 画，否则洞穴里会亮得穿帮。
 
+## 2026-06-22: Wolf Phase 2 target semantics
+
+- **Active prey scan and retaliation are separate target sources**: wild wolves actively scan only their prey allowlist (sheep + skeleton family). `CanBMBTarget()` may accept players so Base damage retaliation can write them into `TargetEntity`, but `FindNearestWolfPrey()` never scans players.
+- **Wolf player retaliation needs two switches**: `WolfRetaliatePlayers` is the per-entity/code switch future tame logic can turn off, while `bmb_wolf_retaliate_players 1/0` is the live server cvar for quick testing and screenshots.
+- **Skeleton-family flee should not permanently suppress retaliation**: wolf avoidance is still useful, but a valid damage-retaliation target should run before the flee-wolf branch. Otherwise skeletons attacked by wolves only flee and never shoot back.
+- **Encoded comments can hide real Lua code**: `bmb_skeleton` had a damaged comment line that swallowed `RangedAttack.Update(...)`. When touching those areas, prefer clean ASCII comments and guard scripts over editing inside mojibake lines.
+
+## 2026-06-22: Wolf Phase 3 leap semantics
+
+- **Leap is an attack burst, not pathfinding**: wolf leap may ignore support/cliff checks for close pounces across small gaps, but it is still not a general route solver. It only fires in a close/medium combat window, while grounded, with line of sight, small upward delta, short max distance, and a wall/body path-clear hull trace.
+- **Keep eligibility and launch separate**: `Leap.IsEligible` answers whether this frame may pounce; `Leap.Try` owns probability, cooldown, state/mode, jump-state, and velocity. That split keeps tuning and guard scripts simple.
+- **Use chance plus cooldown**: without both gates, a wolf will either chain-hop or feel deterministic. Current wolf defaults make pounces occasional while ordinary Chase/Melee still carry the fight.
+- **Do not hard-code wolf into the shared module**: wolves opt in through `Leap*` fields. Future jumpy mobs can reuse the same module with different ranges/speeds, or turn it off per tame/state logic.
+
+## 2026-06-22: Wolf Phase 4 pack/flank semantics
+
+- **Pack is light steering, not a formation solver**: BMB mobs already collide, so strict surround slots can create more blockage than value. The first slice only gives same-target wolves short flank destinations near the prey, and ordinary Chase remains the fallback.
+- **Membership must be local and target-based**: only same-class mobs around the target with `TargetEntity == target` count as pack members. Nearby idle wolves or wolves chasing another target should not perturb slots.
+- **Slots must be disposable**: target movement, blocked terrain, or A* failure should simply drop back to Chase. Pack must not cache a slot forever or override melee/leap windows.
+- **Pack belongs in shared behavior but is opt-in**: `BMB.Behaviors.Pack` is generic, while wolf enables it with `Pack*` fields. Future tame-state or per-mob rules can disable it without touching Chase.
+- **Overlap deadlocks are base-level, not wolf-only**: screenshots showed wolves/zombies stacked with `vel=0` while behavior still said chase/path. This is entity collision overlap, so the fix belongs in BaseMob as a lightweight separation push for all BMB mobs, not in pack slot logic.
+- **Group anger is a pack retaliation concern**: "hit one, nearby same-class mobs aggro" should be a reusable shared hook. Wolf enables it now; Zombie Pigman can later opt in via `PackRetaliationAlertEnabled` / radius fields without copying wolf logic.
+
 ## 2026-06-21: Wolf Phase 0 should replace the old stub, not extend it
 
 - **`bmb_wolf` 以前是 Skeleton 逃狼测试桩**：旧实现是 `base_anim` 小方块，只保证类名含 `wolf`。正式狼应直接替换这个类名为 `bmb_base_mob` NextBot，这样 Skeleton 的 `FindNearestWolfThreat()` 预留逻辑会自然继续生效。
 - **Wolf 只需要 setup 的旋转，不要烘 setup 的 position**：Bedrock `wolf_setup -> animation.wolf.setup` 里既有 body/upperBody 90°，也有 body/legs/tail position。把整段动画当通用 rest pose 会把 position 烘进 Source bind pose，游戏里表现为 body/legs 整组下陷、head 留在上方。正确做法是转换器的 wolf structural layout 只给 `body` / `upperBody` 设置总旋转 `(90,0,0)`，所有 `bind_pose_position` 保持 0；腿/尾位置交给原始 geo。
-- **Wolf 尾巴默认下垂角和摆动走客户端姿势层**：实测默认用 `bmb_wolf_tail_rot_z=-45`、`bmb_wolf_tail_pos_z=0`；走/跑时尾巴只在 `rot_x` 轴自然摆 `-40..40`，不要用 `rot_z` 做上下摆。不要为了尾巴重新烘 `wolf_setup` position，否则会重现身体/腿下陷。
+- **Wolf 默认姿势必须是代码 base pose，不是 archived convar 默认值**：实测默认尾巴 `Angle(0,0,-45)`、upperBody `pos_z=-10`。`CreateClientConVar(..., true)` 会保存玩家旧值；如果把标准姿势放进 convar 默认，用户把值归零后会永久盖掉代码默认。正确结构是 `wolfBasePose` 写死标准姿势，`bmb_wolf_<part>_offset_*` 只做微调偏移。死亡/tip 分支也要保留 body/upperBody/tail base pose，不要 reset 全部骨骼到零。
 - **Phase 0 只做基础移动和视觉骨骼**：不要把 prey targeting、leap、pack 先塞进 wolf 实体。薄调度链走 freeze/held/knockback/debug/stranded/initial idle/wander；combat 从 Phase 1 开始，leap/pack 必须是共享模块。
+- **Wolf Phase 1 不能直接用 player-only `SeekTarget.Find()`**：共享 seeker 目前只扫玩家；狼猎物是实体白名单（Sheep + Skeleton-family）。用 wolf 自己的 `FindNearestWolfPrey()` 扫 `ents.FindInSphere`，再复用共享 `Chase` / `MeleeAttack`。`CanBMBTarget()` 也只接受 wolf prey 白名单，避免受击反击把狼扩成通用敌对怪。
+- **命名校正**：Parched = 焦骸（已存在），Wither Skeleton = 凋零骷髅（未实现）；不要引入第三个中文名。Bogged/沼骸以后按 Skeleton-family 套皮/同逻辑处理。Phase 4 包抄不是硬要求，BMB NPC 目前有实体碰撞，不必为了 pack 队形过早复杂化。
+- **Wolf angry 材质不要硬绑死 chase 语义**：当前野狼追 prey 时 `BMBWolfAngry=true` 并用 `bmb_wolf_angry_texture` / `WolfAngryTextureOnChase` 控制 `wolf_angry.vtf/.vmt` 覆盖；未来驯服狼即使 chase 也不一定 angry，所以保留开关和 NW 条件，不要把材质切换写死成所有 `state=chase` 都触发。不要用 raw PNG `MaterialOverride`，会让模型隐身；先转 Source VTF/VMT。
+- **Chase 协程里目标可能中途被删除**：`Chase.Run` 开头的有效性检查不够，direct 段/等待之后目标可能已 NULL。任何 `target:GetPos()` 前都需要重新校验；本轮在 direct 后、path 前补了 `SeekTarget.IsValid()`，修玩家删羊后狼卡 `chase`/NULL entity 报错。

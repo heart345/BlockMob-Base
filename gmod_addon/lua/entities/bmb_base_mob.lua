@@ -56,6 +56,16 @@ ENT.Acceleration = 420
 ENT.Deceleration = 650
 ENT.CollisionMins = Vector(-16, -16, 0)
 ENT.CollisionMaxs = Vector(16, 16, 48)
+ENT.MobSeparationEnabled = true
+ENT.MobSeparationRadiusScale = 1.1
+ENT.MobSeparationSearchScale = 2.4
+ENT.MobSeparationMinSpeed = 35
+ENT.MobSeparationMaxSpeed = 95
+ENT.MobSeparationApproachDistance = 18
+ENT.MobSeparationPositionNudgeMinOverlap = 2
+ENT.MobSeparationPositionNudgeScale = 0.28
+ENT.MobSeparationPositionNudgeMax = 4
+ENT.MobSeparationVerticalOverlapScale = 0.75
 ENT.WaypointTimeout = 2.0
 ENT.GroundProbeHeight = 32
 ENT.GroundProbeDepth = 96
@@ -104,8 +114,13 @@ ENT.BlockHopManualForwardStartHeightScale = 0.8
 ENT.BlockHopManualPostLiftMinVzScale = 0.35
 ENT.BlockHopStepHeightScale = 0.49
 ENT.BlockHopAirSteerStrength = 0.08
+ENT.BlockHopLaunchGroundProbeUp = 4
+ENT.BlockHopLaunchGroundProbeDown = 8
+ENT.BlockHopLaunchGroundNormal = 0.65
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
 -- 重跳要赶在它把路径判死之前
+ENT.BlockHopPostKnockbackSuppressDuration = 1.0
+ENT.BlockHopPostKnockbackSuppressMoveDistanceScale = 0.7
 ENT.BlockHopRetryDelay = 0.25
 ENT.BlockHopMaxAttempts = 3
 ENT.MaxPathDropCells = 3
@@ -377,6 +392,9 @@ function ENT:BaseInitialize()
     self.BMBKnockbackUntil = 0
     self.BMBKnockbackVelocity = nil
     self.BMBLastLandTime = 0
+    self.BMBBlockHopSuppressUntil = 0
+    self.BMBBlockHopSuppressOrigin = nil
+    self.BMBKnockbackSuppressHopOnLand = false
     self.NextPhysicsImpactCheck = CurTime() + math.Rand(0, self.PhysicsImpactInterval or 0.3)
     self.PhysicsImpactTimes = {}
 
@@ -1291,6 +1309,116 @@ function ENT:MaintainBMBFreeze()
     return true
 end
 
+function ENT:GetBMBMobSeparationRadius()
+    local x = math.max(math.abs(self.CollisionMins.x), math.abs(self.CollisionMaxs.x))
+    local y = math.max(math.abs(self.CollisionMins.y), math.abs(self.CollisionMaxs.y))
+
+    return math.max(4, math.max(x, y) * (self.MobSeparationRadiusScale or 0.9))
+end
+
+function ENT:ShouldSeparateFromBMBMob(ent)
+    if not IsValid(ent) or ent == self then return false end
+    if not ent.IsBMBMob or ent.BMBDead or ent.BMBHeld then return false end
+    if self.BMBDead or self.BMBHeld then return false end
+
+    local selfHeight = math.max(1, self.CollisionMaxs.z - self.CollisionMins.z)
+    local otherHeight = ent.CollisionMaxs and ent.CollisionMins
+        and math.max(1, ent.CollisionMaxs.z - ent.CollisionMins.z)
+        or selfHeight
+    local verticalLimit = math.min(selfHeight, otherHeight) * (self.MobSeparationVerticalOverlapScale or 0.75)
+
+    return math.abs(self:GetPos().z - ent:GetPos().z) <= verticalLimit
+end
+
+function ENT:MaintainBMBMobSeparation()
+    if self.MobSeparationEnabled == false or self.BMBDead or self.BMBHeld then return false end
+    if not self.loco or not self.loco.SetVelocity then return false end
+
+    local origin = self:GetPos()
+    local ownRadius = self:GetBMBMobSeparationRadius()
+    local searchRadius = math.max(ownRadius * 2, ownRadius * (self.MobSeparationSearchScale or 2.4))
+    local push = Vector(0, 0, 0)
+    local strongest = 0
+    local deepestOverlap = 0
+
+    for _, ent in ipairs(ents.FindInSphere(origin, searchRadius)) do
+        if self:ShouldSeparateFromBMBMob(ent) then
+            local otherRadius = ent.GetBMBMobSeparationRadius and ent:GetBMBMobSeparationRadius() or ownRadius
+            local desired = math.max(ownRadius + otherRadius, 1)
+            local delta = origin - ent:GetPos()
+            delta.z = 0
+
+            local distanceSqr = delta:LengthSqr()
+            if distanceSqr < desired * desired then
+                local direction
+                local distance = math.sqrt(math.max(distanceSqr, 0))
+
+                if distance > 0.1 then
+                    direction = delta * (1 / distance)
+                else
+                    local selfIndex = self:EntIndex()
+                    local otherIndex = ent:EntIndex()
+                    local lowIndex = math.min(selfIndex, otherIndex)
+                    local highIndex = math.max(selfIndex, otherIndex)
+                    local angle = (lowIndex * 97 + highIndex * 53) % 360
+                    if selfIndex > otherIndex then angle = angle + 180 end
+
+                    angle = math.rad(angle)
+                    direction = Vector(math.cos(angle), math.sin(angle), 0)
+                    distance = 0
+                end
+
+                local strength = math.Clamp((desired - distance) / desired, 0, 1)
+                push = push + direction * strength
+                strongest = math.max(strongest, strength)
+                deepestOverlap = math.max(deepestOverlap, desired - distance)
+            end
+        end
+    end
+
+    if push:LengthSqr() <= 0.0001 then return false end
+
+    push:Normalize()
+
+    local probeDistance = self.MobSeparationApproachDistance or 18
+    local probeTarget = origin + push * probeDistance
+    probeTarget.z = origin.z
+    if self.IsMovementTargetSafe and not self:IsMovementTargetSafe(probeTarget, probeDistance) then
+        return false
+    end
+
+    local minNudgeOverlap = self.MobSeparationPositionNudgeMinOverlap or 2
+    if deepestOverlap >= minNudgeOverlap then
+        local nudge = math.Clamp(
+            deepestOverlap * (self.MobSeparationPositionNudgeScale or 0.28),
+            0,
+            self.MobSeparationPositionNudgeMax or 4
+        )
+
+        if nudge > 0.05 then
+            local nudgeTarget = origin + push * nudge
+            nudgeTarget.z = origin.z
+            if not self.IsMovementTargetSafe or self:IsMovementTargetSafe(nudgeTarget, math.max(nudge, 1)) then
+                self:SetPos(nudgeTarget)
+            end
+        end
+    end
+
+    local speed = math.Clamp(
+        (self.MobSeparationMinSpeed or 35) + strongest * ((self.MobSeparationMaxSpeed or 95) - (self.MobSeparationMinSpeed or 35)),
+        self.MobSeparationMinSpeed or 35,
+        self.MobSeparationMaxSpeed or 95
+    )
+    local velocity = self:GetVelocity()
+
+    self.loco:SetVelocity(Vector(push.x * speed, push.y * speed, velocity.z))
+    if self.loco.Approach then
+        self.loco:Approach(probeTarget, speed)
+    end
+
+    return true
+end
+
 function ENT:RunBehaviour()
     while true do
         coroutine.wait(0.2)
@@ -1347,6 +1475,7 @@ function ENT:Think()
             self.loco:SetVelocity(vector_origin)
         else
             self:CheckPhysicsImpacts()
+            self:MaintainBMBMobSeparation()
         end
 
         if not self.BMBDead and self.MaybePlayIdleSound then
@@ -1371,6 +1500,13 @@ end
 -- （轮询间隔里"已落地又起跳"会抖动）
 function ENT:OnLandOnGround(_)
     self.BMBLastLandTime = CurTime()
+
+    if self.BMBKnockbackSuppressHopOnLand then
+        self.BMBKnockbackSuppressHopOnLand = false
+        self.BMBBlockHopSuppressUntil = CurTime() + (self.BlockHopPostKnockbackSuppressDuration or 1.0)
+        self.BMBBlockHopSuppressOrigin = self:GetPos()
+    end
+
     self.CurrentMoveActivity = nil
     self:UpdateBMBActivityFromLocomotion()
 end
@@ -1541,6 +1677,7 @@ function ENT:StartBMBKnockback(damageInfo)
     local now = CurTime()
     local currentVelocity = self:GetVelocity()
     local verticalSpeed = self:GetBMBKnockbackVerticalVelocity(currentVelocity)
+    self.BMBKnockbackSuppressHopOnLand = verticalSpeed > currentVelocity.z + 8
 
     self.BMBKnockbackStartedAt = now
     self.BMBKnockbackUntil = now + (self.KnockbackDuration or 0.12)
@@ -2693,6 +2830,57 @@ function ENT:IsBMBOnGround()
     return groundTrace.Hit
 end
 
+function ENT:IsBMBBlockHopSuppressedAfterKnockback()
+    local suppressUntil = self.BMBBlockHopSuppressUntil or 0
+    if CurTime() >= suppressUntil then return false end
+
+    local origin = self.BMBBlockHopSuppressOrigin
+    if origin then
+        local moveDistance = self:GetBMBScaledDistance(
+            self.BlockHopPostKnockbackSuppressMoveDistance,
+            self.BlockHopPostKnockbackSuppressMoveDistanceScale,
+            0.7
+        )
+
+        if flatDistance(self:GetPos(), origin) >= moveDistance then
+            self.BMBBlockHopSuppressUntil = 0
+            self.BMBBlockHopSuppressOrigin = nil
+            return false
+        end
+    end
+
+    return true
+end
+
+function ENT:IsBMBBlockHopLaunchGrounded()
+    if self:IsBMBBlockHopSuppressedAfterKnockback() then
+        return false
+    end
+
+    if self.loco and self.loco.IsOnGround and not self.loco:IsOnGround() then
+        return false
+    end
+
+    local traceFilter = function(ent)
+        return self:ShouldSafetyTraceHit(ent)
+    end
+
+    local probeUp = self.BlockHopLaunchGroundProbeUp or 4
+    local probeDown = self.BlockHopLaunchGroundProbeDown or 8
+    local groundTrace = util.TraceHull({
+        start = self:GetPos() + Vector(0, 0, probeUp),
+        endpos = self:GetPos() - Vector(0, 0, probeDown),
+        mins = Vector(self.CollisionMins.x * 0.75, self.CollisionMins.y * 0.75, 0),
+        maxs = Vector(self.CollisionMaxs.x * 0.75, self.CollisionMaxs.y * 0.75, 4),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    return groundTrace.Hit
+        and not groundTrace.StartSolid
+        and groundTrace.HitNormal.z >= (self.BlockHopLaunchGroundNormal or 0.65)
+end
+
 function ENT:IsBMBPathActionAtTargetLevel(node)
     if not node or not node.coord then return true end
     if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock then return true end
@@ -3253,6 +3441,10 @@ function ENT:MaintainBMBManualBlockHop(carrot, speed, progressWatch)
 end
 
 function ENT:StartBMBBlockHop(target, speed, launch)
+    if not self:IsBMBBlockHopLaunchGrounded() then
+        return false, false
+    end
+
     local blockSize = self:GetBMBBlockSize()
     local gravity = 600
     if self.loco and self.loco.GetGravity then
@@ -3276,7 +3468,7 @@ function ENT:StartBMBBlockHop(target, speed, launch)
     self:FaceTarget(Vector(target.x, target.y, self:GetPos().z))
     self:BeginBMBHopDebug(launch and launch.nodeIndex, target, launch, false)
 
-    return false
+    return false, true
 end
 
 function ENT:SteerBMBInAir(target, speed, progressWatch)
@@ -3494,12 +3686,17 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
         if activeAction == "hop" then
             local triggerDistance = self.BlockHopTriggerDistance or blockSize * (self.BlockHopLaunchMaxDistanceScale or 1.4)
-            local onGround = self:IsBMBOnGround()
+            local hopSuppressed = self:IsBMBBlockHopSuppressedAfterKnockback()
+            local onGround = not hopSuppressed and self:IsBMBBlockHopLaunchGrounded()
             -- loco:Jump() 会同步置跳跃态，用它代替时间猜的"起跳保护窗"：
             -- 跳跃态内不交回 Approach（地面驱动会和跳跃打架），状态和真实物理一致
             local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
             local manualAirControl = CurTime() < (self.BMBBlockHopAirControlUntil or 0)
             local hopSetupSteered = false
+
+            if hopSuppressed then
+                self:SetBMBMoveMode("path_hop_suppressed")
+            end
 
             -- 跳过却落回地面且节点没推进 = 这一跳撞在方块面上掉回来了。
             -- 重跳延时从 OnLandOnGround 回调时刻起算（物理给的时序，不靠轮询猜抖动）；
@@ -3520,18 +3717,21 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                 end
             end
 
-            if not hopStartedAt[nodeIndex] and onGround and not jumping
+            if not hopSuppressed and not hopStartedAt[nodeIndex] and onGround and not jumping
                 and flatDistance(current, actionNode) <= triggerDistance then
                 local launch = self:GetBMBHopLaunchControl(current, actionNode, pathSpeed, waypoints[nodeIndex - 1])
                 launch.nodeIndex = nodeIndex
                 self:LogBMBHopSetup(nodeIndex, launch, current, actionNode)
 
                 if launch.ready then
-                    hopNative[nodeIndex] = self:StartBMBBlockHop(actionNode, pathSpeed, launch)
-                    hopStartedAt[nodeIndex] = CurTime()
-                    hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
-                    -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
-                    jumping = true
+                    local nativeHop, hopStarted = self:StartBMBBlockHop(actionNode, pathSpeed, launch)
+                    if hopStarted then
+                        hopNative[nodeIndex] = nativeHop
+                        hopStartedAt[nodeIndex] = CurTime()
+                        hopAttempts[nodeIndex] = (hopAttempts[nodeIndex] or 0) + 1
+                        -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
+                        jumping = true
+                    end
                 else
                     self:UpdateBMBApproachDebug(launch.target, nodeIndex)
                     self:SteerTowards(launch.target, progressWatch)
@@ -3544,7 +3744,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             if not hopSetupSteered then
                 local manualHopHandled = self:MaintainBMBManualBlockHop(carrot, pathSpeed, progressWatch)
 
-                if not manualHopHandled and (jumping or manualAirControl or not onGround) then
+                if not manualHopHandled and (jumping or manualAirControl or (not onGround and not hopSuppressed)) then
                     if hopNative[nodeIndex] then
                         self:MaintainBMBNativeHop(carrot, progressWatch)
                     else
@@ -4059,6 +4259,9 @@ function ENT:TryBMBRetaliate(damageInfo)
     self.BMBRetaliationTarget = attacker
     self.BMBRetaliationStartedAt = CurTime()
     self.NextTargetScanTime = 0
+    if BMB and BMB.Behaviors and BMB.Behaviors.Pack and BMB.Behaviors.Pack.AlertAlliesOnRetaliation then
+        BMB.Behaviors.Pack.AlertAlliesOnRetaliation(self, attacker)
+    end
 
     return true
 end

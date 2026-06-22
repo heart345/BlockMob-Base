@@ -117,11 +117,11 @@ ENT.LookAtPitchSign = -1
 ENT.LookAtPitchLimit = 35
 ENT.LookAtEyeHeight = 64
 
--- 受击不转成跳跃（同僵尸，敌对怪）。延长击退窗口让被打后退后明显（aim 怪打完会立刻停下，0.12s 推不动）。
-ENT.KnockbackUseJump = false
-ENT.KnockbackVerticalSpeedScale = 0
-ENT.KnockbackVerticalMinSpeed = 0
-ENT.KnockbackVerticalMaxSpeed = 0
+-- Hop launch is now grounded-gated, so hostile hurt knockback can keep MC-style lift.
+ENT.KnockbackUseJump = true
+ENT.KnockbackVerticalSpeedScale = 6
+ENT.KnockbackVerticalMinSpeed = 170
+ENT.KnockbackVerticalMaxSpeed = 240
 ENT.KnockbackDuration = 0.35
 
 -- MC ambient 概率模型（同僵尸）。
@@ -500,7 +500,22 @@ function ENT:RunBehaviour()
     end
 end
 
-function ENT:RunBMBSkeletonAI()
+function ENT:RunBMBSkeletonRetaliationTarget()
+    local target = self.BMBRetaliationTarget
+    if not BMB.Behaviors.SeekTarget.IsValid(self, target, self.TargetLoseRange or self.TargetRange) then
+        return false
+    end
+
+    self.TargetEntity = target
+    self:SetNWBool("BMBSkeletonArmed", true)
+    BMB.Behaviors.RangedAttack.Update(self, target)
+    return true
+end
+
+function ENT:RunBMBSkeletonAILegacyMojibake()
+    if self:RunBMBSkeletonRetaliationTarget() then return end
+
+    local wolf = self:FindNearestWolfThreat()
     -- 1) 逃狼抢占一切（即使有玩家目标也先逃，不清 TargetEntity）。
     local wolf = self:FindNearestWolfThreat()
     if IsValid(wolf) then
@@ -524,6 +539,29 @@ function ENT:RunBMBSkeletonAI()
     -- 4) 有目标 → 远程战斗（内部据距离/视线在 chase↔aim 切换 + strafe + 拉弓放箭）。
     -- 不在此 coroutine.wait：chase 段间的额外停顿会让 chase_direct 一走一停、速度上不满；
     -- RunBehaviour 每轮已 coroutine.yield，aim/strafe 逐 tick、chase 段背靠背连续。
+    BMB.Behaviors.RangedAttack.Update(self, self.TargetEntity)
+end
+
+function ENT:RunBMBSkeletonAI()
+    if self:RunBMBSkeletonRetaliationTarget() then return end
+
+    local wolf = self:FindNearestWolfThreat()
+    if IsValid(wolf) then
+        self:SetBMBState("flee")
+        self.FleeUntil = CurTime() + math.Rand(self.FleeDurationMin or 2.0, self.FleeDurationMax or 2.5)
+        BMB.Behaviors.Flee.Run(self, wolf)
+        return
+    end
+
+    self.TargetEntity = BMB.Behaviors.SeekTarget.Find(self, self.TargetEntity)
+    self:SetNWBool("BMBSkeletonArmed", IsValid(self.TargetEntity))
+
+    if not IsValid(self.TargetEntity) then
+        self:SetBMBState("wander")
+        BMB.Behaviors.Wander.Run(self)
+        return
+    end
+
     BMB.Behaviors.RangedAttack.Update(self, self.TargetEntity)
 end
 

@@ -54,6 +54,9 @@ Assert-Contains $zombie "function\s+ENT:CanBMBTarget\(target\)\s*[\r\n]+\s*retur
 Assert-Contains $skeleton "function\s+ENT:CanBMBTarget\(target\)\s*[\r\n]+\s*return self:IsBMBCombatTarget\(target\)" "Skeleton targeting must accept generic combat targets, not only players"
 Assert-Contains $zombie "self:CanBMBTarget\(self\.TargetEntity\)" "Zombie forced look should follow any current combat target"
 Assert-Contains $skeleton "self:CanBMBTarget\(self\.TargetEntity\)" "Skeleton forced look should follow any current combat target"
+Assert-Contains $skeleton "function\s+ENT:RunBMBSkeletonRetaliationTarget\s*\(" "Skeleton-family flee should allow a damage-retaliation target to take priority"
+Assert-Contains $skeleton "self\.TargetEntity\s*=\s*target" "Skeleton-family retaliation should write the shared target slot before ranged combat"
+Assert-Contains $skeleton "BMB\.Behaviors\.RangedAttack\.Update\(self,\s*target\)" "Skeleton-family retaliation should shoot the attacker through shared ranged combat"
 
 Assert-NotContains $zombie "function\s+ENT:OnBMBInjured\(damageInfo,\s*_\)[\s\S]*self\.TargetEntity\s*=\s*attacker" "Zombie must not keep per-mob retaliation target logic"
 Assert-NotContains $skeleton "function\s+ENT:OnBMBInjured\(damageInfo,\s*_\)[\s\S]*self\.TargetEntity\s*=\s*attacker" "Skeleton must not keep per-mob retaliation target logic"
