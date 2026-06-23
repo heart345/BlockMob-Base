@@ -76,6 +76,8 @@ Assert-Contains $behaviors 'function\s+BMB\.Behaviors\.Pack\.GetFlankDestination
 Assert-Contains $behaviors 'FindNearestStandable' "Shared pack flank slots should snap to nearby standable cells instead of raw unsupported offsets."
 Assert-Contains $behaviors 'function\s+BMB\.Behaviors\.Pack\.Run\(mob,\s*target\)' "Shared pack should expose a short blocking movement slice."
 Assert-Contains $behaviors 'function\s+BMB\.Behaviors\.Pack\.AlertAlliesOnRetaliation\(mob,\s*attacker\)' "Shared pack should expose reusable ally alert on damage retaliation."
+Assert-Contains $behaviors 'mob\.PackRetaliationAlertEnabled\s*~=\s*true' "Pack retaliation alert must be explicit opt-in so zombies/skeletons do not group-aggro by default."
+Assert-Contains $behaviors 'ally\.PackRetaliationAlertEnabled\s*==\s*true' "Only explicitly opted-in allies should receive pack retaliation alerts."
 Assert-Contains $base 'function ENT:MaintainBMBMobSeparation\(\)' "Base mobs should apply a lightweight separation push when BMB mobs overlap."
 Assert-Contains $base 'ents\.FindInSphere\(origin,\s*searchRadius\)' "Base mob separation should look for nearby overlapping BMB mobs."
 Assert-Contains $base 'MaintainBMBMobSeparation\(\)' "Base Think should run mob separation for every living unheld BMB mob."

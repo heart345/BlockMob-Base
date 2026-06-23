@@ -42,6 +42,27 @@ local function randomSound(list)
     return list[math.random(#list)]
 end
 
+local function applyLocalAngleOffset(angle, offset)
+    offset = offset or angle_zero
+
+    local result = Angle(angle.p, angle.y, angle.r)
+    if offset.p ~= 0 then result:RotateAroundAxis(result:Right(), offset.p) end
+    if offset.y ~= 0 then result:RotateAroundAxis(result:Up(), offset.y) end
+    if offset.r ~= 0 then result:RotateAroundAxis(result:Forward(), offset.r) end
+
+    return result
+end
+
+function ENT:GetBMBArrowFlightAngle(velocity)
+    if not velocity or velocity:LengthSqr() <= 1 then return self:GetAngles() end
+
+    return applyLocalAngleOffset(velocity:Angle(), self.ArrowModelAngleOffset)
+end
+
+function ENT:UpdateBMBArrowFlightAngle(velocity)
+    self:SetAngles(self:GetBMBArrowFlightAngle(velocity or self.BMBArrowVelocity))
+end
+
 function ENT:Initialize()
     self:SetModel(self.Model)
 
@@ -74,7 +95,7 @@ if SERVER then
         end
 
         self.BMBArrowVelocity = ang:Forward() * speed
-        self:SetAngles(self.BMBArrowVelocity:Angle() + (self.ArrowModelAngleOffset or angle_zero))
+        self:UpdateBMBArrowFlightAngle(self.BMBArrowVelocity)
     end
 
     function ENT:PlayBMBArrowHitSound()
@@ -91,7 +112,7 @@ if SERVER then
         local vel = self.BMBArrowVelocity or vector_origin
         local dir = vel:GetNormalized()
         -- 角度保持命中那刻（已对着表面），位置摆到命中点再沿飞行方向推入一点（箭头埋进表面）。
-        self:SetAngles(dir:Angle() + (self.ArrowModelAngleOffset or angle_zero))
+        self:UpdateBMBArrowFlightAngle(vel)
         self:SetPos(hitPos + dir * (self.ArrowEmbedDepth or 8))
         self:SetMoveType(MOVETYPE_NONE)
         self:SetSolid(SOLID_NONE)
@@ -117,6 +138,7 @@ if SERVER then
         local vel = self.BMBArrowVelocity or vector_origin
         vel.z = vel.z - (self.ArrowGravity or 320) * dt
         self.BMBArrowVelocity = vel
+        self:UpdateBMBArrowFlightAngle(vel)
 
         local pos = self:GetPos()
         local newPos = pos + vel * dt
@@ -171,7 +193,6 @@ if SERVER then
         end
 
         self:SetPos(newPos)
-        self:SetAngles(vel:Angle() + (self.ArrowModelAngleOffset or angle_zero))
 
         if CurTime() >= (self.BMBArrowDie or 0) then
             if shouldLogRanged() then

@@ -2047,3 +2047,16 @@
 - Fixed first: Base block-hop launch now uses `IsBMBBlockHopLaunchGrounded()` and `StartBMBBlockHop()` refuses airborne launches before `loco:Jump()`. Blocked launches are not counted as started attempts.
 - Payoff: Zombie/Husk and Skeleton/Stray/Parched restored `KnockbackUseJump=true` with 170-240u/s vertical hurt lift.
 - Guards updated: `scripts/check_hop_debug_gap_regressions.ps1`, `scripts/check_damage_iframes_knockback.ps1`, `scripts/check_zombie_phase2_attack_audio.ps1`.
+
+## 2026-06-23 Arrow orientation polish and pack retaliation gate
+
+- User reported arrow visuals looked fine face-to-face but exposed a fixed-looking orientation on high/low shots.
+  - `bmb_arrow` now updates model angle from current velocity on launch, every gravity-integrated flight tick, and when sticking into a surface.
+  - `ArrowModelAngleOffset` is applied through local-axis rotation instead of raw Euler addition, so the visual arrow follows the parabolic velocity direction while ballistics stay unchanged.
+- User also found the shared group-retaliation hook was too broad: one Zombie/Skeleton-family mob taking friendly fire could make all nearby same-class mobs abandon their current target.
+  - `BMB.Behaviors.Pack.AlertAlliesOnRetaliation()` now requires `PackRetaliationAlertEnabled=true` on the damaged mob and on each ally before broadcasting.
+  - Individual base retaliation still works: the mob that was hit can target its attacker.
+  - Wolf keeps group anger because `bmb_wolf` opts in; future Zombie Pigman can opt in with the same fields.
+  - Zombie/Skeleton/Husk/Stray/Parched no longer group-switch by default.
+- Guard updated: `scripts/check_wolf_phase0.ps1` now asserts pack retaliation is explicit opt-in.
+- Synced changed Lua files to the live D-drive addon for testing.

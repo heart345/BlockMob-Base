@@ -270,5 +270,11 @@ Phase 2
   - [x] Wolf opts in after melee/leap and before ordinary chase; pack only engages with 2+ wolves and falls back to chase on failure.
   - [x] Base mob overlap separation: all BMB mobs get a lightweight per-tick push when stacked, preventing multi-mob overlap deadlocks.
   - [x] Shared pack retaliation alert: wolf can call nearby wolves into combat when a player attacks one; future Zombie Pigman can reuse the same hook.
+  - [x] Pack retaliation alert is explicit opt-in (`PackRetaliationAlertEnabled=true` on caller and ally), so Zombie/Skeleton-family friendly fire no longer causes broad same-class group aggro by default.
   - [x] Pack/flank behavior remains a soft design target, not a strict formation system while BMB NPCs have real mutual collision.
   - [ ] Game retest: two or more wolves should spread around one prey target without harming single-wolf chase/leap.
+
+## 2026-06-23 Completed
+
+- [x] Arrow visual orientation polish: `bmb_arrow` follows current velocity on launch/flight/stick with local-axis `ArrowModelAngleOffset`; projectile physics unchanged.
+- [x] Pack retaliation broadcast gated to explicit opt-in; wolf stays enabled, future Zombie Pigman can opt in, Zombie/Skeleton-family mobs keep only individual retaliation by default.

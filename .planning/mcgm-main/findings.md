@@ -702,6 +702,8 @@ lua_refresh_file addons/gmod_addon/lua/entities/mcgm_zombie.lua
 - **Pack belongs in shared behavior but is opt-in**: `BMB.Behaviors.Pack` is generic, while wolf enables it with `Pack*` fields. Future tame-state or per-mob rules can disable it without touching Chase.
 - **Overlap deadlocks are base-level, not wolf-only**: screenshots showed wolves/zombies stacked with `vel=0` while behavior still said chase/path. This is entity collision overlap, so the fix belongs in BaseMob as a lightweight separation push for all BMB mobs, not in pack slot logic.
 - **Group anger is a pack retaliation concern**: "hit one, nearby same-class mobs aggro" should be a reusable shared hook. Wolf enables it now; Zombie Pigman can later opt in via `PackRetaliationAlertEnabled` / radius fields without copying wolf logic.
+- **Group anger must be explicit opt-in**: base retaliation is per-mob, while pack retaliation is a broadcast. The shared hook must require `PackRetaliationAlertEnabled=true` on the damaged mob and each ally; otherwise Zombie/Skeleton-family friendly fire turns into accidental global same-class target switching.
+- **Arrow model offsets should be local-axis offsets**: `velocity:Angle() + offset` can look acceptable on flat shots but breaks down on steep high/low shots. Compute the visual angle from current velocity and rotate the offset around the arrow's local Right/Up/Forward axes each tick; this changes rendering only, not projectile physics.
 
 ## 2026-06-21: Wolf Phase 0 should replace the old stub, not extend it
 

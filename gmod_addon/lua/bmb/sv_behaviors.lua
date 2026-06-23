@@ -636,7 +636,7 @@ end
 
 function BMB.Behaviors.Pack.AlertAlliesOnRetaliation(mob, attacker)
     if not IsValid(mob) or not IsValid(attacker) then return 0 end
-    if mob.PackRetaliationAlertEnabled == false then return 0 end
+    if mob.PackRetaliationAlertEnabled ~= true then return 0 end
 
     local radius = getPackDistance(mob, "PackRetaliationAlertRadius", "PackRetaliationAlertRadiusCells", 8.0)
     local packClass = mob.PackClass or mob:GetClass()
@@ -647,7 +647,7 @@ function BMB.Behaviors.Pack.AlertAlliesOnRetaliation(mob, attacker)
             and ally ~= mob
             and ally:GetClass() == packClass
             and not ally.BMBDead
-            and ally.PackRetaliationAlertEnabled ~= false
+            and ally.PackRetaliationAlertEnabled == true
             and (not ally.CanBMBTarget or ally:CanBMBTarget(attacker)) then
             ally.TargetEntity = attacker
             ally.BMBRetaliationTarget = attacker
