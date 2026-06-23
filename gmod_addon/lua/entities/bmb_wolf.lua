@@ -99,10 +99,8 @@ ENT.WolfTailSwingXDegrees = 40
 ENT.LookAtEyeHeight = 27
 ENT.LookAtPitchLimit = 22
 ENT.LookAroundPitchLimit = 12
-ENT.WolfAngryTextureOnChase = true
+ENT.WolfAngrySkinOnChase = true
 ENT.WolfRetaliatePlayers = true
-ENT.WolfNormalMaterial = "models/mcgm/wolf/wolf"
-ENT.WolfAngryMaterial = "models/mcgm/wolf/wolf_angry"
 
 ENT.Sounds = {
     Step = {
@@ -118,6 +116,15 @@ ENT.Sounds = {
         "bmb/damage/hit3.ogg"
     }
 }
+
+local wolfSkinVariants = { "woods", "ashen", "black", "chestnut", "rusty", "snowy", "spotted", "striped", "classic" }
+local wolfSkinVariantIds = {}
+for index, variant in ipairs(wolfSkinVariants) do
+    wolfSkinVariantIds[variant] = index - 1
+end
+
+ENT.WolfSkinVariants = wolfSkinVariants
+ENT.WolfDefaultSkinVariant = "woods"
 
 local function randomSound(list)
     if not list or #list == 0 then return nil end
@@ -202,6 +209,162 @@ if SERVER then
         FCVAR_ARCHIVE,
         "Allow wild BMB wolves to target players who damage them."
     )
+    ENT.WolfVariantLockConVar = CreateConVar(
+        "bmb_wolf_variant_lock",
+        "",
+        FCVAR_ARCHIVE,
+        "Lock BMB wolf skin variant by name or zero-based index; empty uses weighted random."
+    )
+    ENT.WolfVariantWeightConVars = {}
+    for _, variant in ipairs(wolfSkinVariants) do
+        ENT.WolfVariantWeightConVars[variant] = CreateConVar(
+            "bmb_wolf_variant_weight_" .. variant,
+            "1",
+            FCVAR_ARCHIVE,
+            "Spawn weight for the BMB wolf " .. variant .. " skin variant."
+        )
+    end
+end
+
+local entitySetSkin = FindMetaTable("Entity").SetSkin
+
+local function wolfVariantNameFromValue(value)
+    local text = string.lower(tostring(value or "")):gsub("%s+", "_")
+    if text == "" or text == "random" or text == "none" then return nil end
+    if text == "pale" then text = "classic" end
+    if wolfSkinVariantIds[text] ~= nil then return text end
+
+    local numeric = tonumber(text)
+    if numeric then
+        local index = math.Clamp(math.floor(numeric), 0, #wolfSkinVariants - 1)
+        return wolfSkinVariants[index + 1]
+    end
+
+    return nil
+end
+
+function ENT:GetBMBWolfSkinVariantName(index)
+    index = math.Clamp(math.floor(tonumber(index) or 0), 0, #wolfSkinVariants - 1)
+    return wolfSkinVariants[index + 1] or self.WolfDefaultSkinVariant or "woods"
+end
+
+function ENT:GetBMBWolfSkinVariantIndex(name)
+    local normalized = wolfVariantNameFromValue(name)
+    if normalized and wolfSkinVariantIds[normalized] ~= nil then
+        return wolfSkinVariantIds[normalized]
+    end
+
+    return wolfSkinVariantIds[self.WolfDefaultSkinVariant or "woods"] or 0
+end
+
+function ENT:GetBMBWolfLockedSkinVariant()
+    local convar = self.WolfVariantLockConVar
+    if not convar then return nil end
+    return wolfVariantNameFromValue(convar:GetString())
+end
+
+function ENT:ChooseBMBWolfSkinVariant()
+    local locked = self:GetBMBWolfLockedSkinVariant()
+    if locked then return self:GetBMBWolfSkinVariantIndex(locked) end
+
+    local total = 0
+    local weights = self.WolfVariantWeightConVars or {}
+    for _, variant in ipairs(wolfSkinVariants) do
+        local convar = weights[variant]
+        total = total + math.max(0, convar and convar:GetFloat() or 1)
+    end
+
+    if total <= 0 then
+        return self:GetBMBWolfSkinVariantIndex(self.WolfDefaultSkinVariant)
+    end
+
+    local roll = math.Rand(0, total)
+    local accumulated = 0
+    for index, variant in ipairs(wolfSkinVariants) do
+        local convar = weights[variant]
+        accumulated = accumulated + math.max(0, convar and convar:GetFloat() or 1)
+        if roll <= accumulated then return index - 1 end
+    end
+
+    return self:GetBMBWolfSkinVariantIndex(self.WolfDefaultSkinVariant)
+end
+
+function ENT:GetBMBWolfSkinVariant()
+    local variant = self.variant
+    if variant == nil then variant = self.BMBWolfVariant end
+    if variant == nil then variant = self:GetNWInt("BMBWolfVariant", 0) end
+    return math.Clamp(math.floor(tonumber(variant) or 0), 0, #wolfSkinVariants - 1)
+end
+
+function ENT:SetBMBWolfSkinVariant(index)
+    if CLIENT then return end
+
+    local variant = math.Clamp(math.floor(tonumber(index) or 0), 0, #wolfSkinVariants - 1)
+    self.variant = variant
+    self.BMBWolfVariant = variant
+    self:SetNWInt("BMBWolfVariant", variant)
+    self:SetNWString("BMBWolfVariantName", self:GetBMBWolfSkinVariantName(variant))
+    self:UpdateBMBWolfSkin()
+end
+
+function ENT:GetBMBWolfDesiredSkin()
+    local angry = self:GetNWBool("BMBWolfAngry", false) and 1 or 0
+    return self:GetBMBWolfSkinVariant() * 2 + angry
+end
+
+function ENT:SetBMBWolfRawSkin(skin)
+    if not entitySetSkin then return end
+
+    self.BMBWolfApplyingSkin = true
+    entitySetSkin(self, skin)
+    self.BMBWolfApplyingSkin = false
+    self.BMBWolfLastSkin = skin
+end
+
+function ENT:UpdateBMBWolfSkin()
+    if CLIENT then return end
+
+    local skin = self:GetBMBWolfDesiredSkin()
+    self:SetBMBWolfRawSkin(skin)
+end
+
+function ENT:ApplyBMBWolfSkinToolSkin(skin)
+    if CLIENT then return end
+
+    local maxSkin = #wolfSkinVariants * 2 - 1
+    local skinIndex = math.Clamp(math.floor(tonumber(skin) or 0), 0, maxSkin)
+    self:SetBMBWolfSkinVariant(math.floor(skinIndex / 2))
+end
+
+function ENT:MaintainBMBWolfSkin()
+    if CLIENT then return end
+
+    local desired = self:GetBMBWolfDesiredSkin()
+    local actual = self:GetSkin() or 0
+    if actual ~= desired and actual ~= self.BMBWolfLastSkin then
+        self:ApplyBMBWolfSkinToolSkin(actual)
+        return
+    end
+
+    if actual ~= desired then
+        self:SetBMBWolfRawSkin(desired)
+    else
+        self.BMBWolfLastSkin = actual
+    end
+end
+
+function ENT:SetBMBWolfAngry(angry)
+    if CLIENT then return end
+
+    self:SetNWBool("BMBWolfAngry", angry == true and self.WolfAngrySkinOnChase ~= false)
+    self:UpdateBMBWolfSkin()
+end
+
+function ENT:SetSkin(skin)
+    if entitySetSkin then entitySetSkin(self, skin) end
+    if SERVER and not self.BMBWolfApplyingSkin then
+        self:ApplyBMBWolfSkinToolSkin(skin)
+    end
 end
 
 if CLIENT then
@@ -214,7 +377,6 @@ if CLIENT then
         tail = { angle = Angle(0, 0, -45), pos = Vector(0, 0, 0) }
     }
     local wolfPoseConVars = {}
-    local angryTextureConVar = CreateClientConVar("bmb_wolf_angry_texture", "1", true, false)
 
     local function createWolfPoseOffsetConVars(prefix)
         return {
@@ -387,47 +549,6 @@ if CLIENT then
         self:EmitSound(soundName, self.StepSoundLevel or 62, math.random(self.StepSoundPitchMin or 88, self.StepSoundPitchMax or 112), volume)
     end
 
-    function ENT:GetBMBWolfAngryMaterial()
-        local materialPath = self.WolfAngryMaterial or ""
-        if materialPath == "" then return nil end
-
-        if self.BMBWolfAngryMaterialPath ~= materialPath then
-            self.BMBWolfAngryMaterialPath = materialPath
-            self.BMBWolfAngryMaterial = Material(materialPath, "smooth")
-        end
-
-        if not self.BMBWolfAngryMaterial or self.BMBWolfAngryMaterial:IsError() then return nil end
-        return self.BMBWolfAngryMaterial
-    end
-
-    function ENT:ShouldUseBMBWolfAngryMaterial()
-        local state = self:GetNWString("BMBState", "idle")
-        return self.WolfAngryTextureOnChase ~= false
-            and angryTextureConVar:GetBool()
-            and self:GetNWBool("BMBWolfAngry", false)
-            and (state == "chase" or state == "attack" or state == "leap")
-    end
-
-    function ENT:Draw()
-        local angryMaterial = self:ShouldUseBMBWolfAngryMaterial() and self:GetBMBWolfAngryMaterial() or nil
-        if angryMaterial then render.MaterialOverride(angryMaterial) end
-
-        local base = scripted_ents.GetStored("bmb_base_mob")
-        if base and base.t and base.t.Draw then
-            base.t.Draw(self)
-        elseif self.DrawBMBModelWithMCLight then
-            self:DrawBMBModelWithMCLight()
-        else
-            self:DrawModel()
-        end
-
-        if angryMaterial then render.MaterialOverride(nil) end
-    end
-
-    -- Kept as a named hook point for future tame-state texture rules.
-    function ENT:UpdateBMBWolfMaterial()
-        return self:ShouldUseBMBWolfAngryMaterial()
-    end
 end
 
 function ENT:Initialize()
@@ -438,6 +559,7 @@ function ENT:Initialize()
     self.TargetEntity = nil
     self.NextTargetScanTime = 0
     self.NextMeleeAttackTime = 0
+    self:SetBMBWolfSkinVariant(self:ChooseBMBWolfSkinVariant())
     self.BMBWolfSoundVariant = self:ChooseBMBWolfSoundVariant()
     self:SetNWString("BMBWolfSoundVariant", self.BMBWolfSoundVariant)
     self:ResetBMBAmbientSoundTime()
@@ -500,6 +622,8 @@ function ENT:ResetBMBAmbientSoundTime()
 end
 
 function ENT:MaybePlayIdleSound()
+    self:MaintainBMBWolfSkin()
+
     local sounds = self:GetBMBWolfSounds()
     if not sounds then return end
 
@@ -625,7 +749,7 @@ end
 function ENT:RunBMBInitialIdle()
     if self:ShouldBreakBMBWolfInitialIdle() then
         self.BMBInitialIdleUntil = 0
-        self:SetNWBool("BMBWolfAngry", true)
+        self:SetBMBWolfAngry(true)
         return false
     end
 
@@ -639,13 +763,13 @@ end
 
 function ENT:RunBMBWolfAI()
     self.TargetEntity = self:FindNearestWolfPrey(self.TargetEntity)
-    self:SetNWBool("BMBWolfAngry", IsValid(self.TargetEntity))
+    self:SetBMBWolfAngry(IsValid(self.TargetEntity))
 
     if not IsValid(self.TargetEntity) then
         self.TargetEntity = nil
         self:SetBMBState("wander")
         BMB.Behaviors.Wander.Run(self)
-        self:SetNWBool("BMBWolfAngry", IsValid(self.TargetEntity))
+        self:SetBMBWolfAngry(IsValid(self.TargetEntity))
         return
     end
 
@@ -680,7 +804,7 @@ function ENT:RunBMBWolfAI()
             coroutine.wait(self.ChaseFailureRepathDelay or 0.08)
         else
             self.TargetEntity = nil
-            self:SetNWBool("BMBWolfAngry", false)
+            self:SetBMBWolfAngry(false)
             self:InterruptibleWait(math.Rand(0.25, 0.55))
         end
     end

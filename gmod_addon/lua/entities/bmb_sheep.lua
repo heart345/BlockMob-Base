@@ -90,10 +90,65 @@ local function randomSound(list)
     return list[math.random(1, #list)]
 end
 
+local sheepSpawnColors = {
+    { name = "white", label = "White", weight = 45918, color = Color(255, 255, 255) },
+    { name = "black", label = "Black", weight = 44918, color = Color(26, 26, 26) },
+    { name = "brown", label = "Brown", weight = 43918, color = Color(102, 76, 51) },
+    { name = "gray", label = "Gray", weight = 7500, color = Color(76, 76, 76) },
+    { name = "light_gray", label = "Light gray", weight = 7500, color = Color(153, 153, 153) },
+    { name = "pink", label = "Pink", weight = 246, color = Color(242, 128, 166) }
+}
+
+local sheepSpawnColorWeights = {}
+
+if SERVER then
+    for _, entry in ipairs(sheepSpawnColors) do
+        sheepSpawnColorWeights[entry.name] = CreateConVar(
+            "bmb_sheep_color_weight_" .. entry.name,
+            tostring(entry.weight),
+            FCVAR_ARCHIVE,
+            "Spawn weight for naturally colored " .. entry.label .. " BMB sheep."
+        )
+    end
+end
+
+local function getSheepSpawnColorWeight(entry)
+    local convar = sheepSpawnColorWeights[entry.name]
+    if not convar then return entry.weight end
+
+    return math.max(0, convar:GetFloat())
+end
+
+local function pickSheepSpawnColor()
+    local total = 0
+
+    for _, entry in ipairs(sheepSpawnColors) do
+        total = total + getSheepSpawnColorWeight(entry)
+    end
+
+    if total <= 0 then return sheepSpawnColors[1].color end
+
+    local roll = math.Rand(0, total)
+    local cursor = 0
+
+    for _, entry in ipairs(sheepSpawnColors) do
+        cursor = cursor + getSheepSpawnColorWeight(entry)
+        if roll <= cursor then return entry.color end
+    end
+
+    return sheepSpawnColors[1].color
+end
+
 if CLIENT then
     local zeroAngle = Angle(0, 0, 0)
     local zeroVector = Vector(0, 0, 0)
     local legSwingMax = 25.0
+    local sheepTintMaterial = Material("models/mcgm/sheep/Material_0")
+    local sheepHurtFlashMaterial = CreateMaterial("bmb_sheep_hurt_flash", "VertexLitGeneric", {
+        ["$basetexture"] = "color/white",
+        ["$model"] = "1",
+        ["$translucent"] = "1"
+    })
     local previewPose = CreateClientConVar("bmb_sheep_pose_preview", "0", true, false, "Preview sheep bone transforms live.")
     local previewKeyTime = CreateClientConVar("bmb_sheep_pose_key_time", "0", true, false, "Printed sheep keyframe time.")
 
@@ -229,6 +284,59 @@ if CLIENT then
         print("} },")
     end)
 
+    function ENT:UpdateBMBSheepTintMaterial()
+        if not sheepTintMaterial or sheepTintMaterial:IsError() then return end
+
+        local color = self:GetColor()
+        sheepTintMaterial:SetVector("$color2", Vector(color.r / 255, color.g / 255, color.b / 255))
+    end
+
+    function ENT:GetBMBSheepFlashGreenBlue()
+        local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
+        if self:GetNWBool("BMBDead", false) and deathUntil > CurTime() and self.DeathKeepRed ~= false then
+            return 1 - (self.HurtFlashRedAmount or 0.65)
+        end
+
+        local flashUntil = self:GetNWFloat("BMBHurtFlashUntil", 0)
+        if flashUntil > CurTime() then
+            return 1 - (self.HurtFlashRedAmount or 0.65)
+        end
+
+        return nil
+    end
+
+    function ENT:DrawBMBSheepFullBodyFlash(greenBlue)
+        if not greenBlue or not sheepHurtFlashMaterial or sheepHurtFlashMaterial:IsError() then return end
+
+        render.MaterialOverride(sheepHurtFlashMaterial)
+        render.SetBlend(0.42)
+
+        if self.DrawBMBModelWithMCLight then
+            self:DrawBMBModelWithMCLight(self, 1, greenBlue, greenBlue)
+        else
+            render.SetColorModulation(1, greenBlue, greenBlue)
+            self:DrawModel()
+            render.SetColorModulation(1, 1, 1)
+        end
+
+        render.SetBlend(1)
+        render.MaterialOverride(nil)
+    end
+
+    function ENT:Draw()
+        local flashGreenBlue = self:GetBMBSheepFlashGreenBlue()
+
+        self:UpdateBMBSheepTintMaterial()
+
+        if self.BaseClass and self.BaseClass.Draw then
+            self.BaseClass.Draw(self)
+        else
+            self:DrawModel()
+        end
+
+        self:DrawBMBSheepFullBodyFlash(flashGreenBlue)
+    end
+
     local function resetSheepBones(ent, bones)
         applySheepPose(ent, bones, nil)
         ent.BMBSheepHeadPoseCleared = true
@@ -349,6 +457,8 @@ function ENT:Initialize()
     if CLIENT then return end
 
     self:BaseInitialize()
+    self:SetRenderMode(RENDERMODE_TRANSCOLOR)
+    self:SetColor(pickSheepSpawnColor())
     self:SetBMBState("idle")
     self.FleeThreat = nil
     self.FleeThreatPosition = nil

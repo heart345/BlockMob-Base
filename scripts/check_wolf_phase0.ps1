@@ -20,8 +20,6 @@ $wolf = "gmod_addon\lua\entities\bmb_wolf.lua"
 $menu = "gmod_addon\lua\autorun\mcgm_autorun.lua"
 $base = "gmod_addon\lua\entities\bmb_base_mob.lua"
 $behaviors = "gmod_addon\lua\bmb\sv_behaviors.lua"
-$wolfAngryVtf = "gmod_addon\materials\models\mcgm\wolf\wolf_angry.vtf"
-$wolfAngryVmt = "gmod_addon\materials\models\mcgm\wolf\wolf_angry.vmt"
 
 Assert-Contains $wolf 'ENT\.Base\s*=\s*"bmb_base_mob"' "Wolf Phase 0 must be a real BMB NextBot, not the old base_anim stub."
 Assert-Contains $wolf 'ENT\.Type\s*=\s*"nextbot"' "Wolf Phase 0 must spawn as a NextBot."
@@ -69,7 +67,7 @@ Assert-Contains $wolf 'ENT\.LeapMaxUpCells\s*=\s*0\.25' "Wolf should not pounce 
 Assert-Contains $wolf 'ENT\.LeapHorizontalSpeed\s*=\s*300' "Wolf leap should carry farther forward after source-code comparison."
 Assert-Contains $wolf 'ENT\.LeapVerticalSpeed\s*=\s*225' "Wolf leap should arc higher after source-code comparison."
 Assert-Contains $wolf 'BMB\.Behaviors\.Leap\.Try\(self,\s*self\.TargetEntity\)' "Wolf should try shared leap before falling back to chase."
-Assert-Contains $wolf 'state == "chase" or state == "attack" or state == "leap"' "Wolf angry texture should stay active during leap."
+Assert-Contains $wolf 'self:SetBMBWolfAngry\(IsValid\(self\.TargetEntity\)\)' "Wolf angry skin should stay active for valid combat targets, including leap."
 Assert-Contains $behaviors 'BMB\.Behaviors\.Pack\s*=\s*BMB\.Behaviors\.Pack or \{\}' "Wolf Phase 4 should add pack/flank as a shared behavior module."
 Assert-Contains $behaviors 'function\s+BMB\.Behaviors\.Pack\.GetMembers\(mob,\s*target\)' "Shared pack should discover same-target pack members."
 Assert-Contains $behaviors 'function\s+BMB\.Behaviors\.Pack\.GetFlankDestination\(mob,\s*target\)' "Shared pack should compute a temporary flank destination."
@@ -90,19 +88,20 @@ Assert-Contains $wolf 'ENT\.PackRetaliationAlertRadiusCells\s*=\s*8\.0' "Wolf pa
 Assert-Contains $wolf 'BMB\.Behaviors\.Pack\.Run\(self,\s*self\.TargetEntity\)' "Wolf should try pack flank after melee/leap and before normal chase."
 Assert-NotContains $wolf 'RangedAttack' "Wolf Phase 4 must not mix in ranged behavior."
 
-Assert-Contains $wolf 'WolfAngryTextureOnChase\s*=\s*true' "Wolf angry texture should be toggleable for future tame-state rules."
-Assert-Contains $wolf 'WolfAngryMaterial\s*=\s*"models/mcgm/wolf/wolf_angry"' "Wolf angry texture should use a Source material, not a raw PNG override."
-Assert-Contains $wolf 'CreateClientConVar\("bmb_wolf_angry_texture",\s*"1"' "Wolf angry texture should have a client-side on/off cvar."
+Assert-Contains $wolf 'WolfAngrySkinOnChase\s*=\s*true' "Wolf angry state should be an entity-level skin rule for future tame-state rules."
+Assert-Contains $wolf 'wolfSkinVariants\s*=\s*\{\s*"woods",\s*"ashen",\s*"black",\s*"chestnut",\s*"rusty",\s*"snowy",\s*"spotted",\s*"striped",\s*"classic"\s*\}' "Wolf skins should use the agreed variant order so skin 0/1 are woods calm/angry."
+Assert-Contains $wolf 'CreateConVar\(\s*"bmb_wolf_variant_lock"' "Wolf skin variant should be lockable for testing."
+Assert-Contains $wolf 'bmb_wolf_variant_weight_' "Wolf skin spawn weights should be convar-driven."
+Assert-Contains $wolf 'self\.variant\s*=\s*variant' "Wolf should store the zero-based variant index on self.variant."
+Assert-Contains $wolf 'function ENT:GetBMBWolfDesiredSkin\(\)' "Wolf should derive the actual model skin from variant plus angry state."
+Assert-Contains $wolf 'return self:GetBMBWolfSkinVariant\(\) \* 2 \+ angry' "Wolf skin index must be variant*2 + angryBit."
+Assert-Contains $wolf 'function ENT:SetBMBWolfAngry\(angry\)' "Wolf angry transitions should update skin through a helper."
+Assert-Contains $wolf 'function ENT:ApplyBMBWolfSkinToolSkin\(skin\)' "Skin tool changes should be converted back into wolf variants."
+Assert-Contains $wolf 'math\.floor\(skinIndex / 2\)' "Skin tool reverse mapping should use floor(skin/2)."
+Assert-Contains $wolf 'function ENT:SetSkin\(skin\)' "Wolf should intercept Lua Skin tool SetSkin calls."
+Assert-Contains $wolf 'self:SetBMBWolfSkinVariant\(self:ChooseBMBWolfSkinVariant\(\)\)' "Wolf should choose a random skin variant at spawn."
 Assert-Contains $wolf 'BMBWolfAngry' "Wolf should network whether it is currently angry/chasing prey."
-Assert-Contains $wolf 'state == "chase" or state == "attack"' "Wolf angry texture should only appear during chase/attack states."
-Assert-Contains $wolf 'Material\(materialPath,\s*"smooth"\)' "Wolf angry texture should load through a client material."
-Assert-Contains $wolf 'render\.MaterialOverride\(angryMaterial\)' "Wolf angry texture should render as a temporary material override."
-if (-not (Test-Path -LiteralPath (Join-Path (Get-Location) $wolfAngryVtf))) {
-    throw "ERROR: ${wolfAngryVtf}: Wolf angry VTF must be packaged in the addon."
-}
-if (-not (Test-Path -LiteralPath (Join-Path (Get-Location) $wolfAngryVmt))) {
-    throw "ERROR: ${wolfAngryVmt}: Wolf angry VMT must be packaged in the addon."
-}
+Assert-NotContains $wolf 'WolfAngryMaterial|bmb_wolf_angry_texture|MaterialOverride' "Wolf angry visuals must use MDL skin families, not a classic angry material override."
 
 Assert-Contains $behaviors '(?s)RunDirect\(mob,\s*target,\s*speed\).*?if not BMB\.Behaviors\.SeekTarget\.IsValid\(mob,\s*target,\s*mob\.TargetLoseRange or mob\.TargetRange\) then\s*return false\s*end\s*local segmentTime' "Shared Chase should re-check target validity after direct chase before using target:GetPos()."
 
