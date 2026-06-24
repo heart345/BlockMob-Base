@@ -1066,6 +1066,19 @@ function ENT:ClearBMBMovementInterrupt()
     self.BMBMoveInterrupt = false
 end
 
+function ENT:TryBMBMoveOverride(reason, target)
+    return false
+end
+
+function ENT:RunBMBMoveOverride(reason, target)
+    if self.BMBDead or self.BMBHeld or self.BMBMoveInterrupt then return false end
+    if not self.TryBMBMoveOverride then return false end
+    if not self:TryBMBMoveOverride(reason, target) then return false end
+
+    self:RestoreBMBStepHeight()
+    return true
+end
+
 function ENT:SetBMBMoveMode(mode)
     mode = mode or "idle"
     if self.BMBDead and mode ~= "dead" then return end
@@ -2227,6 +2240,8 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         return self:MoveDirectFallback(destination, speed, directOptions)
     end
 
+    if self:RunBMBMoveOverride("move_to", destination) then return true end
+
     if self:ShouldUseSourcePath() and not options.skipSourcePath then
         if self:MoveWithSourcePath(destination, desiredSpeed, options) then return true end
         if self.BMBMoveInterrupt then return false end
@@ -2286,6 +2301,7 @@ function ENT:MoveWithSourcePath(destination, speed, options)
     while path:IsValid() and CurTime() < timeout do
         if self.BMBMoveInterrupt then return false end
         if self:GetPos():DistToSqr(destination) <= goalTolerance * goalTolerance then return true end
+        if self:RunBMBMoveOverride("source_path", destination) then return true end
 
         self:SetBMBMoveMode("source_path")
         self:MaintainBMBMoveSpeed(speed or self.WalkSpeed)
@@ -3576,6 +3592,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             return false
         end
 
+        if self:RunBMBMoveOverride("path", final) then return true end
+
         local current = self:GetPos()
         self:ApplyBMBPendingBlockHop()
         self:UpdateBMBHopDebug()
@@ -3663,6 +3681,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             self:RestoreBMBStepHeight()
             return false
         end
+
+        if self:RunBMBMoveOverride("path_carrot", carrot) then return true end
 
         if not verticalAction then
             local sourceSafe, sourceReason = self:IsPathSourceTargetSafe(carrot)
@@ -3822,6 +3842,7 @@ function ENT:MoveDirectFallback(destination, speed, options)
 
     while CurTime() < timeout do
         if self.BMBMoveInterrupt then return false end
+        if self:RunBMBMoveOverride("direct", destination) then return true end
 
         target.z = self:GetPos().z
         if flatDistance(self:GetPos(), destination) <= goalTolerance then return true end

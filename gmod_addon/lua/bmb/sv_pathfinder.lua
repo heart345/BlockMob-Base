@@ -87,6 +87,65 @@ local function isDropColumnClear(blockWorld, current, target, options)
     return true
 end
 
+local function getMobPathHeightCells(options)
+    local mob = options and options.mob
+    if IsValid(mob) and mob.GetBMBPathHeightCells then
+        return mob:GetBMBPathHeightCells()
+    end
+
+    return 1
+end
+
+local function hasSolidPathBlock(blockWorld, cell, options)
+    local heightCells = getMobPathHeightCells(options)
+
+    for dz = 0, heightCells do
+        if blockWorld.IsSolid({
+            x = cell.x,
+            y = cell.y,
+            z = (cell.z or 0) + dz
+        }) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isDropExitBlockedBySolid(blockWorld, current, direction, outCells, options)
+    for step = 1, outCells do
+        local cell = {
+            x = current.x + direction.x * step,
+            y = current.y + direction.y * step,
+            z = current.z or 0
+        }
+
+        if hasSolidPathBlock(blockWorld, cell, options) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function getDropHorizontalCells(options)
+    local mob = options and options.mob
+    local configured = options and options.dropHorizontalCells
+        or (IsValid(mob) and mob.DropHorizontalCells)
+
+    if configured and configured > 0 then
+        return math.max(1, math.floor(configured))
+    end
+
+    if IsValid(mob) and mob.GetBMBPathHullRadius and mob.GetBMBBlockSize then
+        local radius = mob:GetBMBPathHullRadius()
+        local size = mob:GetBMBBlockSize()
+        return math.max(1, math.ceil((radius + size * 0.5 + 1) / size))
+    end
+
+    return 1
+end
+
 local function addNeighbor(found, coord, action, cost)
     found[#found + 1] = {
         coord = coord,
@@ -95,9 +154,7 @@ local function addNeighbor(found, coord, action, cost)
     }
 end
 
-local function findDropNeighbor(blockWorld, current, sameLevel, options)
-    if not isPassable(blockWorld, sameLevel, options) then return nil end
-
+local function findDropNeighbor(blockWorld, current, direction, options)
     local mob = options and options.mob
     local maxDropCells = (options and options.maxDropCells)
         or (IsValid(mob) and mob.MaxPathDropCells)
@@ -105,16 +162,23 @@ local function findDropNeighbor(blockWorld, current, sameLevel, options)
         or 3
 
     maxDropCells = math.max(0, math.floor(maxDropCells))
+    local maxOutCells = getDropHorizontalCells(options)
 
-    for dropCells = 1, maxDropCells do
-        local target = {
-            x = sameLevel.x,
-            y = sameLevel.y,
-            z = (current.z or 0) - dropCells
-        }
+    for outCells = 1, maxOutCells do
+        if isDropExitBlockedBySolid(blockWorld, current, direction, outCells, options) then
+            return nil
+        end
 
-        if isStandable(blockWorld, target, options) and isDropColumnClear(blockWorld, current, target, options) then
-            return target, dropCells
+        for dropCells = 1, maxDropCells do
+            local target = {
+                x = current.x + direction.x * outCells,
+                y = current.y + direction.y * outCells,
+                z = (current.z or 0) - dropCells
+            }
+
+            if isStandable(blockWorld, target, options) and isDropColumnClear(blockWorld, current, target, options) then
+                return target, dropCells, outCells
+            end
         end
     end
 end
@@ -148,10 +212,10 @@ local function neighbors(coord, blockWorld, options)
                     addNeighbor(found, copyCoord(sameLevel), "stranded", 1.05)
                 end
 
-                local dropTarget, dropCells = findDropNeighbor(blockWorld, coord, sameLevel, options)
+                local dropTarget, dropCells, outCells = findDropNeighbor(blockWorld, coord, direction, options)
 
                 if dropTarget then
-                    addNeighbor(found, copyCoord(dropTarget), "drop", 1 + dropCells * 0.12)
+                    addNeighbor(found, copyCoord(dropTarget), "drop", 1 + dropCells * 0.12 + (outCells - 1) * 0.35)
                 end
             end
 
@@ -259,6 +323,59 @@ local function prepareQueryOptions(options)
     return options
 end
 
+local scoreStandableCandidate
+
+local function pathSamplePosition(pos, options)
+    local mob = options and options.mob
+    if IsValid(mob) and mob.GetBMBGridFootSample then
+        return mob:GetBMBGridFootSample(pos)
+    end
+
+    return pos
+end
+
+local function findNearbyStandableGoal(blockWorld, goalCoord, goalPos, options, allowVertical)
+    if not options or options.allowNearestGoal ~= true then return nil end
+
+    local radius = math.max(1, math.floor(options.goalSnapRadiusCells or 2))
+    local downCells = allowVertical and math.max(
+        0,
+        math.floor(options.goalSnapNearbyDownCells or options.maxDropCells or 3)
+    ) or 0
+    local upCells = allowVertical and math.max(0, math.floor(options.goalSnapNearbyUpCells or 1)) or 0
+    local bestCell
+    local bestScore = math.huge
+
+    for dz = -downCells, upCells do
+        for dx = -radius, radius do
+            for dy = -radius, radius do
+                local score, _, cell = scoreStandableCandidate(blockWorld, goalPos, goalCoord, dx, dy, dz, options)
+
+                if score and score < bestScore then
+                    bestScore = score
+                    bestCell = copyCoord(cell)
+                end
+            end
+        end
+    end
+
+    return bestCell
+end
+
+local function resolveGoalCoord(blockWorld, goalCoord, goalPos, options, allowVertical)
+    if allowVertical then
+        if isPassable(blockWorld, goalCoord, options) then
+            local snapped = snapGoalToStandable(blockWorld, goalCoord, options)
+            if snapped then return snapped end
+        end
+
+        return findNearbyStandableGoal(blockWorld, goalCoord, goalPos, options, allowVertical)
+    end
+
+    if isPassable(blockWorld, goalCoord, options) then return goalCoord end
+    return findNearbyStandableGoal(blockWorld, goalCoord, goalPos, options, allowVertical)
+end
+
 local function searchOffsetAt(index, radius, downCells)
     local width = radius * 2 + 1
     local layerSize = width * width
@@ -271,7 +388,7 @@ local function searchOffsetAt(index, radius, downCells)
         layer - downCells
 end
 
-local function scoreStandableCandidate(blockWorld, origin, center, dx, dy, dz, options)
+scoreStandableCandidate = function(blockWorld, origin, center, dx, dy, dz, options)
     if dx == 0 and dy == 0 and dz == 0 then return nil end
     if options and options.minHorizontalCells
         and math.max(math.abs(dx), math.abs(dy)) < options.minHorizontalCells then
@@ -346,18 +463,17 @@ function pathfinder.FindPath(startPos, goalPos, options)
     options.supportCache = {}
 
     local blockWorld = BMB.BlockWorld
-    blockWorld.EnsureInitialized(startPos)
+    local startSample = pathSamplePosition(startPos, options)
+    local goalSample = pathSamplePosition(goalPos, options)
+
+    blockWorld.EnsureInitialized(startSample)
 
     local allowVertical = blockWorld.SupportsVerticalPath ~= false
-    local startCoord = blockWorld.WorldToBlock(startPos)
-    local goalCoord = blockWorld.WorldToBlock(goalPos)
+    local startCoord = blockWorld.WorldToBlock(startSample)
+    local goalCoord = blockWorld.WorldToBlock(goalSample)
 
-    if not isPassable(blockWorld, goalCoord, options) then return nil end
-
-    if allowVertical then
-        goalCoord = snapGoalToStandable(blockWorld, goalCoord, options)
-        if not goalCoord then return nil end
-    end
+    goalCoord = resolveGoalCoord(blockWorld, goalCoord, goalSample, options, allowVertical)
+    if not goalCoord then return nil end
 
     local goalKey = coordKey(goalCoord)
     local startKey = coordKey(startCoord)

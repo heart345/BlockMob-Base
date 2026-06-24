@@ -27,7 +27,7 @@ Assert-Contains $menu '"bmb_spider"' "Spider should be registered in the BlockMo
 
 Assert-Contains $spider 'ENT\.CollisionMins\s*=\s*Vector\(-26,\s*-26,\s*0\)' "Spider collision mins should match the 1.4 block wide footprint."
 Assert-Contains $spider 'ENT\.CollisionMaxs\s*=\s*Vector\(26,\s*26,\s*33\)' "Spider collision maxs should stay short enough for one-block-high gaps."
-Assert-Contains $spider 'RetaliateOnDamage\s*=\s*false' "Spider Phase 0 should stay neutral ground wander only."
+Assert-Contains $spider 'RetaliateOnDamage\s*=\s*true' "Spider should use base retaliation after Phase 2 while staying neutral until attacked."
 
 Assert-Contains $spider 'function ENT:RunBehaviour\(\)' "Spider should own a thin behavior scheduler."
 Assert-Contains $spider 'MaintainBMBFreeze' "Spider should respect bmb_freeze for screenshots."
@@ -70,6 +70,6 @@ Assert-Contains $spider 'setBoneAngle\(self,\s*bones\[legName\],\s*angle\)' "Spi
 Assert-Contains $spider 'setBonePosition\(self,\s*bones\[legName\],\s*zeroVector\)' "Spider procedural gait should not translate leg bones."
 Assert-NotContains $spider 'SpiderLegRollMax|legRollConVar|rollMax|getLegOffset|offset_x|offset_y|offset_z|Vector\([^)]*lift' "Spider gait must not use leg translation offsets; animation belongs in ManipulateBoneAngles."
 
-Assert-NotContains $spider 'MeleeAttack|Leap\.Try|Pack\.Run|Chase\.Run|SeekTarget\.Find' "Spider Phase 0 must not pull in Phase 2 combat or Phase 3 climb/chase behavior."
+Assert-NotContains $spider 'Pack\.Run|SeekTarget\.Find' "Spider should not pull in pack behavior or active target scanning."
 
 Write-Host "Spider Phase 0 checks passed."

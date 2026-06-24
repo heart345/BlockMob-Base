@@ -59,6 +59,14 @@ Assert-Contains $pathfinder "GetChunkVersion" "ShouldRepath must mark the per-ch
 Assert-Contains $pathfinder "bornAt" "FindPath must stamp path birth time for the TTL stub"
 Assert-Contains $config "PathCacheTTL" "Config must define PathCacheTTL"
 Assert-Contains $baseMob "BMB\.Pathfinder\.ShouldRepath" "MoveAlongPath must consult ShouldRepath at a safe point to self-heal stale paths"
+Assert-Contains $pathfinder "function\s+pathSamplePosition\s*\(" "FindPath must sample mob feet above block boundaries before converting start/goal to grid cells"
+Assert-Contains $pathfinder "GetBMBGridFootSample" "FindPath should reuse the mob foot sample lift so one-block ledges do not quantize into the supporting block"
+Assert-Contains $pathfinder "function\s+findNearbyStandableGoal\s*\(" "FindPath must be able to retarget to a nearby standable goal when the exact target cell is invalid for a wide hull"
+Assert-Contains $pathfinder "allowNearestGoal" "Nearest-goal fallback must stay opt-in for chase/debug style moves"
+Assert-Contains $pathfinder "function\s+getDropHorizontalCells\s*\(" "Drop neighbors must account for wide mobs that need to land farther out from a one-block ledge"
+Assert-Contains $pathfinder "GetBMBPathHullRadius" "Drop horizontal clearance should derive from the mob hull radius"
+Assert-Contains $pathfinder "isDropExitBlockedBySolid" "Wide drop should not jump through an actual solid wall between the ledge and landing cell"
+Assert-Contains $pathfinder '\(outCells - 1\) \* 0\.35' "Wider drop targets should carry a small path cost penalty"
 
 # Cliff churn fix: hysteresis (debounce transient cliff) + drop tolerance (a downhill step is not a cliff).
 $behaviors = "gmod_addon\lua\bmb\sv_behaviors.lua"
@@ -73,6 +81,8 @@ Assert-Contains $behaviors "ShouldRememberCliffMode" "direct cliff memory must e
 Assert-Contains $behaviors 'mode == "chase_direct" or mode == "chase_repath"' "chase_repath cliff failures must write the same direct cliff memory as chase_direct"
 Assert-Contains $behaviors "IsDirectCliffBlocked" "CanDirect must consult direct cliff memory before taking the shortcut"
 Assert-Contains $behaviors "TryRepathPressure" "chase_repath fallback must consult direct cliff memory before applying direct pressure"
+Assert-Contains $behaviors "allowNearestGoal\s*=\s*true" "Chase A* should allow a nearby standable goal when the exact player cell is blocked by terrain or wide hull overlap"
+Assert-Contains $behaviors "goalSnapRadiusCells" "Chase nearby-goal snapping should have a bounded search radius"
 Assert-Contains $behaviors "chase_repath_blocked" "memory-suppressed chase_repath must publish a non-cliff blocked mode instead of flickering chase_repath_cliff"
 Assert-Contains $behaviors "chase_repath_giveup" "memory-suppressed chase_repath must keep a give-up exit instead of pinning mobs forever"
 Assert-Contains $behaviors "ChaseDirectMaxDistanceCells" "CanDirect must support a max-distance gate so long-range chase can stay on A*"

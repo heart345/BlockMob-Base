@@ -1330,6 +1330,8 @@ function BMB.Behaviors.Chase.Run(mob, target)
         skipSourcePath = true,
         allowPartial = true,
         acceptPartial = true,
+        allowNearestGoal = true,
+        goalSnapRadiusCells = mob.ChaseGoalSnapRadiusCells or 2,
         timeout = segmentTime,
         goalTolerance = math.max(attackRange * 0.65, blockSize() * 0.5),
         moveIntentSpeed = speed,
