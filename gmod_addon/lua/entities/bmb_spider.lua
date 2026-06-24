@@ -15,8 +15,8 @@ ENT.DeathRemoveDelay = 1.5
 ENT.DeathTipDuration = 0.5
 ENT.DeathTipDegrees = 90
 
-ENT.WalkSpeed = 80
-ENT.RunSpeed = 105
+ENT.WalkSpeed = 100
+ENT.RunSpeed = 140
 ENT.Acceleration = 360
 ENT.Deceleration = 460
 ENT.TargetRange = 820
@@ -35,7 +35,7 @@ ENT.AttackVerticalOverlapFlatRange = 22
 ENT.AttackDamage = 6
 ENT.AttackCooldown = 0.9
 ENT.AttackHitDelay = 0
-ENT.AttackMoveSpeed = 105
+ENT.AttackMoveSpeed = 140
 ENT.AttackHitSlop = 14
 ENT.AttackKnockback = 120
 ENT.AttackVerticalKnockback = 95
@@ -97,6 +97,14 @@ ENT.SpiderClimbBlockedHoldTime = 3
 ENT.SpiderClimbDescendSpeed = 78
 ENT.SpiderClimbDescendTimeout = 6
 ENT.SpiderClimbGiveUpCooldown = 4
+ENT.SpiderClimbCancelCooldown = 1.6
+ENT.SpiderClimbChaseMinTargetUp = 18
+ENT.SpiderClimbChaseWallDot = 0.1
+ENT.SpiderClimbChaseCancelGrace = 0.45
+ENT.SpiderClimbChaseActive = true
+ENT.SpiderClimbChaseApproachDistance = 260
+ENT.SpiderClimbChaseApproachTimeout = 0.45
+ENT.SpiderClimbChaseStartDistance = 84
 ENT.SpiderClimbMaxWallNormalZ = 0.25
 
 if SERVER then
@@ -120,6 +128,14 @@ if SERVER then
     createSpiderConVar("bmb_spider_climb_descend_speed", "78", "Spider downward speed when giving up a blocked climb.")
     createSpiderConVar("bmb_spider_climb_descend_timeout", "6", "Maximum time spent descending after a blocked climb.")
     createSpiderConVar("bmb_spider_climb_giveup_cooldown", "4", "Cooldown after a blocked climb gives up so the spider wanders elsewhere.")
+    createSpiderConVar("bmb_spider_climb_cancel_cooldown", "1.6", "Cooldown after chase-aware climb cancels so the spider can resume ground chase.")
+    createSpiderConVar("bmb_spider_climb_chase_min_target_up", "18", "Minimum target height advantage before chase movement can trigger spider wall climb.")
+    createSpiderConVar("bmb_spider_climb_chase_wall_dot", "0.1", "Minimum target-to-wall direction dot before chase movement can trigger spider wall climb.")
+    createSpiderConVar("bmb_spider_climb_chase_cancel_grace", "0.45", "Grace period before chase-aware climb can cancel because the target changed.")
+    createSpiderConVar("bmb_spider_climb_chase_active", "1", "Let spider chase proactively approach climbable walls below high targets.")
+    createSpiderConVar("bmb_spider_climb_chase_approach_distance", "260", "How far spider chase scans ahead for a wall to climb toward a high target.")
+    createSpiderConVar("bmb_spider_climb_chase_approach_timeout", "0.45", "How long one active spider chase-climb approach segment may run.")
+    createSpiderConVar("bmb_spider_climb_chase_start_distance", "84", "How close a proactive chase wall hit can be before spider starts climbing immediately.")
     createSpiderConVar("bmb_debug_spider_climb", "0", "Print spider climb spike diagnostics.")
 end
 
@@ -133,6 +149,15 @@ local function spiderConVarFloat(name, fallback)
     local convar = GetConVar and GetConVar(name)
     if not convar then return fallback end
     return convar:GetFloat()
+end
+
+local function spiderFlatDistance(a, b)
+    if not a or not b then return math.huge end
+
+    local dx = (a.x or 0) - (b.x or 0)
+    local dy = (a.y or 0) - (b.y or 0)
+
+    return math.sqrt(dx * dx + dy * dy)
 end
 
 if CLIENT then
@@ -438,9 +463,355 @@ function ENT:GetBMBSpiderClimbGiveUpCooldown()
     return spiderConVarFloat("bmb_spider_climb_giveup_cooldown", self.SpiderClimbGiveUpCooldown or 4)
 end
 
+function ENT:GetBMBSpiderClimbCancelCooldown()
+    return spiderConVarFloat("bmb_spider_climb_cancel_cooldown", self.SpiderClimbCancelCooldown or 1.6)
+end
+
+function ENT:GetBMBSpiderClimbChaseMinTargetUp()
+    return spiderConVarFloat("bmb_spider_climb_chase_min_target_up", self.SpiderClimbChaseMinTargetUp or 18)
+end
+
+function ENT:GetBMBSpiderClimbChaseWallDot()
+    return spiderConVarFloat("bmb_spider_climb_chase_wall_dot", self.SpiderClimbChaseWallDot or 0.1)
+end
+
+function ENT:GetBMBSpiderClimbChaseCancelGrace()
+    return spiderConVarFloat("bmb_spider_climb_chase_cancel_grace", self.SpiderClimbChaseCancelGrace or 0.45)
+end
+
+function ENT:IsBMBSpiderChaseClimbEnabled()
+    return self.SpiderClimbChaseActive ~= false
+        and spiderConVarBool("bmb_spider_climb_chase_active", true)
+end
+
+function ENT:GetBMBSpiderClimbChaseApproachDistance()
+    return spiderConVarFloat("bmb_spider_climb_chase_approach_distance", self.SpiderClimbChaseApproachDistance or 260)
+end
+
+function ENT:GetBMBSpiderClimbChaseApproachTimeout()
+    return spiderConVarFloat("bmb_spider_climb_chase_approach_timeout", self.SpiderClimbChaseApproachTimeout or 0.45)
+end
+
+function ENT:GetBMBSpiderClimbChaseStartDistance()
+    return spiderConVarFloat("bmb_spider_climb_chase_start_distance", self.SpiderClimbChaseStartDistance or 84)
+end
+
 function ENT:DebugBMBSpiderClimb(message)
     if not spiderConVarBool("bmb_debug_spider_climb", false) then return end
     print("[BMB spider climb] " .. tostring(message))
+end
+
+function ENT:GetBMBSpiderClimbCombatTarget()
+    local seekTarget = BMB and BMB.Behaviors and BMB.Behaviors.SeekTarget
+    local isValidTarget = seekTarget and seekTarget.IsValid
+    local loseRange = self.TargetLoseRange or self.TargetRange
+
+    if isValidTarget then
+        if isValidTarget(self, self.TargetEntity, loseRange) then return self.TargetEntity end
+        if isValidTarget(self, self.BMBRetaliationTarget, loseRange) then return self.BMBRetaliationTarget end
+    else
+        if IsValid(self.TargetEntity) then return self.TargetEntity end
+        if IsValid(self.BMBRetaliationTarget) then return self.BMBRetaliationTarget end
+    end
+
+    return nil
+end
+
+function ENT:GetBMBSpiderClimbTargetPosition(target)
+    local combatTarget = self:GetBMBSpiderClimbCombatTarget()
+    if IsValid(combatTarget) and combatTarget.GetPos then
+        return combatTarget:GetPos(), combatTarget
+    end
+
+    if IsValid(target) and target.GetPos then
+        return target:GetPos(), target
+    end
+
+    if target and target.x and target.y and target.z then
+        return Vector(target.x, target.y, target.z), nil
+    end
+
+    return nil, nil
+end
+
+function ENT:GetBMBSpiderFlatDirection(fromPos, toPos)
+    if not fromPos or not toPos then return nil end
+
+    local direction = Vector(toPos.x - fromPos.x, toPos.y - fromPos.y, 0)
+    if direction:LengthSqr() <= 1 then return nil end
+
+    direction:Normalize()
+    return direction
+end
+
+function ENT:GetBMBSpiderIntoWallDirection(normal)
+    if not normal then return nil end
+
+    local intoWall = Vector(-normal.x, -normal.y, 0)
+    if intoWall:LengthSqr() <= 0.0001 then return nil end
+
+    intoWall:Normalize()
+    return intoWall
+end
+
+function ENT:ShouldBMBSpiderStartClimb(target, normal, reason)
+    local combatTarget = self:GetBMBSpiderClimbCombatTarget()
+    if not IsValid(combatTarget) then return true, nil end
+
+    local targetPos = self:GetBMBSpiderClimbTargetPosition(target)
+    if not targetPos then
+        self:DebugBMBSpiderClimb("skip chase climb: no target pos reason=" .. tostring(reason))
+        return false, combatTarget
+    end
+
+    local current = self:GetPos()
+    local minTargetUp = math.max(0, self:GetBMBSpiderClimbChaseMinTargetUp())
+    local targetUp = targetPos.z - current.z
+
+    if targetUp < minTargetUp then
+        self:DebugBMBSpiderClimb(string.format(
+            "skip chase climb: target_up=%.1f min=%.1f reason=%s",
+            targetUp,
+            minTargetUp,
+            tostring(reason)
+        ))
+        return false, combatTarget
+    end
+
+    local targetDirection = self:GetBMBSpiderFlatDirection(current, targetPos)
+    local intoWall = self:GetBMBSpiderIntoWallDirection(normal)
+    if targetDirection and intoWall then
+        local dot = targetDirection:Dot(intoWall)
+        local minDot = self:GetBMBSpiderClimbChaseWallDot()
+
+        if dot < minDot then
+            self:DebugBMBSpiderClimb(string.format(
+                "skip chase climb: wall_dot=%.2f min=%.2f reason=%s",
+                dot,
+                minDot,
+                tostring(reason)
+            ))
+            return false, combatTarget
+        end
+    end
+
+    return true, combatTarget
+end
+
+function ENT:ShouldCancelBMBSpiderChaseClimb(normal)
+    if not self.BMBSpiderClimbHadCombatTarget then return false end
+    if CurTime() < (self.BMBSpiderClimbCancelCheckAt or 0) then return false end
+
+    local combatTarget = self:GetBMBSpiderClimbCombatTarget()
+    if not IsValid(combatTarget) then return true, "target_lost" end
+
+    local targetPos = combatTarget:GetPos()
+    local startZ = self.BMBSpiderClimbStartZ or self:GetPos().z
+    local minTargetUp = math.max(0, self:GetBMBSpiderClimbChaseMinTargetUp())
+
+    if targetPos.z - startZ < minTargetUp * 0.5 then
+        return true, "target_dropped"
+    end
+
+    local targetDirection = self:GetBMBSpiderFlatDirection(self:GetPos(), targetPos)
+    local intoWall = self:GetBMBSpiderIntoWallDirection(normal)
+    if targetDirection and intoWall and targetDirection:Dot(intoWall) < -0.35 then
+        return true, "target_moved_away"
+    end
+
+    return false
+end
+
+function ENT:ShouldRunBMBSpiderChaseClimb(target)
+    if not self:IsBMBSpiderChaseClimbEnabled() then return false end
+    if self.BMBSpiderClimbing then return false end
+    if CurTime() < (self.BMBSpiderClimbCooldownUntil or 0) then return false end
+    if not IsValid(target) then return false end
+
+    local targetPos = target:GetPos()
+    local targetUp = targetPos.z - self:GetPos().z
+
+    return targetUp >= math.max(0, self:GetBMBSpiderClimbChaseMinTargetUp())
+end
+
+function ENT:AddBMBSpiderChaseClimbDirection(directions, direction, bias)
+    if not direction or direction:LengthSqr() <= 0.0001 then return end
+
+    local flat = Vector(direction.x, direction.y, 0)
+    if flat:LengthSqr() <= 0.0001 then return end
+    flat:Normalize()
+
+    for _, existing in ipairs(directions) do
+        if existing.direction:Dot(flat) > 0.96 then
+            existing.bias = math.max(existing.bias or 0, bias or 0)
+            return
+        end
+    end
+
+    table.insert(directions, {
+        direction = flat,
+        bias = bias or 0
+    })
+end
+
+function ENT:GetBMBSpiderChaseClimbDirections(target)
+    local directions = {}
+    local current = self:GetPos()
+    local targetPos = IsValid(target) and target:GetPos() or nil
+    local targetDirection = self:GetBMBSpiderFlatDirection(current, targetPos)
+
+    local forward = self:GetForward()
+    forward.z = 0
+    if forward:LengthSqr() > 0.0001 then
+        forward:Normalize()
+    else
+        forward = nil
+    end
+
+    local right = self:GetRight()
+    right.z = 0
+    if right:LengthSqr() > 0.0001 then
+        right:Normalize()
+    elseif forward then
+        right = Vector(-forward.y, forward.x, 0)
+    else
+        right = nil
+    end
+
+    self:AddBMBSpiderChaseClimbDirection(directions, targetDirection, 4)
+    self:AddBMBSpiderChaseClimbDirection(directions, forward, 3)
+
+    if targetDirection and right then
+        self:AddBMBSpiderChaseClimbDirection(directions, targetDirection + right * 0.45, 2.4)
+        self:AddBMBSpiderChaseClimbDirection(directions, targetDirection - right * 0.45, 2.4)
+    end
+
+    if forward and right then
+        self:AddBMBSpiderChaseClimbDirection(directions, forward + right * 0.55, 1.6)
+        self:AddBMBSpiderChaseClimbDirection(directions, forward - right * 0.55, 1.6)
+    end
+
+    self:AddBMBSpiderChaseClimbDirection(directions, right, 0.4)
+    self:AddBMBSpiderChaseClimbDirection(directions, right and -right or nil, 0.4)
+    self:AddBMBSpiderChaseClimbDirection(directions, forward and -forward or nil, 0.1)
+
+    return directions, targetDirection
+end
+
+function ENT:TryBMBSpiderChaseClimbAtWall(target, normal, reason)
+    if not normal then return false end
+    if not self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), normal) then return false end
+
+    self.BMBSpiderClimbForcedNormal = normal
+    self.BMBSpiderClimbPendingReason = reason or "chase_active_wall"
+
+    return self:RunBMBSpiderClimbSpike(IsValid(target) and target:GetPos() or nil)
+end
+
+function ENT:FindBMBSpiderChaseClimbApproach(target)
+    if not IsValid(target) then return nil end
+
+    local current = self:GetPos()
+    local targetPos = target:GetPos()
+    local directions, targetDirection = self:GetBMBSpiderChaseClimbDirections(target)
+    if #directions == 0 then return nil end
+
+    local flatDistance = spiderFlatDistance(current, targetPos)
+    local traceDistance = math.min(
+        math.max(self:GetBMBSpiderClimbProbeDistance(), flatDistance + self:GetBMBBlockSize()),
+        math.max(self:GetBMBSpiderClimbProbeDistance(), self:GetBMBSpiderClimbChaseApproachDistance())
+    )
+    local sampleHeight = math.Clamp((self.CollisionMaxs.z or 33) * 0.45, 10, math.max(10, (self.CollisionMaxs.z or 33) - 2))
+    local start = current + Vector(0, 0, sampleHeight)
+    local best
+
+    for _, entry in ipairs(directions) do
+        local direction = entry.direction
+        local trace = util.TraceLine({
+            start = start,
+            endpos = start + direction * traceDistance,
+            filter = self:GetBMBSpiderClimbTraceFilter(),
+            mask = MASK_SOLID
+        })
+        local normal = self:GetBMBSpiderFlatWallNormal(trace)
+
+        if normal then
+            local intoWall = self:GetBMBSpiderIntoWallDirection(normal)
+            local wallDot = (targetDirection and intoWall) and targetDirection:Dot(intoWall) or 0
+            local approach = trace.HitPos + normal * self:GetBMBSpiderClimbWallClearance()
+            approach.z = current.z
+
+            local clear = not self.IsBMBHullClearAtPosition or self:IsBMBHullClearAtPosition(approach)
+            local distance = spiderFlatDistance(current, approach)
+            local score = (entry.bias or 0) + wallDot * 3 + (1 - (trace.Fraction or 1)) * 2
+            if clear then score = score + 1 end
+            score = score - distance * 0.005
+
+            if not best or score > best.score then
+                best = {
+                    approach = approach,
+                    normal = normal,
+                    trace = trace,
+                    clear = clear,
+                    score = score
+                }
+            end
+        end
+    end
+
+    if not best then return nil end
+
+    return best.approach, best.normal, best.trace, best.clear
+end
+
+function ENT:RunBMBSpiderChaseClimb(target)
+    if not self:ShouldRunBMBSpiderChaseClimb(target) then return false end
+
+    self.BMBSpiderClimbPendingReason = "chase_active"
+    if self:RunBMBSpiderClimbSpike(target:GetPos()) then return true end
+
+    local approach, normal, trace, clear = self:FindBMBSpiderChaseClimbApproach(target)
+    if not approach then return false end
+
+    local speed = self.RunSpeed or self.WalkSpeed
+    local tolerance = math.max(8, self:GetBMBSpiderClimbWallClearance() * 0.35)
+    local approachDistance = spiderFlatDistance(self:GetPos(), approach)
+    local startDistance = math.max(self:GetBMBSpiderClimbProbeDistance(), self:GetBMBSpiderClimbChaseStartDistance())
+
+    if approachDistance <= startDistance
+        and self:TryBMBSpiderChaseClimbAtWall(target, normal, "chase_active_wall") then
+        return true
+    end
+
+    self:SetBMBState("chase")
+    self:SetBMBMoveMode("chase_climb_approach")
+    self:UpdateBMBApproachDebug(approach, 0)
+    self:DebugBMBSpiderClimb(string.format(
+        "chase approach wall dist=%.1f normal=%s fraction=%.2f",
+        approachDistance,
+        tostring(normal),
+        trace and trace.Fraction or -1
+    ))
+
+    if not clear then
+        return false
+    end
+
+    local moved = self:MoveToWorldPosition(approach, speed, {
+        skipSourcePath = true,
+        allowPartial = true,
+        acceptPartial = true,
+        allowDirectFallback = true,
+        timeout = math.max(0.1, self:GetBMBSpiderClimbChaseApproachTimeout()),
+        duration = math.max(0.1, self:GetBMBSpiderClimbChaseApproachTimeout()),
+        goalTolerance = tolerance,
+        moveIntentSpeed = speed,
+        minPathSpeed = speed
+    })
+
+    if moved then return true end
+
+    return self:TryBMBSpiderChaseClimbAtWall(target, normal, "chase_active_blocked")
 end
 
 function ENT:BeginBMBSpiderClimbMoveTypeOverride()
@@ -1044,6 +1415,10 @@ function ENT:FinishBMBSpiderClimbSpike(result)
     self.BMBSpiderClimbStartZ = nil
     self.BMBSpiderClimbGoalZ = nil
     self.BMBSpiderClimbLastPinnedPos = nil
+    self.BMBSpiderClimbReason = nil
+    self.BMBSpiderClimbHadCombatTarget = nil
+    self.BMBSpiderClimbCancelCheckAt = nil
+    self.BMBSpiderClimbForcedNormal = nil
     self.BMBSpiderClimbNextHoldLog = nil
     self.BMBSpiderClimbNextMantleCandidateLog = nil
     self.BMBSpiderClimbHoldReason = nil
@@ -1054,6 +1429,8 @@ function ENT:FinishBMBSpiderClimbSpike(result)
         cooldown = 0.2
     elseif result == "giveup" then
         cooldown = math.max(0.8, self:GetBMBSpiderClimbGiveUpCooldown())
+    elseif result == "target_lost" or result == "target_dropped" or result == "target_moved_away" then
+        cooldown = math.max(0.8, self:GetBMBSpiderClimbCancelCooldown())
     end
 
     self.BMBSpiderClimbCooldownUntil = CurTime() + cooldown
@@ -1066,25 +1443,58 @@ function ENT:FinishBMBSpiderClimbSpike(result)
 end
 
 function ENT:RunBMBSpiderClimbSpike(target)
+    local reason = self.BMBSpiderClimbPendingReason or "ambient"
+    self.BMBSpiderClimbPendingReason = nil
+
     if self.BMBSpiderClimbing then return false end
 
-    local normal = self:FindBMBSpiderClimbWall(target)
+    local targetPos = self:GetBMBSpiderClimbTargetPosition(target)
+    local scanTarget = targetPos or target
+    local forcedNormal = self.BMBSpiderClimbForcedNormal
+    self.BMBSpiderClimbForcedNormal = nil
+
+    local normal
+    if forcedNormal and self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), forcedNormal) then
+        normal = forcedNormal
+    end
+
+    normal = normal or self:FindBMBSpiderClimbWall(scanTarget)
     if not normal then return false end
 
+    local shouldStart, combatTarget = self:ShouldBMBSpiderStartClimb(target, normal, reason)
+    if not shouldStart then return false end
+
     local startPos = self:GetPos()
+    local startPinned, startNormal = self:GetBMBSpiderClimbPinnedPosition(startPos, normal)
+    if not startPinned then
+        self:DebugBMBSpiderClimb("skip climb start: wall not pinned reason=" .. tostring(reason))
+        return false
+    end
+
+    normal = startNormal or normal
+    local startClear = self:CanBMBSpiderMoveHull(startPos, startPinned, normal)
+    if not startClear then
+        self:DebugBMBSpiderClimb("skip climb start: pin blocked reason=" .. tostring(reason))
+        return false
+    end
+
     self.BMBSpiderClimbing = true
-    self.BMBSpiderClimbStartZ = startPos.z
-    self.BMBSpiderClimbGoalZ = startPos.z
-    self.BMBSpiderClimbLastPinnedPos = startPos
+    self.BMBSpiderClimbStartZ = startPinned.z
+    self.BMBSpiderClimbGoalZ = startPinned.z
+    self.BMBSpiderClimbLastPinnedPos = startPinned
+    self.BMBSpiderClimbReason = reason
+    self.BMBSpiderClimbHadCombatTarget = IsValid(combatTarget)
+    self.BMBSpiderClimbCancelCheckAt = CurTime() + math.max(0, self:GetBMBSpiderClimbChaseCancelGrace())
     self:ClearBMBMovementInterrupt()
     if self.ClearBMBDebugMove then
         self:ClearBMBDebugMove()
     end
-    print("[BMB spider climb] start normal=" .. tostring(normal))
+    print("[BMB spider climb] start normal=" .. tostring(normal) .. " reason=" .. tostring(reason))
     self:SetBMBState("climb_spike")
     self:SetBMBMoveMode("climb_spike")
     self:MaintainBMBMoveSpeed(0, 0)
     self:BeginBMBSpiderClimbMoveTypeOverride()
+    self:SetPos(startPinned)
 
     local deadline = CurTime() + math.max(0.5, self:GetBMBSpiderClimbTimeout())
     local lastTime = CurTime()
@@ -1114,6 +1524,13 @@ function ENT:RunBMBSpiderClimbSpike(target)
 
         if self.IsBMBFreezeEnabled and self:IsBMBFreezeEnabled() then
             self:FinishBMBSpiderClimbSpike("frozen")
+            return true
+        end
+
+        local cancel, cancelReason = self:ShouldCancelBMBSpiderChaseClimb(normal)
+        if cancel then
+            self:DebugBMBSpiderClimb("cancel chase climb: " .. tostring(cancelReason))
+            self:FinishBMBSpiderClimbSpike(cancelReason or "target_lost")
             return true
         end
 
@@ -1219,6 +1636,7 @@ function ENT:RunBMBSpiderClimbSpike(target)
 end
 
 function ENT:TryBMBMoveOverride(reason, target)
+    self.BMBSpiderClimbPendingReason = reason
     return self:RunBMBSpiderClimbSpike(target)
 end
 
@@ -1280,9 +1698,14 @@ function ENT:RunBMBSpiderAI()
         return
     end
 
+    if self:RunBMBSpiderChaseClimb(self.TargetEntity) then
+        return
+    end
+
     self:SetBMBState("chase")
     if not BMB.Behaviors.Chase.Run(self, self.TargetEntity) then
         if BMB.Behaviors.SeekTarget.IsValid(self, self.TargetEntity, self.TargetLoseRange or self.TargetRange) then
+            if self:RunBMBSpiderChaseClimb(self.TargetEntity) then return end
             if BMB.Behaviors.Chase.StalkHighTarget(self, self.TargetEntity) then return end
 
             self:SetBMBState("chase")

@@ -2,6 +2,8 @@
 
 > 每次开工先读这份（CLAUDE.md 指定入口）。历史流水/早期调试记录归档在 `.planning/mcgm-main/`（status_summary、findings、progress），只读参考，不再更新。
 
+> Spider Phase 3 handoff: see `docs/SPIDER_PHASE3_HANDOFF.md` for the latest chase-climb integration notes, convars, checks, and known caveats.
+
 ## 当前进度（2026-06-16）
 
 - **2026-06-24 Spider 一格高台下不来 hotfix（代码已切，待用户游戏回归）**：用户日志显示蜘蛛在一格方块上追玩家时 `direct cliff cached` 后反复 `findpath dist=188 -> nil`，HUD `mode=chase_repath_blocked`。根因不在 Phase 3 爬墙，而在共享 A* 起终点/目标合法性：站在方块顶面时 raw `WorldToBlock(self:GetPos())` 容易量化到支撑方块层，宽 hull（蜘蛛半径 26u）又会让目标/边缘 cell 被判不可通行；此外玩家贴近方块时精确目标 cell 对 1.4 格宽蜘蛛可能不合法，`FindPath` 在 goal 不 passable 时直接 nil，`allowPartial=true` 也进不了搜索。修法第一层：`sv_pathfinder.FindPath` 对 start/goal 先走 mob 的 `GetBMBGridFootSample()` 再转 cell，避开顶面边界量化；并新增 opt-in `allowNearestGoal`，当精确 goal 不可站时在小半径内找最近 standable cell。共享 `Chase.Run` 的 A* 请求开启 `allowNearestGoal=true` + `goalSnapRadiusCells=2`。复测仍出现 `findpath -> nil` 后追加第二层：drop 邻居不再只落到相邻一格，而是按 `GetBMBPathHullRadius()` / block size 计算 `DropHorizontalCells`；蜘蛛半径 26u 时会尝试落到更外侧的台下格，避免台阶侧面和 1.4 格宽 hull 重叠导致“相邻落点不可站”。同时 `isDropExitBlockedBySolid` 防止这条宽 drop 穿过真实实心墙。`chase_direct` 仍由 cliff safety 拦截，低台阶下降交给 A* drop，不恢复旧的 direct dive。
