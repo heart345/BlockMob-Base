@@ -91,6 +91,8 @@ Important: a wall scan hit is not enough to enter `climb_spike`. `RunBMBSpiderCl
 
 Low one-block crawl spaces are not climb targets. `RunBMBSpiderClimbSpike()` now checks `HasBMBSpiderClimbVerticalClearance(startPinned, normal)` before entering `climb_spike`; if the pinned wall position cannot move upward by at least half a block, it logs `skip climb start: low ceiling` and leaves the route to normal ground movement. During the climb spike, `BMBSpiderClimbFloorZ` plus `ClampBMBSpiderClimbPosition()` keep SetPos targets from dropping below the starting floor height.
 
+One-block-high crawl regressions can also come from shared direct movement, not spider climb. On 2026-06-25 the verified blocker was `ENT:IsMovementTargetSafe()`: the forward wall TraceHull was lifted by `GroundProbeHeight` and then extended too high, so a low ceiling at `z+1` became a false `"wall"` for spider, cave spider, wolf, and any other mob shorter than a full block. The fix is `bmb_safety_ceiling_clearance` plus `wallTopZ`, clamping only the wall probe's `maxs.z` below the mob's real `CollisionMaxs.z`. Keep `GroundProbeHeight` high enough for ground/cliff probes; do not move this fix into `sv_pathfinder.lua`, hop launch checks, or spider climb gating unless new logs prove a different blocker.
+
 ## Cancellation Notes
 
 The chase bridge records whether a combat target existed at climb start. After `bmb_spider_climb_chase_cancel_grace`, it cancels if:

@@ -17,6 +17,15 @@ if SERVER then
         CreateConVar("bmb_debug_hop_log", "0", FCVAR_ARCHIVE, "Print BlockHop launch/apex/result diagnostics.")
     end
 
+    if not GetConVar("bmb_safety_ceiling_clearance") then
+        CreateConVar(
+            "bmb_safety_ceiling_clearance",
+            "2",
+            FCVAR_ARCHIVE,
+            "Headroom kept below a mob's head when probing forward for walls."
+        )
+    end
+
     if not GetConVar("bmb_freeze") then
         CreateConVar("bmb_freeze", "0", 0, "Freeze all BMB mobs for screenshots.")
     end
@@ -4212,12 +4221,19 @@ function ENT:IsMovementTargetSafe(target, probeDistance)
     local traceFilter = function(ent)
         return self:ShouldSafetyTraceHit(ent)
     end
+    local ceilingConVar = GetConVar("bmb_safety_ceiling_clearance")
+    local ceilingClearance = ceilingConVar and ceilingConVar:GetFloat() or 2
+    local wallTopZ = math.min(
+        probeHeight * 0.45,
+        (self.CollisionMaxs.z or probeHeight) - ceilingClearance - probeHeight
+    )
+    wallTopZ = math.max(wallTopZ, -probeHeight * 0.35 + 4)
 
     local wallTrace = util.TraceHull({
         start = startPos,
         endpos = endPos,
         mins = Vector(self.CollisionMins.x * hullScale, self.CollisionMins.y * hullScale, -probeHeight * 0.35),
-        maxs = Vector(self.CollisionMaxs.x * hullScale, self.CollisionMaxs.y * hullScale, probeHeight * 0.45),
+        maxs = Vector(self.CollisionMaxs.x * hullScale, self.CollisionMaxs.y * hullScale, wallTopZ),
         filter = traceFilter,
         mask = MASK_SOLID
     })
