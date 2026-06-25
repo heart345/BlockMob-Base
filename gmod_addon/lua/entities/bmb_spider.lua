@@ -28,15 +28,15 @@ ENT.ChasePreferDirect = true
 ENT.ChaseDirectDuration = 0.24
 ENT.ChaseDirectMaxDistanceCells = 5
 ENT.ChaseDirectProbeCells = 4
-ENT.AttackRange = 54
-ENT.AttackVerticalRange = 26
+ENT.AttackRange = 72
+ENT.AttackVerticalRange = 34
 ENT.AttackVerticalOverlapRange = 58
-ENT.AttackVerticalOverlapFlatRange = 22
+ENT.AttackVerticalOverlapFlatRange = 32
 ENT.AttackDamage = 6
 ENT.AttackCooldown = 0.9
 ENT.AttackHitDelay = 0
 ENT.AttackMoveSpeed = 140
-ENT.AttackHitSlop = 14
+ENT.AttackHitSlop = 18
 ENT.AttackKnockback = 120
 ENT.AttackVerticalKnockback = 95
 ENT.AttackGroundedVerticalKnockback = 130
@@ -73,6 +73,17 @@ ENT.InitialIdleMax = 3.0
 ENT.LookAtEyeHeight = 18
 ENT.LookAtPitchLimit = 18
 ENT.LookAroundPitchLimit = 10
+ENT.AmbientSoundIntervalTicks = 80
+ENT.AmbientSoundChanceDenominator = 1000
+ENT.AmbientSoundTickRate = 20
+ENT.AmbientSoundMaxCatchupTicks = 4
+ENT.StepSoundDistance = 18
+ENT.StepSoundMinSpeed = 8
+ENT.StepSoundLevel = 58
+ENT.StepSoundVolumeMin = 0.40
+ENT.StepSoundVolumeMax = 0.76
+ENT.StepSoundPitchMin = 88
+ENT.StepSoundPitchMax = 112
 ENT.LimbSwingMinAmount = 0.25
 ENT.LimbSwingPhaseScale = 0.08
 ENT.AnimationSequences = {
@@ -84,17 +95,17 @@ ENT.AnimationSequences = {
 ENT.SpiderLegSwingMax = 10
 ENT.SpiderLegLiftMax = 3
 ENT.SpiderClimbSpikeEnabled = true
-ENT.SpiderClimbSpeed = 82
+ENT.SpiderClimbSpeed = 105
 ENT.SpiderClimbProbeDistance = 42
 ENT.SpiderClimbWallClearance = 30
 ENT.SpiderClimbMantleForward = 46
 ENT.SpiderClimbMantleUp = 44
 ENT.SpiderClimbMantleDown = 90
 ENT.SpiderClimbMantleStartBelow = 3
-ENT.SpiderClimbMantleSpeed = 58
+ENT.SpiderClimbMantleSpeed = 72
 ENT.SpiderClimbTimeout = 7
 ENT.SpiderClimbBlockedHoldTime = 3
-ENT.SpiderClimbDescendSpeed = 78
+ENT.SpiderClimbDescendSpeed = 88
 ENT.SpiderClimbDescendTimeout = 6
 ENT.SpiderClimbGiveUpCooldown = 4
 ENT.SpiderClimbCancelCooldown = 1.6
@@ -111,6 +122,35 @@ ENT.SpiderClimbHorizontalCells = 2
 ENT.SpiderClimbMaxWallNormalZ = 0.25
 ENT.BMBAllowClimbPath = true
 
+ENT.Sounds = {
+    Say = {
+        "bmb/mob/spider/say1.ogg",
+        "bmb/mob/spider/say2.ogg",
+        "bmb/mob/spider/say3.ogg",
+        "bmb/mob/spider/say4.ogg"
+    },
+    Hurt = {
+        "bmb/mob/spider/say1.ogg",
+        "bmb/mob/spider/say2.ogg",
+        "bmb/mob/spider/say3.ogg",
+        "bmb/mob/spider/say4.ogg"
+    },
+    Death = {
+        "bmb/mob/spider/death.ogg"
+    },
+    Step = {
+        "bmb/mob/spider/step1.ogg",
+        "bmb/mob/spider/step2.ogg",
+        "bmb/mob/spider/step3.ogg",
+        "bmb/mob/spider/step4.ogg"
+    },
+    Hit = {
+        "bmb/damage/hit1.ogg",
+        "bmb/damage/hit2.ogg",
+        "bmb/damage/hit3.ogg"
+    }
+}
+
 if SERVER then
     local function createSpiderConVar(name, default, description)
         if not GetConVar(name) then
@@ -118,18 +158,26 @@ if SERVER then
         end
     end
 
+    local function migrateSpiderConVarDefault(name, oldDefault, newDefault)
+        local convar = GetConVar(name)
+        if not convar then return end
+        if convar:GetString() ~= oldDefault then return end
+
+        RunConsoleCommand(name, newDefault)
+    end
+
     createSpiderConVar("bmb_spider_climb_spike", "1", "Enable the Phase 1 spider SetPos wall-climb spike.")
-    createSpiderConVar("bmb_spider_climb_speed", "82", "Spider climb spike upward speed.")
+    createSpiderConVar("bmb_spider_climb_speed", "105", "Spider climb spike upward speed.")
     createSpiderConVar("bmb_spider_climb_probe_distance", "42", "Spider climb spike forward wall probe distance.")
     createSpiderConVar("bmb_spider_climb_wall_clearance", "30", "Spider climb spike origin clearance from the wall plane.")
     createSpiderConVar("bmb_spider_climb_mantle_forward", "46", "Spider climb spike forward distance used when stepping onto the top.")
     createSpiderConVar("bmb_spider_climb_mantle_up", "44", "Spider climb spike upward top-search distance.")
     createSpiderConVar("bmb_spider_climb_mantle_down", "90", "Spider climb spike downward top-search distance.")
     createSpiderConVar("bmb_spider_climb_mantle_start_below", "3", "How close to the top ledge the spider must climb before mantling.")
-    createSpiderConVar("bmb_spider_climb_mantle_speed", "58", "Spider smooth mantle speed after it reaches the ledge.")
+    createSpiderConVar("bmb_spider_climb_mantle_speed", "72", "Spider smooth mantle speed after it reaches the ledge.")
     createSpiderConVar("bmb_spider_climb_timeout", "7", "Spider climb spike timeout in seconds.")
     createSpiderConVar("bmb_spider_climb_blocked_hold_time", "3", "How long the spider clings to a blocked ledge before giving up.")
-    createSpiderConVar("bmb_spider_climb_descend_speed", "78", "Spider downward speed when giving up a blocked climb.")
+    createSpiderConVar("bmb_spider_climb_descend_speed", "88", "Spider downward speed when giving up a blocked climb.")
     createSpiderConVar("bmb_spider_climb_descend_timeout", "6", "Maximum time spent descending after a blocked climb.")
     createSpiderConVar("bmb_spider_climb_giveup_cooldown", "4", "Cooldown after a blocked climb gives up so the spider wanders elsewhere.")
     createSpiderConVar("bmb_spider_climb_cancel_cooldown", "1.6", "Cooldown after chase-aware climb cancels so the spider can resume ground chase.")
@@ -144,6 +192,10 @@ if SERVER then
     createSpiderConVar("bmb_spider_climb_edge_cost", "2.5", "Per-cell A* cost for spider climb edges.")
     createSpiderConVar("bmb_spider_climb_horizontal_cells", "2", "Horizontal A* cells from which a wide spider may start a climb edge.")
     createSpiderConVar("bmb_debug_spider_climb", "0", "Print spider climb spike diagnostics.")
+
+    migrateSpiderConVarDefault("bmb_spider_climb_speed", "82", "105")
+    migrateSpiderConVarDefault("bmb_spider_climb_mantle_speed", "58", "72")
+    migrateSpiderConVarDefault("bmb_spider_climb_descend_speed", "78", "88")
 end
 
 local function spiderConVarBool(name, fallback)
@@ -165,6 +217,11 @@ local function spiderFlatDistance(a, b)
     local dy = (a.y or 0) - (b.y or 0)
 
     return math.sqrt(dx * dx + dy * dy)
+end
+
+local function randomSound(list)
+    if not list or #list == 0 then return nil end
+    return list[math.random(1, #list)]
 end
 
 if CLIENT then
@@ -353,6 +410,29 @@ if CLIENT then
         end
     end
 
+    function ENT:UpdateBMBSpiderStepSound(speed)
+        speed = speed or self:GetVelocity():Length2D()
+
+        if speed <= (self.StepSoundMinSpeed or 8) then
+            self.BMBSpiderStepDistance = 0
+            return
+        end
+
+        local stepDistance = self.StepSoundDistance or 18
+        self.BMBSpiderStepDistance = (self.BMBSpiderStepDistance or 0) + speed * FrameTime()
+        if self.BMBSpiderStepDistance < stepDistance then return end
+
+        self.BMBSpiderStepDistance = self.BMBSpiderStepDistance - stepDistance
+
+        local soundName = randomSound(self.Sounds and self.Sounds.Step)
+        if not soundName then return end
+
+        local fullSpeed = math.max((self.StepSoundMinSpeed or 8) + 1, self.RunSpeed or 140)
+        local speedFrac = math.Clamp((speed - (self.StepSoundMinSpeed or 8)) / (fullSpeed - (self.StepSoundMinSpeed or 8)), 0, 1)
+        local volume = Lerp(speedFrac, self.StepSoundVolumeMin or 0.40, self.StepSoundVolumeMax or 0.76)
+        self:EmitSound(soundName, self.StepSoundLevel or 58, math.random(self.StepSoundPitchMin or 88, self.StepSoundPitchMax or 112), volume)
+    end
+
     function ENT:UpdateBMBVisualBones()
         local bones = self:CacheBMBSpiderBones()
         if not bones then return end
@@ -370,6 +450,7 @@ if CLIENT then
                 setBoneAngle(self, bones.root, Angle(0, tip * tipSign, 0))
             end
 
+            self.BMBSpiderStepDistance = 0
             return
         end
 
@@ -385,7 +466,9 @@ if CLIENT then
             setBonePosition(self, bones.head, zeroVector)
         end
 
-        self:UpdateBMBSpiderLegs(bones, self:GetVelocity():Length2D())
+        local speed = self:GetVelocity():Length2D()
+        self:UpdateBMBSpiderLegs(bones, speed)
+        self:UpdateBMBSpiderStepSound(speed)
     end
 end
 
@@ -395,11 +478,13 @@ function ENT:Initialize()
     self:BaseInitialize()
     self:SetBMBState("idle")
     self.TargetEntity = nil
+    self:ResetBMBAmbientSoundTime()
+    self.BMBNextAmbientSoundTickAt = CurTime() + math.Rand(0, 1 / (self.AmbientSoundTickRate or 20))
     self.BMBInitialIdleUntil = CurTime() + math.Rand(self.InitialIdleMin or 1.0, self.InitialIdleMax or 3.0)
 end
 
 function ENT:MaybePlayStep()
-    -- Spider Phase 0 parks footsteps until spider-specific audio is packaged.
+    -- Spider footsteps are client-side and distance-driven from the procedural leg phase.
 end
 
 function ENT:IsBMBSpiderClimbSpikeEnabled()
@@ -408,7 +493,7 @@ function ENT:IsBMBSpiderClimbSpikeEnabled()
 end
 
 function ENT:GetBMBSpiderClimbSpeed()
-    return spiderConVarFloat("bmb_spider_climb_speed", self.SpiderClimbSpeed or 82)
+    return spiderConVarFloat("bmb_spider_climb_speed", self.SpiderClimbSpeed or 105)
 end
 
 function ENT:GetBMBSpiderClimbProbeDistance()
@@ -447,7 +532,7 @@ function ENT:GetBMBSpiderClimbMantleStartBelow()
 end
 
 function ENT:GetBMBSpiderClimbMantleSpeed()
-    return spiderConVarFloat("bmb_spider_climb_mantle_speed", self.SpiderClimbMantleSpeed or 58)
+    return spiderConVarFloat("bmb_spider_climb_mantle_speed", self.SpiderClimbMantleSpeed or 72)
 end
 
 function ENT:GetBMBSpiderClimbTimeout()
@@ -459,7 +544,7 @@ function ENT:GetBMBSpiderClimbBlockedHoldTime()
 end
 
 function ENT:GetBMBSpiderClimbDescendSpeed()
-    return spiderConVarFloat("bmb_spider_climb_descend_speed", self.SpiderClimbDescendSpeed or 78)
+    return spiderConVarFloat("bmb_spider_climb_descend_speed", self.SpiderClimbDescendSpeed or 88)
 end
 
 function ENT:GetBMBSpiderClimbDescendTimeout()
@@ -1774,6 +1859,85 @@ function ENT:OnBMBInjured(_damageInfo, _wasFleeing)
 
     if BMB.Behaviors.SeekTarget.IsValid(self, self.BMBRetaliationTarget, self.TargetLoseRange or self.TargetRange) then
         self.TargetEntity = self.BMBRetaliationTarget
+    end
+end
+
+function ENT:OnBMBMeleeHit(target, _damageInfo)
+    if not IsValid(target) then return end
+    if not target:IsPlayer() then return end
+
+    local soundName = randomSound(self.Sounds and self.Sounds.Hit)
+    if soundName then
+        target:EmitSound(soundName, 74, math.random(96, 104), 0.82)
+    end
+end
+
+function ENT:PlayBMBSpiderSay(volume)
+    local soundName = randomSound(self.Sounds and self.Sounds.Say)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 72, math.random(92, 108), volume or 0.72)
+end
+
+function ENT:PlayBMBSpiderHurtSound(volume)
+    local soundName = randomSound(self.Sounds and self.Sounds.Hurt)
+    if not soundName then return end
+
+    self:EmitSound(soundName, 72, math.random(95, 105), volume or 0.84)
+end
+
+function ENT:OnBMBHurtSound(damageInfo)
+    if damageInfo and self:Health() - damageInfo:GetDamage() <= 0 then return end
+
+    self:PlayBMBSpiderHurtSound(0.9)
+end
+
+function ENT:PlayBMBSpiderDeathSound()
+    local soundName = randomSound(self.Sounds and self.Sounds.Death)
+    if soundName then
+        self:EmitSound(soundName, 76, math.random(95, 105), 0.95)
+    end
+end
+
+function ENT:OnKilled(damageInfo)
+    if CLIENT then return end
+
+    self:PlayBMBSpiderDeathSound()
+    self:BeginBMBDeath(damageInfo)
+end
+
+function ENT:ResetBMBAmbientSoundTime()
+    self.BMBAmbientSoundTime = -(self.AmbientSoundIntervalTicks or 80)
+end
+
+function ENT:MaybePlayIdleSound()
+    local now = CurTime()
+    local tickRate = self.AmbientSoundTickRate or 20
+    local tickInterval = 1 / tickRate
+    local nextTick = self.BMBNextAmbientSoundTickAt or now
+    if now < nextTick then return end
+
+    local ticks = math.floor((now - nextTick) / tickInterval) + 1
+    ticks = math.Clamp(ticks, 1, self.AmbientSoundMaxCatchupTicks or 4)
+
+    for _ = 1, ticks do
+        local soundTime = self.BMBAmbientSoundTime
+        if soundTime == nil then
+            soundTime = -(self.AmbientSoundIntervalTicks or 80)
+        end
+
+        if math.random(0, (self.AmbientSoundChanceDenominator or 1000) - 1) < soundTime then
+            self:PlayBMBSpiderSay(0.72)
+            self:ResetBMBAmbientSoundTime()
+            soundTime = self.BMBAmbientSoundTime
+        end
+
+        self.BMBAmbientSoundTime = soundTime + 1
+    end
+
+    self.BMBNextAmbientSoundTickAt = nextTick + ticks * tickInterval
+    if self.BMBNextAmbientSoundTickAt < now - tickInterval then
+        self.BMBNextAmbientSoundTickAt = now + tickInterval
     end
 end
 

@@ -29,7 +29,10 @@ The Phase 1 `SetPos` climb spike remains the locomotion executor. The new part i
 - `WalkSpeed = 100`
 - `RunSpeed = 140`
 - `AttackMoveSpeed = 140`
+- `AttackRange = 72`
+- `AttackVerticalRange = 34`
 - Leap frequency: `LeapChance = 0.65`, `LeapAttemptInterval = 0.3`, cooldown `1.2-2.4`.
+- Climb speed defaults: `bmb_spider_climb_speed = 105`, `bmb_spider_climb_mantle_speed = 72`, `bmb_spider_climb_descend_speed = 88`.
 
 ## Phase 3 Climb Convars
 
@@ -46,6 +49,17 @@ The Phase 1 `SetPos` climb spike remains the locomotion executor. The new part i
 - `bmb_spider_climb_horizontal_cells` default `2`
 
 These are `FCVAR_ARCHIVE`. New cvars take defaults on first load; old saved values may need console overrides on a tester machine.
+
+## Audio Notes
+
+Spider audio is packaged under `sound/bmb/mob/spider/`:
+
+- `say1-4` for ambient and hurt
+- `step1-4` for client-side distance-driven footsteps
+- `death` for `OnKilled`
+- confirmed melee hits on players reuse `sound/bmb/damage/hit1-3.ogg`
+
+`bmb_autorun.lua` registers the spider sound resources for clients. The OGG files were converted from `D:\BMBTools\解包音频\minecraft\sounds\mob\spider` to 44100 Hz mono for Source compatibility.
 
 ## Behavior Notes
 
