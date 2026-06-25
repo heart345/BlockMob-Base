@@ -81,6 +81,8 @@ ENT.GridSafetyMinFootLift = 4
 ENT.CliffHysteresisTime = 0.12
 ENT.ChaseDirectCliffMemoryCooldown = 3.0
 ENT.ChaseDirectCliffMemoryDuration = 25.0
+ENT.ChaseDirectWallMemoryCooldown = 0.8
+ENT.ChaseDirectWallMemoryDuration = 3.0
 ENT.ChaseDirectCliffMemoryMoveCells = 6.0
 ENT.ChaseDirectCliffMemoryTargetMoveCells = 2.0
 ENT.ChaseRepathCliffBlockedGiveUpTime = 4.0
@@ -2193,6 +2195,33 @@ function ENT:RunBMBDebugMove()
     return true
 end
 
+function ENT:BuildBMBPathfinderOptions(destination, moveOptions)
+    moveOptions = moveOptions or {}
+
+    local pathOptions = {
+        mob = self,
+        allowPartial = moveOptions.allowPartial,
+        allowUnsupportedWalk = moveOptions.allowUnsupportedWalk or moveOptions.allowStrandedStart,
+        allowNearestGoal = moveOptions.allowNearestGoal,
+        goalSnapRadiusCells = moveOptions.goalSnapRadiusCells,
+        goalSnapDownCells = moveOptions.goalSnapDownCells,
+        searchBudget = moveOptions.searchBudget,
+        yieldEvery = moveOptions.yieldEvery,
+        maxDropCells = moveOptions.maxDropCells,
+        dropHorizontalCells = moveOptions.dropHorizontalCells,
+        allowClimb = moveOptions.allowClimb,
+        maxClimbCells = moveOptions.maxClimbCells,
+        climbEdgeCost = moveOptions.climbEdgeCost,
+        climbHorizontalCells = moveOptions.climbHorizontalCells
+    }
+
+    if self.ConfigureBMBPathfinderOptions then
+        self:ConfigureBMBPathfinderOptions(pathOptions, destination, moveOptions)
+    end
+
+    return pathOptions
+end
+
 function ENT:MoveToWorldPosition(destination, speed, options)
     options = options or {}
 
@@ -2247,11 +2276,11 @@ function ENT:MoveToWorldPosition(destination, speed, options)
         if self.BMBMoveInterrupt then return false end
     end
 
-    local waypoints = BMB.Pathfinder.FindPath(self:GetPos(), destination, {
-        mob = self,
-        allowPartial = options.allowPartial,
-        allowUnsupportedWalk = options.allowUnsupportedWalk or options.allowStrandedStart
-    })
+    local waypoints = BMB.Pathfinder.FindPath(
+        self:GetPos(),
+        destination,
+        self:BuildBMBPathfinderOptions(destination, options)
+    )
 
     -- chase 诊断（bmb_chase_debug 1）：分清钉死是 A* 无路(nil) / 部分路径(partial) / 还是后续 MoveAlongPath 被拦。
     local chaseCvar = GetConVar and GetConVar("bmb_debug_chase")
@@ -2822,7 +2851,7 @@ function ENT:GetBMBWaypointAction(waypoints, nodeIndex)
 end
 
 function ENT:IsBMBPathVerticalAction(action)
-    return action == "hop" or action == "drop"
+    return action == "hop" or action == "drop" or action == "climb"
 end
 
 function ENT:IsBMBOnGround()
@@ -2951,6 +2980,10 @@ function ENT:IsBMBPathFinalReached(final, tolerance)
     end
 
     return self:IsBMBPathActionAtTargetLevel(final)
+end
+
+function ENT:RunBMBPathVerticalAction(_action, _node, _final, _waypoints, _nodeIndex, _speed, _options)
+    return false
 end
 
 function ENT:GetBMBBlockHopJumpHeight(blockSize, apex)
@@ -3657,6 +3690,24 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         if not verticalAction and not self.BMBActiveBlockHop
             and BMB.Pathfinder.ShouldRepath and BMB.Pathfinder.ShouldRepath(waypoints) then
             self:RestoreBMBStepHeight()
+            return false
+        end
+
+        if verticalAction and activeAction ~= "hop" and activeAction ~= "drop" then
+            if actionNode and self.RunBMBPathVerticalAction
+                and self:RunBMBPathVerticalAction(activeAction, actionNode, final, waypoints, nodeIndex, desiredSpeed, options) then
+                if nodeIndex >= #waypoints then
+                    self:SetBMBMoveMode("idle")
+                    self:UpdateBMBApproachDebug(nil, 0)
+                    return true
+                end
+
+                nodeIndex = nodeIndex + 1
+                self:MarkBMBPathAdvanced(nodeIndex)
+                continue
+            end
+
+            self:FailBMBMove("path_" .. tostring(activeAction) .. "_fail")
             return false
         end
 

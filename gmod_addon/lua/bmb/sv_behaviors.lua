@@ -37,6 +37,14 @@ if SERVER and not GetConVar("bmb_chase_cliff_memory_duration") then
     CreateConVar("bmb_chase_cliff_memory_duration", "25.0", FCVAR_ARCHIVE, "Maximum seconds to keep a cached chase cliff shortcut failure.")
 end
 
+if SERVER and not GetConVar("bmb_chase_wall_memory_cooldown") then
+    CreateConVar("bmb_chase_wall_memory_cooldown", "0.8", FCVAR_ARCHIVE, "Seconds before a cached chase wall shortcut may be retried.")
+end
+
+if SERVER and not GetConVar("bmb_chase_wall_memory_duration") then
+    CreateConVar("bmb_chase_wall_memory_duration", "3.0", FCVAR_ARCHIVE, "Maximum seconds to keep a cached chase wall shortcut failure.")
+end
+
 if SERVER and not GetConVar("bmb_chase_cliff_memory_move_cells") then
     CreateConVar("bmb_chase_cliff_memory_move_cells", "6.0", FCVAR_ARCHIVE, "Mob movement in block cells required before retrying a cached chase cliff shortcut.")
 end
@@ -687,23 +695,26 @@ function BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
     mob.BMBChaseDirectCliffBlock = nil
 end
 
-function BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
+function BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target, reason)
     if not IsValid(mob) or not IsValid(target) then return end
+
+    reason = reason == "wall" and "wall" or "cliff"
 
     local now = CurTime()
     local duration = getConVarFloat(
-        "bmb_chase_cliff_memory_duration",
-        mob.ChaseDirectCliffMemoryDuration or 25.0
+        reason == "wall" and "bmb_chase_wall_memory_duration" or "bmb_chase_cliff_memory_duration",
+        reason == "wall" and (mob.ChaseDirectWallMemoryDuration or 3.0) or (mob.ChaseDirectCliffMemoryDuration or 25.0)
     )
     local cooldown = getConVarFloat(
-        "bmb_chase_cliff_memory_cooldown",
-        mob.ChaseDirectCliffMemoryCooldown or 3.0
+        reason == "wall" and "bmb_chase_wall_memory_cooldown" or "bmb_chase_cliff_memory_cooldown",
+        reason == "wall" and (mob.ChaseDirectWallMemoryCooldown or 0.8) or (mob.ChaseDirectCliffMemoryCooldown or 3.0)
     )
 
     -- This suppresses both chase_direct shortcuts and chase_repath direct pressure.
     -- A* remains free to keep following/repairing a path around the blocked line.
     mob.BMBChaseDirectCliffBlock = {
         targetIndex = target:EntIndex(),
+        reason = reason,
         mobPos = mob:GetPos(),
         targetPos = target:GetPos(),
         retryAt = now + cooldown,
@@ -711,8 +722,8 @@ function BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
     }
 
     if shouldLogChase() then
-        print(string.format("[BMB chase] %s direct cliff cached target=%s cooldown=%.2f duration=%.2f",
-            mob:GetClass(), tostring(target), cooldown, duration))
+        print(string.format("[BMB chase] %s direct %s cached target=%s cooldown=%.2f duration=%.2f",
+            mob:GetClass(), reason, tostring(target), cooldown, duration))
     end
 end
 
@@ -729,6 +740,11 @@ function BMB.Behaviors.Chase.IsDirectCliffBlocked(mob, target)
 
     local now = CurTime()
     if block.expiresAt and block.expiresAt > 0 and now >= block.expiresAt then
+        BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
+        return false
+    end
+
+    if block.reason == "wall" and now >= (block.retryAt or 0) then
         BMB.Behaviors.Chase.ClearDirectCliffBlock(mob)
         return false
     end
@@ -843,8 +859,8 @@ function BMB.Behaviors.Chase.ApplySafePressure(mob, target, speed, mode, probeDi
     end
 
     if not safe then
-        if BMB.Behaviors.Chase.ShouldRememberCliffMode(mode) and reason ~= "wall" then
-            BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target)
+        if BMB.Behaviors.Chase.ShouldRememberCliffMode(mode) then
+            BMB.Behaviors.Chase.RememberDirectCliffBlock(mob, target, reason)
         end
 
         if mob.SetBMBState then mob:SetBMBState("chase") end
@@ -1316,6 +1332,11 @@ function BMB.Behaviors.Chase.Run(mob, target)
         return false
     end
 
+    local useClimbPath = mob.ShouldBMBUseClimbPath and mob:ShouldBMBUseClimbPath(target) or false
+    if BMB.Behaviors.Chase.ShouldStalkHighTarget(mob, target) and not useClimbPath then
+        return BMB.Behaviors.Chase.StalkHighTarget(mob, target)
+    end
+
     local segmentTime = mob.ChaseSegmentTimeout or mob.ChaseRepathInterval or 0.75
     local minPathSpeed
 
@@ -1331,6 +1352,7 @@ function BMB.Behaviors.Chase.Run(mob, target)
         allowPartial = true,
         acceptPartial = true,
         allowNearestGoal = true,
+        allowClimb = useClimbPath,
         goalSnapRadiusCells = mob.ChaseGoalSnapRadiusCells or 2,
         timeout = segmentTime,
         goalTolerance = math.max(attackRange * 0.65, blockSize() * 0.5),

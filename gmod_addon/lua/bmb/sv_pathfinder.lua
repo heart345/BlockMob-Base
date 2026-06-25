@@ -11,6 +11,22 @@ local function copyCoord(coord)
     return { x = coord.x, y = coord.y, z = coord.z or 0 }
 end
 
+local function copyMetaValue(value)
+    if type(value) ~= "table" then return value end
+    return { x = value.x, y = value.y, z = value.z }
+end
+
+local function copyMeta(meta)
+    if not meta then return nil end
+
+    local copied = {}
+    for key, value in pairs(meta) do
+        copied[key] = copyMetaValue(value)
+    end
+
+    return copied
+end
+
 local function heuristic(a, b)
     return math.abs(a.x - b.x) + math.abs(a.y - b.y) + math.abs((a.z or 0) - (b.z or 0))
 end
@@ -146,12 +162,20 @@ local function getDropHorizontalCells(options)
     return 1
 end
 
-local function addNeighbor(found, coord, action, cost)
-    found[#found + 1] = {
+local function addNeighbor(found, coord, action, cost, meta)
+    local neighbor = {
         coord = coord,
         action = action or "walk",
         cost = cost or 1
     }
+
+    if meta then
+        for key, value in pairs(meta) do
+            neighbor[key] = copyMetaValue(value)
+        end
+    end
+
+    found[#found + 1] = neighbor
 end
 
 local function findDropNeighbor(blockWorld, current, direction, options)
@@ -181,6 +205,108 @@ local function findDropNeighbor(blockWorld, current, direction, options)
             end
         end
     end
+end
+
+local function getClimbMaxCells(options)
+    local mob = options and options.mob
+    local configured = options and options.maxClimbCells
+        or (IsValid(mob) and mob.SpiderClimbMaxCells)
+        or 6
+
+    return math.max(0, math.floor(configured))
+end
+
+local function getClimbEdgeCost(options)
+    local mob = options and options.mob
+    local configured = options and options.climbEdgeCost
+        or (IsValid(mob) and mob.SpiderClimbEdgeCost)
+        or 2.5
+
+    return math.max(1, configured)
+end
+
+local function getClimbHorizontalCells(options)
+    local mob = options and options.mob
+    local configured = options and options.climbHorizontalCells
+        or (IsValid(mob) and mob.SpiderClimbHorizontalCells)
+
+    if configured and configured > 0 then
+        return math.max(1, math.floor(configured))
+    end
+
+    if IsValid(mob) and mob.GetBMBPathHullRadius and mob.GetBMBBlockSize then
+        local radius = mob:GetBMBPathHullRadius()
+        local size = mob:GetBMBBlockSize()
+        return math.max(1, math.ceil((radius + size * 0.5 + 1) / size))
+    end
+
+    return 1
+end
+
+local function isClimbSpaceClear(blockWorld, current, heightCells, options)
+    for up = 1, heightCells do
+        if not isPassable(blockWorld, {
+            x = current.x,
+            y = current.y,
+            z = (current.z or 0) + up
+        }, options) then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function findClimbNeighbor(blockWorld, current, direction, options)
+    if not options or options.allowClimb ~= true then return nil end
+
+    local maxClimbCells = getClimbMaxCells(options)
+    if maxClimbCells <= 0 then return nil end
+    local maxHorizontalCells = getClimbHorizontalCells(options)
+
+    for outCells = 1, maxHorizontalCells do
+        local wall = {
+            x = current.x + direction.x * outCells,
+            y = current.y + direction.y * outCells,
+            z = current.z or 0
+        }
+
+        if blockWorld.IsSolid(wall) then
+            for approachCells = 1, outCells - 1 do
+                if hasSolidPathBlock(blockWorld, {
+                    x = current.x + direction.x * approachCells,
+                    y = current.y + direction.y * approachCells,
+                    z = current.z or 0
+                }, options) then
+                    return nil
+                end
+            end
+
+            for climbCells = 1, maxClimbCells do
+                if not isClimbSpaceClear(blockWorld, current, climbCells, options) then return nil end
+
+                local support = {
+                    x = wall.x,
+                    y = wall.y,
+                    z = (current.z or 0) + climbCells - 1
+                }
+
+                if not blockWorld.IsSolid(support) then return nil end
+
+                local top = {
+                    x = wall.x,
+                    y = wall.y,
+                    z = (current.z or 0) + climbCells
+                }
+
+                if isStandable(blockWorld, top, options) then
+                    return top, climbCells, outCells
+                end
+            end
+        end
+    end
+
+    return nil
 end
 
 local function neighbors(coord, blockWorld, options)
@@ -217,6 +343,16 @@ local function neighbors(coord, blockWorld, options)
                 if dropTarget then
                     addNeighbor(found, copyCoord(dropTarget), "drop", 1 + dropCells * 0.12 + (outCells - 1) * 0.35)
                 end
+
+                local climbTarget, climbCells, climbOutCells = findClimbNeighbor(blockWorld, coord, direction, options)
+
+                if climbTarget then
+                    addNeighbor(found, copyCoord(climbTarget), "climb", getClimbEdgeCost(options) * climbCells + (climbOutCells - 1) * 0.5, {
+                        wallNormal = { x = -direction.x, y = -direction.y, z = 0 },
+                        climbHeight = climbCells,
+                        climbApproachCells = climbOutCells
+                    })
+                end
             end
 
             local hopTarget = {
@@ -251,21 +387,23 @@ local function lowest(open, fScore)
     return best
 end
 
-local function reconstruct(cameFrom, cameAction, current)
+local function reconstruct(cameFrom, cameAction, cameMeta, current)
+    local currentKey = coordKey(current)
     local path = {
         {
             coord = copyCoord(current),
-            action = cameAction[coordKey(current)]
+            action = cameAction[currentKey],
+            meta = copyMeta(cameMeta[currentKey])
         }
     }
-    local currentKey = coordKey(current)
 
     while cameFrom[currentKey] do
         current = cameFrom[currentKey]
         currentKey = coordKey(current)
         path[#path + 1] = {
             coord = copyCoord(current),
-            action = cameAction[currentKey]
+            action = cameAction[currentKey],
+            meta = copyMeta(cameMeta[currentKey])
         }
     end
 
@@ -277,21 +415,29 @@ local function reconstruct(cameFrom, cameAction, current)
     return reversed
 end
 
-local function buildWaypoints(blockWorld, cameFrom, cameAction, endCoord)
-    local coords = reconstruct(cameFrom, cameAction, endCoord)
+local function buildWaypoints(blockWorld, cameFrom, cameAction, cameMeta, endCoord)
+    local coords = reconstruct(cameFrom, cameAction, cameMeta, endCoord)
     local waypoints = {}
 
     for i = 1, #coords do
         local node = coords[i]
         local pos = blockWorld.BlockToWorld(node.coord)
 
-        waypoints[#waypoints + 1] = {
+        local waypoint = {
             x = pos.x,
             y = pos.y,
             z = pos.z,
             coord = copyCoord(node.coord),
             action = node.action
         }
+
+        if node.meta then
+            for key, value in pairs(node.meta) do
+                waypoint[key] = copyMetaValue(value)
+            end
+        end
+
+        waypoints[#waypoints + 1] = waypoint
     end
 
     return waypoints
@@ -488,6 +634,7 @@ function pathfinder.FindPath(startPos, goalPos, options)
     local closedSet = {}
     local cameFrom = {}
     local cameAction = {}
+    local cameMeta = {}
     local gScore = { [startKey] = 0 }
     local fScore = { [startKey] = hStart }
 
@@ -509,7 +656,7 @@ function pathfinder.FindPath(startPos, goalPos, options)
         openSet[currentKey] = nil
 
         if currentKey == goalKey then
-            local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, current)
+            local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, cameMeta, current)
             waypoints.bornAt = CurTime()
             return waypoints
         end
@@ -534,6 +681,11 @@ function pathfinder.FindPath(startPos, goalPos, options)
                 if tentative + h <= fLimit and tentative < (gScore[nextKey] or math.huge) then
                     cameFrom[nextKey] = copyCoord(current)
                     cameAction[nextKey] = neighbor.action
+                    cameMeta[nextKey] = copyMeta({
+                        wallNormal = neighbor.wallNormal,
+                        climbHeight = neighbor.climbHeight,
+                        climbApproachCells = neighbor.climbApproachCells
+                    })
                     gScore[nextKey] = tentative
                     fScore[nextKey] = tentative + h
 
@@ -553,7 +705,7 @@ function pathfinder.FindPath(startPos, goalPos, options)
     -- 走到这 = 无完整路径。能比起点更接近目标就交部分路径（标记 partial），
     -- 一步都凑不近才算彻底失败
     if options.allowPartial ~= false and bestKey ~= startKey and bestH < hStart then
-        local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, bestCoord)
+        local waypoints = buildWaypoints(blockWorld, cameFrom, cameAction, cameMeta, bestCoord)
         waypoints.partial = true
         waypoints.bornAt = CurTime()
         return waypoints

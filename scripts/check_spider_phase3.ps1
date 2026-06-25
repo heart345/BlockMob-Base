@@ -9,6 +9,9 @@ function Assert-Contains([string]$relativePath, [string]$pattern, [string]$messa
 }
 
 $spider = "gmod_addon\lua\entities\bmb_spider.lua"
+$base = "gmod_addon\lua\entities\bmb_base_mob.lua"
+$pathfinder = "gmod_addon\lua\bmb\sv_pathfinder.lua"
+$behaviors = "gmod_addon\lua\bmb\sv_behaviors.lua"
 
 Assert-Contains $spider 'WalkSpeed\s*=\s*100' "Spider wander speed should use the tuned 100 default."
 Assert-Contains $spider 'RunSpeed\s*=\s*140' "Spider chase speed should use the tuned 140 default."
@@ -22,6 +25,9 @@ Assert-Contains $spider 'bmb_spider_climb_chase_active",\s*"1"' "Spider Phase 3 
 Assert-Contains $spider 'bmb_spider_climb_chase_approach_distance",\s*"260"' "Spider Phase 3 should expose proactive climb wall scan distance."
 Assert-Contains $spider 'bmb_spider_climb_chase_approach_timeout",\s*"0\.45"' "Spider Phase 3 should expose proactive climb approach segment time."
 Assert-Contains $spider 'bmb_spider_climb_chase_start_distance",\s*"84"' "Spider Phase 3 should start climbing immediately when a proactive wall hit is close enough."
+Assert-Contains $spider 'bmb_spider_climb_max_cells",\s*"6"' "Spider Phase 3 should expose the A* climb edge height limit."
+Assert-Contains $spider 'bmb_spider_climb_edge_cost",\s*"2\.5"' "Spider Phase 3 should expose the A* climb edge cost."
+Assert-Contains $spider 'bmb_spider_climb_horizontal_cells",\s*"2"' "Spider Phase 3 should expose the wide-hull horizontal climb start range."
 
 Assert-Contains $spider 'function ENT:GetBMBSpiderClimbCombatTarget\(\)' "Spider Phase 3 should resolve the current retaliation target for climb decisions."
 Assert-Contains $spider 'function ENT:GetBMBSpiderClimbTargetPosition\(target\)' "Spider Phase 3 should bias wall scans toward the current combat or movement target."
@@ -52,5 +58,35 @@ Assert-Contains $spider 'BMBSpiderClimbLastPinnedPos\s*=\s*startPinned' "Spider 
 Assert-Contains $spider 'BMBSpiderClimbPendingReason\s*=\s*reason' "Movement override should pass its reason into the climb spike without changing the Phase 1 function signature."
 Assert-Contains $spider 'reason\s*=\s*self\.BMBSpiderClimbPendingReason or "ambient"' "Ambient climb attempts should be distinguishable from movement override climb attempts."
 Assert-Contains $spider 'scanTarget\s*=\s*targetPos or target' "Wall scanning should prefer the resolved combat target position when one exists."
+Assert-Contains $spider 'function ENT:ConfigureBMBPathfinderOptions\(pathOptions' "Spider should opt into climb-aware pathfinder options."
+Assert-Contains $spider 'pathOptions\.allowClimb\s*=\s*true' "Spider pathfinder options should enable climb edges."
+Assert-Contains $spider 'function ENT:RunBMBPathVerticalAction\(action,\s*node,\s*final' "Spider should execute path climb waypoints through the base vertical-action hook."
+Assert-Contains $spider 'BMBSpiderClimbPendingReason\s*=\s*"path_climb"' "Spider A* climb should use a distinct path_climb reason."
+Assert-Contains $spider 'BMBSpiderLastClimbResult\s*==\s*"success"' "Spider path climb should only advance the A* node after a successful spike."
+Assert-Contains $spider 'reason\s*==\s*"path_climb"' "Spider path climb should bypass chase-only high-target startup gating."
+Assert-Contains $spider 'function ENT:ApproachBMBSpiderPathClimbWall\(normal,\s*speed\)' "Spider path climb should approach from a wide-hull-safe A* cell before starting the spike."
+Assert-Contains $spider 'self:SetBMBMoveMode\("path_climb_approach"\)' "Spider path climb approach should publish a debug move mode."
+
+Assert-Contains $pathfinder 'options\.allowClimb\s*~=\s*true' "Pathfinder climb neighbors must be gated behind explicit spider opt-in."
+Assert-Contains $pathfinder 'function\s+getClimbHorizontalCells\(options\)' "Pathfinder climb neighbors should account for wide mobs that cannot stand in the wall-adjacent cell."
+Assert-Contains $pathfinder 'action\s*=\s*action or "walk"' "Pathfinder neighbor records should keep explicit action metadata."
+Assert-Contains $pathfinder '"climb",\s*getClimbEdgeCost\(options\) \* climbCells' "Pathfinder should emit high-cost climb edges."
+Assert-Contains $pathfinder 'wallNormal\s*=\s*\{\s*x\s*=\s*-direction\.x' "Pathfinder climb edges should carry the wall normal needed by the spike."
+Assert-Contains $pathfinder 'climbHeight\s*=\s*climbCells' "Pathfinder climb edges should preserve climb height metadata."
+Assert-Contains $pathfinder 'climbApproachCells\s*=\s*climbOutCells' "Pathfinder climb edges should preserve horizontal approach metadata."
+Assert-Contains $pathfinder 'cameMeta' "Pathfinder should carry climb metadata through A* reconstruction."
+
+Assert-Contains $base 'function ENT:BuildBMBPathfinderOptions\(destination,\s*moveOptions\)' "Base mob should centralize pathfinder option forwarding."
+Assert-Contains $base 'allowNearestGoal\s*=\s*moveOptions\.allowNearestGoal' "Base pathfinder options should forward chase nearest-goal settings."
+Assert-Contains $base 'allowClimb\s*=\s*moveOptions\.allowClimb' "Base pathfinder options should forward climb opt-in."
+Assert-Contains $base 'climbHorizontalCells\s*=\s*moveOptions\.climbHorizontalCells' "Base pathfinder options should forward spider climb horizontal range."
+Assert-Contains $base 'action == "hop" or action == "drop" or action == "climb"' "Base movement should classify climb as a vertical path action."
+Assert-Contains $base 'RunBMBPathVerticalAction\(activeAction,\s*actionNode,\s*final' "Base movement should delegate climb execution to the entity hook."
+
+Assert-Contains $behaviors 'bmb_chase_wall_memory_cooldown' "Shared chase should expose a short wall-memory cooldown."
+Assert-Contains $behaviors 'RememberDirectCliffBlock\(mob,\s*target,\s*reason\)' "Shared chase direct memory should record wall and cliff reasons."
+Assert-Contains $behaviors 'reason == "wall"' "Shared chase direct memory should distinguish wall hits from cliff hits."
+Assert-Contains $behaviors 'allowClimb\s*=\s*useClimbPath' "Shared chase should pass spider climb opt-in into path movement."
+Assert-Contains $behaviors 'ShouldStalkHighTarget\(mob,\s*target\) and not useClimbPath' "Shared chase should stalk high targets before A* only for non-climbing mobs."
 
 Write-Host "Spider Phase 3 checks passed."

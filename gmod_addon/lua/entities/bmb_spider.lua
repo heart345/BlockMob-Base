@@ -105,7 +105,11 @@ ENT.SpiderClimbChaseActive = true
 ENT.SpiderClimbChaseApproachDistance = 260
 ENT.SpiderClimbChaseApproachTimeout = 0.45
 ENT.SpiderClimbChaseStartDistance = 84
+ENT.SpiderClimbMaxCells = 6
+ENT.SpiderClimbEdgeCost = 2.5
+ENT.SpiderClimbHorizontalCells = 2
 ENT.SpiderClimbMaxWallNormalZ = 0.25
+ENT.BMBAllowClimbPath = true
 
 if SERVER then
     local function createSpiderConVar(name, default, description)
@@ -136,6 +140,9 @@ if SERVER then
     createSpiderConVar("bmb_spider_climb_chase_approach_distance", "260", "How far spider chase scans ahead for a wall to climb toward a high target.")
     createSpiderConVar("bmb_spider_climb_chase_approach_timeout", "0.45", "How long one active spider chase-climb approach segment may run.")
     createSpiderConVar("bmb_spider_climb_chase_start_distance", "84", "How close a proactive chase wall hit can be before spider starts climbing immediately.")
+    createSpiderConVar("bmb_spider_climb_max_cells", "6", "Maximum vertical A* cells a spider climb edge may cover.")
+    createSpiderConVar("bmb_spider_climb_edge_cost", "2.5", "Per-cell A* cost for spider climb edges.")
+    createSpiderConVar("bmb_spider_climb_horizontal_cells", "2", "Horizontal A* cells from which a wide spider may start a climb edge.")
     createSpiderConVar("bmb_debug_spider_climb", "0", "Print spider climb spike diagnostics.")
 end
 
@@ -496,6 +503,32 @@ function ENT:GetBMBSpiderClimbChaseStartDistance()
     return spiderConVarFloat("bmb_spider_climb_chase_start_distance", self.SpiderClimbChaseStartDistance or 84)
 end
 
+function ENT:GetBMBSpiderClimbMaxCells()
+    return math.max(0, math.floor(spiderConVarFloat("bmb_spider_climb_max_cells", self.SpiderClimbMaxCells or 6)))
+end
+
+function ENT:GetBMBSpiderClimbEdgeCost()
+    return math.max(1, spiderConVarFloat("bmb_spider_climb_edge_cost", self.SpiderClimbEdgeCost or 2.5))
+end
+
+function ENT:GetBMBSpiderClimbHorizontalCells()
+    return math.max(1, math.floor(spiderConVarFloat("bmb_spider_climb_horizontal_cells", self.SpiderClimbHorizontalCells or 2)))
+end
+
+function ENT:ShouldBMBUseClimbPath(_target)
+    return self:IsBMBSpiderClimbSpikeEnabled()
+end
+
+function ENT:ConfigureBMBPathfinderOptions(pathOptions, _destination, moveOptions)
+    if moveOptions and moveOptions.allowClimb == false then return end
+    if not self:ShouldBMBUseClimbPath() then return end
+
+    pathOptions.allowClimb = true
+    pathOptions.maxClimbCells = self:GetBMBSpiderClimbMaxCells()
+    pathOptions.climbEdgeCost = self:GetBMBSpiderClimbEdgeCost()
+    pathOptions.climbHorizontalCells = self:GetBMBSpiderClimbHorizontalCells()
+end
+
 function ENT:DebugBMBSpiderClimb(message)
     if not spiderConVarBool("bmb_debug_spider_climb", false) then return end
     print("[BMB spider climb] " .. tostring(message))
@@ -555,6 +588,8 @@ function ENT:GetBMBSpiderIntoWallDirection(normal)
 end
 
 function ENT:ShouldBMBSpiderStartClimb(target, normal, reason)
+    if reason == "path_climb" then return true, nil end
+
     local combatTarget = self:GetBMBSpiderClimbCombatTarget()
     if not IsValid(combatTarget) then return true, nil end
 
@@ -1411,6 +1446,7 @@ function ENT:RunBMBSpiderClimbMantle(normal, fromPos, landing)
 end
 
 function ENT:FinishBMBSpiderClimbSpike(result)
+    self.BMBSpiderLastClimbResult = result
     self.BMBSpiderClimbing = false
     self.BMBSpiderClimbStartZ = nil
     self.BMBSpiderClimbGoalZ = nil
@@ -1445,6 +1481,7 @@ end
 function ENT:RunBMBSpiderClimbSpike(target)
     local reason = self.BMBSpiderClimbPendingReason or "ambient"
     self.BMBSpiderClimbPendingReason = nil
+    self.BMBSpiderLastClimbResult = nil
 
     if self.BMBSpiderClimbing then return false end
 
@@ -1638,6 +1675,72 @@ end
 function ENT:TryBMBMoveOverride(reason, target)
     self.BMBSpiderClimbPendingReason = reason
     return self:RunBMBSpiderClimbSpike(target)
+end
+
+function ENT:ApproachBMBSpiderPathClimbWall(normal, speed)
+    if self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), normal) then return true end
+
+    local intoWall = self:GetBMBSpiderIntoWallDirection(normal)
+    if not intoWall then return false end
+
+    local desiredSpeed = speed or self.RunSpeed or self.WalkSpeed
+    local deadline = CurTime() + math.max(0.2, self:GetBMBSpiderClimbChaseApproachTimeout())
+    local progressWatch = self:StartBMBMoveProgressWatch()
+
+    while CurTime() < deadline do
+        if self.BMBDead or self.BMBHeld or self.BMBMoveInterrupt then return false end
+        if self.IsBMBKnockbackActive and self:IsBMBKnockbackActive() then return false end
+        if self.IsBMBFreezeEnabled and self:IsBMBFreezeEnabled() then return false end
+
+        if self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), normal) then return true end
+
+        local current = self:GetPos()
+        local target = current + intoWall * math.max(
+            self:GetBMBSpiderClimbProbeDistance(),
+            self:GetBMBSpiderClimbWallClearance()
+        )
+        target.z = current.z
+
+        self:SetBMBState("chase")
+        self:SetBMBMoveMode("path_climb_approach")
+        self:MaintainBMBMoveSpeed(desiredSpeed, desiredSpeed)
+        self:UpdateMoveActivity(desiredSpeed, desiredSpeed)
+        self:UpdateBMBApproachDebug(target, 0)
+        self:SteerTowards(target, progressWatch)
+        self:BodyMoveXY()
+        self:MaybePlayStep()
+
+        if not self:CheckBMBMoveProgress(progressWatch) then
+            return self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), normal) ~= nil
+        end
+
+        coroutine.yield()
+    end
+
+    return self:GetBMBSpiderClimbPinnedPosition(self:GetPos(), normal) ~= nil
+end
+
+function ENT:RunBMBPathVerticalAction(action, node, final, _waypoints, _nodeIndex, speed, _options)
+    if action ~= "climb" then return false end
+    if not node or not node.wallNormal then return false end
+    if not self:IsBMBSpiderClimbSpikeEnabled() then return false end
+    if self.BMBSpiderClimbing then return false end
+    if CurTime() < (self.BMBSpiderClimbCooldownUntil or 0) then return false end
+
+    local rawNormal = node.wallNormal
+    local normal = Vector(rawNormal.x or 0, rawNormal.y or 0, rawNormal.z or 0)
+    if normal:LengthSqr() <= 0.0001 then return false end
+    normal:Normalize()
+
+    self:SetBMBMoveMode("path_climb")
+
+    if not self:ApproachBMBSpiderPathClimbWall(normal, speed) then return false end
+
+    self.BMBSpiderClimbForcedNormal = normal
+    self.BMBSpiderClimbPendingReason = "path_climb"
+    if not self:RunBMBSpiderClimbSpike(final or node) then return false end
+
+    return self.BMBSpiderLastClimbResult == "success"
 end
 
 function ENT:CanBMBTarget(target)
