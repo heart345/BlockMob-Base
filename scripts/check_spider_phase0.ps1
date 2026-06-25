@@ -26,8 +26,11 @@ Assert-Contains $spider 'ENT\.Spawnable\s*=\s*true' "Spider should be spawnable 
 Assert-Contains $menu '"bmb_spider"' "Spider should be registered in the BlockMob Base spawnmenu category."
 
 Assert-Contains $spider 'ENT\.CollisionMins\s*=\s*Vector\(-26,\s*-26,\s*0\)' "Spider collision mins should match the 1.4 block wide footprint."
-Assert-Contains $spider 'ENT\.CollisionMaxs\s*=\s*Vector\(26,\s*26,\s*33\)' "Spider collision maxs should stay short enough for one-block-high gaps."
+Assert-Contains $spider 'ENT\.CollisionMaxs\s*=\s*Vector\(26,\s*26,\s*31\)' "Spider collision maxs should stay short enough for one-block-high gaps without exceeding the model height."
 Assert-Contains $spider 'RetaliateOnDamage\s*=\s*true' "Spider should use base retaliation after Phase 2 while staying neutral until attacked."
+Assert-Contains $spider 'ENT\.DeathTipDegrees\s*=\s*180' "Spider corpses should flip fully belly-up instead of side-tipping like other mobs."
+Assert-Contains $spider 'setBoneAngle\(self,\s*bones\.root,\s*Angle\(0,\s*tip,\s*0\)\)' "Spider death pose should rotate the root through the full flip animation."
+Assert-NotContains $spider 'tipSign' "Spider death pose should not randomize left/right side-tips."
 
 Assert-Contains $spider 'function ENT:RunBehaviour\(\)' "Spider should own a thin behavior scheduler."
 Assert-Contains $spider 'MaintainBMBFreeze' "Spider should respect bmb_freeze for screenshots."

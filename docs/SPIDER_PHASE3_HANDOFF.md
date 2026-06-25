@@ -33,6 +33,8 @@ The Phase 1 `SetPos` climb spike remains the locomotion executor. The new part i
 - `AttackVerticalRange = 34`
 - Leap frequency: `LeapChance = 0.65`, `LeapAttemptInterval = 0.3`, cooldown `1.2-2.4`.
 - Climb speed defaults: `bmb_spider_climb_speed = 105`, `bmb_spider_climb_mantle_speed = 72`, `bmb_spider_climb_descend_speed = 88`.
+- Death pose: `DeathTipDegrees = 180` and the root bone uses `Angle(0, tip, 0)` with no side randomization, so spider corpses flip belly-up instead of side-tipping like other mobs.
+- Fatal hits now use base `DeathKnockback*`: after `BeginBMBDeath`, the dead mob gets a short horizontal shove plus vertical lift before the frozen death pose takes over. This keeps the spider's 180-degree flip visible instead of rotating into the floor. Spider `OnKilled` restores climb movetype first so wall-climb `MOVETYPE_NONE` cannot swallow the death shove.
 
 ## Phase 3 Climb Convars
 
@@ -77,9 +79,15 @@ The A* climb edge is intentionally spider-only. Zombies, skeletons, sheep, wolve
 
 `path_climb` can begin from a wide-hull-safe grid cell, usually two cells out from the wall for the current spider hull. Before starting the spike, `ApproachBMBSpiderPathClimbWall()` briefly steers into the wall until `GetBMBSpiderClimbPinnedPosition()` succeeds; then the normal Phase 1 climb spike takes over.
 
+Low one-block chase barriers are handled by the same spike, but they do not satisfy the high-target `bmb_spider_climb_chase_min_target_up` gate. `IsBMBSpiderLowChaseClimbReason()` whitelists blocked movement reasons such as `path_carrot`, `direct`, `move_to`, `source_path`, `path`, `chase_active_wall`, and `chase_active_blocked`; those may start the climb while target Z is level. The climb records `BMBSpiderClimbAllowLowTarget` so target-aware cancellation does not abort the mantle as `target_dropped` halfway through.
+
+Spider pathfinder options set `preferClimbOverHop = true`. When A* finds that a one-block obstacle top can be reached by both a normal `hop` edge and a spider `climb` edge, `sv_pathfinder.lua` suppresses the duplicate hop and keeps climb. This avoids low-ceiling glass corridors where cave spiders would choose `path_hop`, jump into the roof, and appear sunk into the floor; it also helps full-size spiders enter the same one-block-high crawl spaces through the climb spike instead of grinding direct wall pressure.
+
 The older proactive chase bridge still exists as fallback. It scans a small fan of target/forward/side directions, walks toward the wall foot using `chase_climb_approach`, and can start the spike immediately when already close to a detected wall.
 
 Important: a wall scan hit is not enough to enter `climb_spike`. `RunBMBSpiderClimbSpike()` must first call `GetBMBSpiderClimbPinnedPosition()` at the current position and seed `BMBSpiderClimbLastPinnedPos` from that pinned point. Without this gate, a far wall can be seen by the wider scan while the pin trace still cannot reach it, causing repeated `start ... finish lost_wall` flashes.
+
+`climb_spike` uses `SetPos`, so it must not rely only on Source solid traces. `CanBMBSpiderMoveHull()` and mantle landing checks also scan the target hull with `ents.FindInBox()` and reject live players, BMB mobs, NPCs, and NextBots. If a player stands on the spider while it climbs, the move is treated as blocked/held instead of tunneling through and trapping the player.
 
 ## Cancellation Notes
 
@@ -90,6 +98,8 @@ The chase bridge records whether a combat target existed at climb start. After `
 - target moved clearly away from the climbed wall: `target_moved_away`
 
 `path_climb` bypasses the old chase-only "target must be above" startup gate so same-level wall-over routes can work. It also does not set target-aware cancellation; the A* route is responsible for deciding that the wall should be climbed.
+
+Blocked low-wall chase climbs also bypass only the height part of the gate. They still require the wall to be between the spider and the combat target via the wall-dot check, and they still cancel if the target clearly moves away from the climbed wall.
 
 ## Known Caveats
 

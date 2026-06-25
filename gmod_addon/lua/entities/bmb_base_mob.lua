@@ -5,6 +5,7 @@ if SERVER then
     include("bmb/sh_config.lua")
     include("bmb/sv_block_world_mock.lua")
     include("bmb/sv_pathfinder.lua")
+    include("bmb/sv_status_effects.lua")
     include("bmb/sv_behaviors.lua")
 
     if not GetConVar("bmb_use_source_path") then
@@ -50,6 +51,15 @@ ENT.DeathCorpseRightRollVelocity = 75
 ENT.DeathPoofParticleCountMin = 18    -- MC Java poof 约 20 个（所有 mob 通用默认）
 ENT.DeathPoofParticleCountMax = 22
 ENT.DeathPoofRadiusScale = 15         -- 基数，经 GetBMBDeathEffectScale 按体型缩放
+ENT.DeathKnockbackEnabled = true
+ENT.DeathKnockbackDuration = 0.22
+ENT.DeathKnockbackMinSpeed = 150
+ENT.DeathKnockbackDamageSpeedScale = 8
+ENT.DeathKnockbackMaxSpeed = 320
+ENT.DeathKnockbackVerticalSpeedScale = 6
+ENT.DeathKnockbackVerticalMinSpeed = 190
+ENT.DeathKnockbackVerticalMaxSpeed = 260
+ENT.DeathKnockbackUseJump = true
 ENT.WalkSpeed = 80
 ENT.RunSpeed = 120
 ENT.Acceleration = 420
@@ -383,6 +393,7 @@ function ENT:BaseInitialize()
     self.loco:SetAcceleration(self.Acceleration)
     self.loco:SetDeceleration(self.Deceleration)
     self.loco:SetDesiredSpeed(self.WalkSpeed)
+    self.BMBDefaultGravity = self.loco.GetGravity and self.loco:GetGravity() or nil
 
     self.State = self.State or "idle"
     self.CurrentMoveActivity = nil
@@ -393,6 +404,8 @@ function ENT:BaseInitialize()
     self.BMBDamageInvulnerableUntil = 0
     self.BMBKnockbackUntil = 0
     self.BMBKnockbackVelocity = nil
+    self.BMBDeathKnockbackUntil = 0
+    self.BMBDeathKnockbackVelocity = nil
     self.BMBLastLandTime = 0
     self.BMBBlockHopSuppressUntil = 0
     self.BMBBlockHopSuppressOrigin = nil
@@ -1455,8 +1468,9 @@ function ENT:Think()
         if self.BMBDead then
             self:ClearBMBLookAtTarget()
 
-            -- 死亡后每 tick 缴械 loco：否则 flee 的水平动量 / 跳跃中死亡的弹道速度残留会让尸体跟着跑或跳
-            if self.loco then
+            -- Dead mobs normally freeze, but lethal hits get one short MC-like shove first.
+            local deathKnockbackActive = self:RunBMBDeathKnockback()
+            if not deathKnockbackActive and self.loco then
                 if self.loco.SetGravity then self.loco:SetGravity(0) end
                 if self.loco.SetVelocity then self.loco:SetVelocity(vector_origin) end
                 if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(0) end
@@ -1783,6 +1797,128 @@ function ENT:RunBMBKnockback()
     self:SetBMBMoveMode("idle")
     self:UpdateBMBApproachDebug(nil, 0)
     self:ClearBMBMovementInterrupt()
+
+    return true
+end
+
+function ENT:IsBMBDeathKnockbackActive()
+    return CurTime() < (self.BMBDeathKnockbackUntil or 0) and self.BMBDeathKnockbackVelocity ~= nil
+end
+
+function ENT:GetBMBDeathKnockbackVerticalVelocity(currentVelocity)
+    currentVelocity = currentVelocity or self:GetVelocity()
+    if not self:IsBMBOnGround() then return currentVelocity.z end
+
+    local blockSize = self:GetBMBBlockSize()
+    local lift = math.Clamp(
+        blockSize * (self.DeathKnockbackVerticalSpeedScale or self.KnockbackVerticalSpeedScale or 6),
+        self.DeathKnockbackVerticalMinSpeed or self.KnockbackVerticalMinSpeed or 170,
+        self.DeathKnockbackVerticalMaxSpeed or self.KnockbackVerticalMaxSpeed or 240
+    )
+
+    return math.max(currentVelocity.z, lift)
+end
+
+function ENT:FinishBMBDeathKnockback()
+    self.BMBDeathKnockbackUntil = 0
+    self.BMBDeathKnockbackVelocity = nil
+    self.BMBDeathKnockbackLocoSpeed = nil
+    self.BMBDeathKnockbackGravity = nil
+
+    if self.BMBDead then
+        self:SetSolid(SOLID_NONE)
+    end
+
+    if self.loco then
+        if self.loco.SetGravity then self.loco:SetGravity(0) end
+        if self.loco.SetVelocity then self.loco:SetVelocity(vector_origin) end
+        if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(0) end
+    end
+end
+
+function ENT:StartBMBDeathKnockback(damageInfo)
+    if CLIENT or self.DeathKnockbackEnabled == false then return false end
+    if not self.loco or not self.loco.SetVelocity then return false end
+    if self:IsBMBPhysicsDamage(damageInfo) then return false end
+
+    local direction = self:GetBMBKnockbackDirection(damageInfo)
+    if not direction then return false end
+
+    local duration = tonumber(self.DeathKnockbackDuration) or 0.22
+    if duration <= 0 then return false end
+
+    local damage = damageInfo and math.max(0, damageInfo:GetDamage() or 0) or 0
+    local minSpeed = self.DeathKnockbackMinSpeed or self.KnockbackMinSpeed or 150
+    local maxSpeed = self.DeathKnockbackMaxSpeed or self.KnockbackMaxSpeed or 320
+    local speed = math.Clamp(minSpeed + damage * (self.DeathKnockbackDamageSpeedScale or self.KnockbackDamageSpeedScale or 8), minSpeed, maxSpeed)
+    local currentVelocity = self:GetVelocity()
+    local verticalSpeed = self:GetBMBDeathKnockbackVerticalVelocity(currentVelocity)
+    local now = CurTime()
+
+    self.BMBDeathKnockbackStartedAt = now
+    self.BMBDeathKnockbackUntil = now + duration
+    self.BMBDeathKnockbackVelocity = direction * speed
+    self.BMBDeathKnockbackLocoSpeed = math.max(speed, self.WalkSpeed or 1)
+    self.BMBDeathKnockbackGravity = self.BMBDefaultGravity or (self.loco.GetGravity and self.loco:GetGravity()) or nil
+
+    self:SetSolid(SOLID_BBOX)
+    self:SetCollisionGroup(self.DeathCorpseCollisionGroup or COLLISION_GROUP_DEBRIS)
+
+    if self.loco.SetGravity and self.BMBDeathKnockbackGravity ~= nil then
+        self.loco:SetGravity(self.BMBDeathKnockbackGravity)
+    end
+
+    if self.loco.SetDesiredSpeed then
+        self.loco:SetDesiredSpeed(self.BMBDeathKnockbackLocoSpeed)
+    end
+
+    if self.DeathKnockbackUseJump ~= false and verticalSpeed > currentVelocity.z and self.loco.Jump then
+        self.loco:Jump()
+    end
+
+    self.loco:SetVelocity(Vector(self.BMBDeathKnockbackVelocity.x, self.BMBDeathKnockbackVelocity.y, verticalSpeed))
+
+    local flatKb = Vector(self.BMBDeathKnockbackVelocity.x, self.BMBDeathKnockbackVelocity.y, 0)
+    if self.loco.Approach and flatKb:LengthSqr() > 1 then
+        self.loco:Approach(self:GetPos() + flatKb, self.BMBDeathKnockbackLocoSpeed or speed)
+    end
+
+    return true
+end
+
+function ENT:RunBMBDeathKnockback()
+    if not self:IsBMBDeathKnockbackActive() then
+        if self.BMBDeathKnockbackVelocity ~= nil then
+            self:FinishBMBDeathKnockback()
+        end
+
+        return false
+    end
+
+    if not self.loco or not self.loco.SetVelocity then
+        self:FinishBMBDeathKnockback()
+        return false
+    end
+
+    local duration = math.max(0.01, (self.BMBDeathKnockbackUntil or CurTime()) - (self.BMBDeathKnockbackStartedAt or CurTime()))
+    local remaining = math.Clamp(((self.BMBDeathKnockbackUntil or 0) - CurTime()) / duration, 0, 1)
+    local baseVelocity = self.BMBDeathKnockbackVelocity or vector_origin
+    local flatKb = Vector(baseVelocity.x * remaining, baseVelocity.y * remaining, 0)
+
+    if self.loco.SetGravity and self.BMBDeathKnockbackGravity ~= nil then
+        self.loco:SetGravity(self.BMBDeathKnockbackGravity)
+    end
+
+    if self.loco.SetDesiredSpeed then
+        self.loco:SetDesiredSpeed(self.BMBDeathKnockbackLocoSpeed or flatKb:Length())
+    end
+
+    local currentVelocity = self:GetVelocity()
+    self.loco:SetVelocity(Vector(flatKb.x, flatKb.y, currentVelocity.z))
+
+    if self.loco.Approach and flatKb:LengthSqr() > 1 then
+        self.loco:Approach(self:GetPos() + flatKb, self.BMBDeathKnockbackLocoSpeed or flatKb:Length())
+    end
 
     return true
 end
@@ -4380,6 +4516,10 @@ function ENT:StopBMBMovementOnDeath()
     self.BMBKnockbackDesiredSpeed = nil
     self.BMBKnockbackActivitySpeed = nil
     self.BMBKnockbackLocoSpeed = nil
+    self.BMBDeathKnockbackUntil = 0
+    self.BMBDeathKnockbackVelocity = nil
+    self.BMBDeathKnockbackLocoSpeed = nil
+    self.BMBDeathKnockbackGravity = nil
     self.TargetEntity = nil
     self.BMBRetaliationTarget = nil
     self.BMBRetaliationStartedAt = nil
@@ -4576,7 +4716,12 @@ function ENT:BeginBMBDeath(damageInfo)
     local delay = self:GetBMBDeathRemoveDelay()
     local deathUntil = delay == false and 0 or CurTime() + delay
 
+    if BMB and BMB.Status and BMB.Status.ClearAll then
+        BMB.Status.ClearAll(self)
+    end
+
     self:StopBMBMovementOnDeath()
+    self:StartBMBDeathKnockback(damageInfo)
 
     if self.DeathKeepRed ~= false then
         self:SetNWFloat("BMBDeathUntil", deathUntil)

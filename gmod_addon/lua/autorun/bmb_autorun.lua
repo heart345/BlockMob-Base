@@ -190,6 +190,7 @@ if CLIENT then include("bmb/cl_debug.lua") end
 addServerFile("bmb/sv_block_world_mock.lua")
 addServerFile("bmb/sv_block_world_real.lua")
 addServerFile("bmb/sv_pathfinder.lua")
+addServerFile("bmb/sv_status_effects.lua")
 addServerFile("bmb/sv_behaviors.lua")
 addServerFile("bmb/sv_debug_tools.lua")
 

@@ -328,6 +328,8 @@ local function neighbors(coord, blockWorld, options)
         else
             -- 同层 walk 边必须有支撑：否则目标不可达时搜索会顺着悬空格把整片空域
             -- 淹一遍直到迭代上限（= 右键不可达点时的整帧卡顿），路径本身也可能悬空
+            local climbTargetKey
+
             if isStandable(blockWorld, sameLevel, options) then
                 addNeighbor(found, copyCoord(sameLevel), "walk", 1)
             else
@@ -347,6 +349,7 @@ local function neighbors(coord, blockWorld, options)
                 local climbTarget, climbCells, climbOutCells = findClimbNeighbor(blockWorld, coord, direction, options)
 
                 if climbTarget then
+                    climbTargetKey = coordKey(climbTarget)
                     addNeighbor(found, copyCoord(climbTarget), "climb", getClimbEdgeCost(options) * climbCells + (climbOutCells - 1) * 0.5, {
                         wallNormal = { x = -direction.x, y = -direction.y, z = 0 },
                         climbHeight = climbCells,
@@ -361,7 +364,9 @@ local function neighbors(coord, blockWorld, options)
                 z = (coord.z or 0) + 1
             }
 
-            if isStandable(blockWorld, hopTarget, options) then
+            local preferClimb = options and options.preferClimbOverHop == true
+            if (not preferClimb or climbTargetKey ~= coordKey(hopTarget))
+                and isStandable(blockWorld, hopTarget, options) then
                 addNeighbor(found, copyCoord(hopTarget), "hop", 1.25)
             end
         end

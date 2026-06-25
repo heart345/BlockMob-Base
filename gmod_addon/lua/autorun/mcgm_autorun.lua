@@ -18,6 +18,12 @@ list.Set("NPC", "bmb_spider", {
     Category = "BlockMob Base"
 })
 
+list.Set("NPC", "bmb_cave_spider", {
+    Name = "BMB Cave Spider",
+    Class = "bmb_cave_spider",
+    Category = "BlockMob Base"
+})
+
 list.Set("NPC", "bmb_zombie", {
     Name = "BMB Zombie",
     Class = "bmb_zombie",

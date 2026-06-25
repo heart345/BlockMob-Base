@@ -13,7 +13,7 @@ ENT.StartHealth = 60
 ENT.RetaliateOnDamage = true
 ENT.DeathRemoveDelay = 1.5
 ENT.DeathTipDuration = 0.5
-ENT.DeathTipDegrees = 90
+ENT.DeathTipDegrees = 180
 
 ENT.WalkSpeed = 100
 ENT.RunSpeed = 140
@@ -55,7 +55,7 @@ ENT.LeapCooldownMin = 1.2
 ENT.LeapCooldownMax = 2.4
 ENT.LeapCommitTime = 0.28
 ENT.CollisionMins = Vector(-26, -26, 0)
-ENT.CollisionMaxs = Vector(26, 26, 33)
+ENT.CollisionMaxs = Vector(26, 26, 31)
 ENT.MobSeparationRadiusScale = 1.1
 ENT.MobSeparationApproachDistance = 28
 ENT.MobSeparationMaxSpeed = 110
@@ -445,9 +445,8 @@ if CLIENT then
                 local startedAt = self:GetNWFloat("BMBStateStartedAt", CurTime())
                 local duration = self.DeathTipDuration or 0.5
                 local t = duration > 0 and math.Clamp((CurTime() - startedAt) / duration, 0, 1) or 1
-                local tip = t * (self.DeathTipDegrees or 90)
-                local tipSign = (self:EntIndex() % 2 == 0) and 1 or -1
-                setBoneAngle(self, bones.root, Angle(0, tip * tipSign, 0))
+                local tip = t * (self.DeathTipDegrees or 180)
+                setBoneAngle(self, bones.root, Angle(0, tip, 0))
             end
 
             self.BMBSpiderStepDistance = 0
@@ -612,6 +611,7 @@ function ENT:ConfigureBMBPathfinderOptions(pathOptions, _destination, moveOption
     pathOptions.maxClimbCells = self:GetBMBSpiderClimbMaxCells()
     pathOptions.climbEdgeCost = self:GetBMBSpiderClimbEdgeCost()
     pathOptions.climbHorizontalCells = self:GetBMBSpiderClimbHorizontalCells()
+    pathOptions.preferClimbOverHop = true
 end
 
 function ENT:DebugBMBSpiderClimb(message)
@@ -672,6 +672,16 @@ function ENT:GetBMBSpiderIntoWallDirection(normal)
     return intoWall
 end
 
+function ENT:IsBMBSpiderLowChaseClimbReason(reason)
+    return reason == "path"
+        or reason == "path_carrot"
+        or reason == "source_path"
+        or reason == "move_to"
+        or reason == "direct"
+        or reason == "chase_active_wall"
+        or reason == "chase_active_blocked"
+end
+
 function ENT:ShouldBMBSpiderStartClimb(target, normal, reason)
     if reason == "path_climb" then return true, nil end
 
@@ -687,8 +697,9 @@ function ENT:ShouldBMBSpiderStartClimb(target, normal, reason)
     local current = self:GetPos()
     local minTargetUp = math.max(0, self:GetBMBSpiderClimbChaseMinTargetUp())
     local targetUp = targetPos.z - current.z
+    local lowChaseClimb = self:IsBMBSpiderLowChaseClimbReason(reason)
 
-    if targetUp < minTargetUp then
+    if targetUp < minTargetUp and not lowChaseClimb then
         self:DebugBMBSpiderClimb(string.format(
             "skip chase climb: target_up=%.1f min=%.1f reason=%s",
             targetUp,
@@ -729,7 +740,7 @@ function ENT:ShouldCancelBMBSpiderChaseClimb(normal)
     local startZ = self.BMBSpiderClimbStartZ or self:GetPos().z
     local minTargetUp = math.max(0, self:GetBMBSpiderClimbChaseMinTargetUp())
 
-    if targetPos.z - startZ < minTargetUp * 0.5 then
+    if not self.BMBSpiderClimbAllowLowTarget and targetPos.z - startZ < minTargetUp * 0.5 then
         return true, "target_dropped"
     end
 
@@ -1141,7 +1152,75 @@ function ENT:GetBMBSpiderClimbPinnedPosition(pos, normal)
     ), wallNormal
 end
 
+function ENT:IsBMBSpiderClimbBlockingEntity(ent)
+    if ent == self or not IsValid(ent) then return false end
+
+    if ent:IsPlayer() then
+        return ent:Alive()
+    end
+
+    if ent.IsBMBMob then
+        return not ent.BMBDead
+    end
+
+    return (ent.IsNPC and ent:IsNPC()) or (ent.IsNextBot and ent:IsNextBot())
+end
+
+function ENT:GetBMBSpiderClimbEntityBlockTrace(ent, fromPos, toPos)
+    local delta = (toPos or self:GetPos()) - (fromPos or self:GetPos())
+    local hitNormal = Vector(0, 0, -1)
+
+    if math.abs(delta.z or 0) <= math.max(math.abs(delta.x or 0), math.abs(delta.y or 0)) and delta:LengthSqr() > 0.0001 then
+        hitNormal = Vector(-delta.x, -delta.y, 0)
+        hitNormal:Normalize()
+    elseif delta.z < 0 then
+        hitNormal = Vector(0, 0, 1)
+    end
+
+    return {
+        Hit = true,
+        StartSolid = false,
+        Fraction = 0,
+        HitNormal = hitNormal,
+        Entity = ent,
+        HitEntity = ent,
+        BMBEntityBlock = true
+    }
+end
+
+function ENT:GetBMBSpiderClimbBlockingEntity(pos)
+    local pad = 2
+    local mins = pos + self.CollisionMins - Vector(pad, pad, pad)
+    local maxs = pos + self.CollisionMaxs + Vector(pad, pad, pad)
+
+    for _, ent in ipairs(ents.FindInBox(mins, maxs)) do
+        if self:IsBMBSpiderClimbBlockingEntity(ent) then
+            return ent
+        end
+    end
+
+    return nil
+end
+
+function ENT:ShouldBMBSpiderCheckClimbEntityBlock(fromPos, toPos)
+    if not fromPos or not toPos then return true end
+
+    return toPos.z >= fromPos.z - 1
+end
+
+function ENT:GetBMBSpiderClimbEntityBlock(fromPos, toPos)
+    if not self:ShouldBMBSpiderCheckClimbEntityBlock(fromPos, toPos) then return nil end
+
+    local ent = self:GetBMBSpiderClimbBlockingEntity(toPos)
+    if not ent then return nil end
+
+    return self:GetBMBSpiderClimbEntityBlockTrace(ent, fromPos, toPos)
+end
+
 function ENT:CanBMBSpiderMoveHull(fromPos, toPos, wallNormal)
+    local entityTrace = self:GetBMBSpiderClimbEntityBlock(fromPos, toPos)
+    if entityTrace then return false, entityTrace end
+
     local trace = util.TraceHull({
         start = fromPos,
         endpos = toPos,
@@ -1175,6 +1254,8 @@ function ENT:IsBMBSpiderLandingClear(pos)
     if self.IsBMBHullClearAtPosition and not self:IsBMBHullClearAtPosition(pos) then
         return false
     end
+
+    if self:GetBMBSpiderClimbBlockingEntity(pos) then return false end
 
     local trace = util.TraceHull({
         start = pos,
@@ -1219,6 +1300,9 @@ function ENT:FindBMBSpiderClimbMantle(normal, climbPos)
 end
 
 function ENT:CanBMBSpiderMantleMoveHull(fromPos, toPos)
+    local entityTrace = self:GetBMBSpiderClimbEntityBlock(fromPos, toPos)
+    if entityTrace then return false, entityTrace end
+
     local trace = util.TraceHull({
         start = fromPos,
         endpos = toPos,
@@ -1539,6 +1623,7 @@ function ENT:FinishBMBSpiderClimbSpike(result)
     self.BMBSpiderClimbReason = nil
     self.BMBSpiderClimbHadCombatTarget = nil
     self.BMBSpiderClimbCancelCheckAt = nil
+    self.BMBSpiderClimbAllowLowTarget = nil
     self.BMBSpiderClimbForcedNormal = nil
     self.BMBSpiderClimbNextHoldLog = nil
     self.BMBSpiderClimbNextMantleCandidateLog = nil
@@ -1606,6 +1691,7 @@ function ENT:RunBMBSpiderClimbSpike(target)
     self.BMBSpiderClimbLastPinnedPos = startPinned
     self.BMBSpiderClimbReason = reason
     self.BMBSpiderClimbHadCombatTarget = IsValid(combatTarget)
+    self.BMBSpiderClimbAllowLowTarget = self:IsBMBSpiderLowChaseClimbReason(reason)
     self.BMBSpiderClimbCancelCheckAt = CurTime() + math.max(0, self:GetBMBSpiderClimbChaseCancelGrace())
     self:ClearBMBMovementInterrupt()
     if self.ClearBMBDebugMove then
@@ -1903,6 +1989,12 @@ function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
     self:PlayBMBSpiderDeathSound()
+    if self.BMBSpiderClimbing and self.FinishBMBSpiderClimbSpike then
+        self:FinishBMBSpiderClimbSpike("death")
+    elseif self.RestoreBMBSpiderClimbMoveTypeOverride then
+        self:RestoreBMBSpiderClimbMoveTypeOverride()
+    end
+
     self:BeginBMBDeath(damageInfo)
 end
 
