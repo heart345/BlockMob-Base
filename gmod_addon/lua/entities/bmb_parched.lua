@@ -13,3 +13,16 @@ ENT.AdminOnly = false
 
 ENT.Model = "models/mcgm/parched/parched.mdl"
 ENT.StartHealth = 70
+ENT.ParchedWeaknessDuration = 5
+
+function ENT:OnBMBArrowHit(target, _damageInfo, _trace, _arrow)
+    if not IsValid(target) then return end
+    if target.BMBDead then return end
+    if target.Health and target:Health() <= 0 then return end
+    if not BMB or not BMB.Status or not BMB.Status.Apply then return end
+
+    BMB.Status.Apply(target, "weakness", {
+        duration = self.ParchedWeaknessDuration or 5,
+        source = self
+    })
+end

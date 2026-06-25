@@ -30,6 +30,13 @@ ENT.HitSounds = {
 }
 ENT.HitSoundLevel = 75
 ENT.HitSoundVolume = 0.85
+ENT.PlayerHitSounds = {
+    "bmb/damage/hit1.ogg",
+    "bmb/damage/hit2.ogg",
+    "bmb/damage/hit3.ogg"
+}
+ENT.PlayerHitSoundLevel = 75
+ENT.PlayerHitSoundVolume = 0.75
 
 -- 远程诊断日志开关（与骷髅 Fire 共用 bmb_debug_ranged；convar 在 sv_behaviors.lua 创建）。
 local function shouldLogRanged()
@@ -104,6 +111,22 @@ if SERVER then
         self:EmitSound(snd, self.HitSoundLevel or 75, math.random(94, 106), self.HitSoundVolume or 0.85)
     end
 
+    function ENT:PlayBMBArrowPlayerHitSound(target)
+        if not IsValid(target) or not target:IsPlayer() then return end
+
+        local snd = randomSound(self.PlayerHitSounds)
+        if not snd then return end
+
+        target:EmitSound(snd, self.PlayerHitSoundLevel or 75, math.random(95, 105), self.PlayerHitSoundVolume or 0.75)
+    end
+
+    function ENT:NotifyBMBArrowHit(target, damageInfo, trace)
+        local owner = self.BMBArrowOwner
+        if not IsValid(owner) or not owner.OnBMBArrowHit then return end
+
+        owner:OnBMBArrowHit(target, damageInfo, trace, self)
+    end
+
     -- 命中静态世界/物体：插在表面（纯视觉 SOLID_NONE，人能穿过），停弹道，起 despawn 计时器。
     -- 不 SetParent 跟随会动的 prop（静态版覆盖几乎所有情况，跟随那点按需求跳过）；命中生物走扣血+移除分支。
     function ENT:StickToSurface(hitPos)
@@ -165,6 +188,8 @@ if SERVER then
                 hitEnt:TakeDamageInfo(dmg)
 
                 self:PlayBMBArrowHitSound()
+                self:PlayBMBArrowPlayerHitSound(hitEnt)
+                self:NotifyBMBArrowHit(hitEnt, dmg, tr)
 
                 if shouldLogRanged() then
                     print(string.format(

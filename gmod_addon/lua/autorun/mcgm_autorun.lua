@@ -53,3 +53,9 @@ list.Set("NPC", "bmb_parched", {
     Class = "bmb_parched",
     Category = "BlockMob Base"
 })
+
+list.Set("NPC", "bmb_bogged", {
+    Name = "BMB Bogged",
+    Class = "bmb_bogged",
+    Category = "BlockMob Base"
+})

@@ -666,7 +666,8 @@ ENT.WolfPreyClasses = {
     bmb_sheep = true,
     bmb_skeleton = true,
     bmb_stray = true,
-    bmb_parched = true
+    bmb_parched = true,
+    bmb_bogged = true
 }
 
 function ENT:IsBMBWolfPrey(target)

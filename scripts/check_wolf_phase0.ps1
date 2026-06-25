@@ -38,6 +38,7 @@ Assert-Contains $wolf 'bmb_sheep\s*=\s*true' "Wolf Phase 1 should actively hunt 
 Assert-Contains $wolf 'bmb_skeleton\s*=\s*true' "Wolf Phase 1 should actively hunt skeletons."
 Assert-Contains $wolf 'bmb_stray\s*=\s*true' "Wolf Phase 1 should actively hunt Stray."
 Assert-Contains $wolf 'bmb_parched\s*=\s*true' "Wolf Phase 1 should actively hunt Parched/Jiao Hai."
+Assert-Contains $wolf 'bmb_bogged\s*=\s*true' "Wolf Phase 1 should actively hunt Bogged as a skeleton-family prey."
 Assert-Contains $wolf 'function ENT:FindNearestWolfPrey' "Wolf Phase 1 should own a prey scanner instead of using player-only SeekTarget.Find."
 Assert-Contains $wolf 'function ENT:ShouldBreakBMBWolfInitialIdle\(\)' "Wolf should be able to react immediately to prey or retaliation during its spawn idle."
 Assert-Contains $wolf 'self\.BMBRetaliationTarget' "Wolf spawn idle should break immediately when damage retaliation provides a target."
@@ -107,7 +108,7 @@ Assert-Contains $wolf 'self:SetBMBWolfSkinVariant\(self:ChooseBMBWolfSkinVariant
 Assert-Contains $wolf 'BMBWolfAngry' "Wolf should network whether it is currently angry/chasing prey."
 Assert-NotContains $wolf 'WolfAngryMaterial|bmb_wolf_angry_texture|MaterialOverride' "Wolf angry visuals must use MDL skin families, not a classic angry material override."
 
-Assert-Contains $behaviors '(?s)RunDirect\(mob,\s*target,\s*speed\).*?if not BMB\.Behaviors\.SeekTarget\.IsValid\(mob,\s*target,\s*mob\.TargetLoseRange or mob\.TargetRange\) then\s*return false\s*end\s*local segmentTime' "Shared Chase should re-check target validity after direct chase before using target:GetPos()."
+Assert-Contains $behaviors '(?s)if mob\.BMBMoveInterrupt then return false end\s*end\s*if not BMB\.Behaviors\.SeekTarget\.IsValid\(mob,\s*target,\s*mob\.TargetLoseRange or mob\.TargetRange\) then\s*return false\s*end\s*local useClimbPath' "Shared Chase should re-check target validity after direct chase before using target:GetPos()."
 
 Assert-Contains $wolf 'function ENT:CacheBMBWolfBones\(\)' "Wolf should cache MC model bones for visual overlays."
 Assert-Contains $wolf '"head",\s*"leg0",\s*"leg1",\s*"leg2",\s*"leg3",\s*"tail"' "Wolf bone cache should cover head, four legs, and tail."

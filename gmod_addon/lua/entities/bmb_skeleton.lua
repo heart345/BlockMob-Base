@@ -217,6 +217,32 @@ local skeletonSoundSets = {
         Shoot = {
             "bmb/mob/skeleton/bow.ogg"
         }
+    },
+    bmb_bogged = {
+        Idle = {
+            "bmb/mob/bogged/ambient1.ogg",
+            "bmb/mob/bogged/ambient2.ogg",
+            "bmb/mob/bogged/ambient3.ogg",
+            "bmb/mob/bogged/ambient4.ogg"
+        },
+        Hurt = {
+            "bmb/mob/bogged/hurt1.ogg",
+            "bmb/mob/bogged/hurt2.ogg",
+            "bmb/mob/bogged/hurt3.ogg",
+            "bmb/mob/bogged/hurt4.ogg"
+        },
+        Death = {
+            "bmb/mob/bogged/death.ogg"
+        },
+        Step = {
+            "bmb/mob/bogged/step1.ogg",
+            "bmb/mob/bogged/step2.ogg",
+            "bmb/mob/bogged/step3.ogg",
+            "bmb/mob/bogged/step4.ogg"
+        },
+        Shoot = {
+            "bmb/mob/skeleton/bow.ogg"
+        }
     }
 }
 
@@ -515,7 +541,6 @@ end
 function ENT:RunBMBSkeletonAILegacyMojibake()
     if self:RunBMBSkeletonRetaliationTarget() then return end
 
-    local wolf = self:FindNearestWolfThreat()
     -- 1) 逃狼抢占一切（即使有玩家目标也先逃，不清 TargetEntity）。
     local wolf = self:FindNearestWolfThreat()
     if IsValid(wolf) then

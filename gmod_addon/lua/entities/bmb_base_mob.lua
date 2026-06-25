@@ -26,6 +26,14 @@ if SERVER then
         )
     end
 
+    if not GetConVar("bmb_ground_unsink") then
+        CreateConVar("bmb_ground_unsink", "1", FCVAR_ARCHIVE, "On landing, snap a mob sunk below the floor surface back up to it.")
+    end
+
+    if not GetConVar("bmb_ground_unsink_eps") then
+        CreateConVar("bmb_ground_unsink_eps", "2", FCVAR_ARCHIVE, "Units the foot must be below the floor surface before unsink snaps it up.")
+    end
+
     if not GetConVar("bmb_freeze") then
         CreateConVar("bmb_freeze", "0", 0, "Freeze all BMB mobs for screenshots.")
     end
@@ -96,6 +104,7 @@ ENT.GridSafetyStepScale = 0.5
 ENT.GridSafetyMinStep = 8
 ENT.GridSafetyFootLiftScale = 0.12
 ENT.GridSafetyMinFootLift = 4
+ENT.GroundUnsinkMaxLiftScale = 0.75
 -- cliff 迟滞窗（秒）：连续判 cliff 持续超过它才真当悬崖压速；单帧脏读/整数格量化容忍、继续前压。
 ENT.CliffHysteresisTime = 0.12
 ENT.ChaseDirectCliffMemoryCooldown = 3.0
@@ -1514,6 +1523,7 @@ function ENT:Think()
         else
             self:CheckPhysicsImpacts()
             self:MaintainBMBMobSeparation()
+            self:TryBMBGroundUnsink("think")
         end
 
         if not self.BMBDead and self.MaybePlayIdleSound then
@@ -1536,8 +1546,137 @@ end
 
 -- hop 重跳延时的计时基准：物理引擎的落地回调，不靠 IsOnGround 轮询
 -- （轮询间隔里"已落地又起跳"会抖动）
+function ENT:GetBMBGroundUnsinkMaxLift()
+    return math.max(
+        self.StepHeight or 28,
+        self:GetBMBBlockSize() * (self.GroundUnsinkMaxLiftScale or 0.75)
+    )
+end
+
+function ENT:GetBMBBlockWorldGroundSurfaceZ(pos)
+    if not BMB or not BMB.BlockWorld or not BMB.BlockWorld.WorldToBlock or not BMB.BlockWorld.BlockToWorld then
+        return nil
+    end
+
+    local blockWorld = BMB.BlockWorld
+    local sample = self:GetBMBGridFootSample(pos)
+    local cell = blockWorld.WorldToBlock(sample)
+    if not cell then return nil end
+
+    local blockSize = self:GetBMBBlockSize()
+    local standableOptions = { mob = self }
+    local bestSurfaceZ
+    local bestLift
+
+    for dz = -2, 2 do
+        local candidateCell = {
+            x = cell.x,
+            y = cell.y,
+            z = (cell.z or 0) + dz
+        }
+        local candidateCenter = blockWorld.BlockToWorld(candidateCell)
+        local standable = false
+
+        if BMB.Pathfinder and BMB.Pathfinder.IsStandablePosition then
+            standable = BMB.Pathfinder.IsStandablePosition(candidateCenter, standableOptions) == true
+        elseif blockWorld.HasSupport then
+            standable = blockWorld.HasSupport(candidateCell) == true
+        end
+
+        if standable then
+            local surfaceZ = candidateCenter.z - blockSize * 0.5
+            local lift = surfaceZ - pos.z
+            if lift > 0 and (not bestLift or lift < bestLift) then
+                bestSurfaceZ = surfaceZ
+                bestLift = lift
+            end
+        end
+    end
+
+    return bestSurfaceZ
+end
+
+function ENT:ChooseBMBGroundSurfaceZ(pos, ...)
+    local bestSurfaceZ
+    local bestLift
+    local fallbackSurfaceZ
+
+    for index = 1, select("#", ...) do
+        local surfaceZ = select(index, ...)
+        if surfaceZ then
+            fallbackSurfaceZ = fallbackSurfaceZ or surfaceZ
+
+            local lift = surfaceZ - pos.z
+            if lift > 0 and (not bestLift or lift < bestLift) then
+                bestSurfaceZ = surfaceZ
+                bestLift = lift
+            end
+        end
+    end
+
+    if bestSurfaceZ then return bestSurfaceZ end
+
+    return fallbackSurfaceZ
+end
+
+function ENT:GetBMBGroundSurfaceZ(pos)
+    local up = self.StepHeight or 28
+    local down = self:GetBMBMaxStepDown() + self:GetBMBBlockSize()
+    local traceFilter = function(ent)
+        return self:ShouldSafetyTraceHit(ent)
+    end
+
+    local trace = util.TraceHull({
+        start = pos + Vector(0, 0, up),
+        endpos = pos - Vector(0, 0, down),
+        mins = Vector(self.CollisionMins.x * 0.75, self.CollisionMins.y * 0.75, 0),
+        maxs = Vector(self.CollisionMaxs.x * 0.75, self.CollisionMaxs.y * 0.75, 4),
+        filter = traceFilter,
+        mask = MASK_SOLID
+    })
+
+    local traceSurfaceZ
+    if trace.Hit and trace.HitNormal.z >= 0.65 then
+        traceSurfaceZ = trace.HitPos.z
+    end
+
+    return self:ChooseBMBGroundSurfaceZ(pos, traceSurfaceZ, self:GetBMBBlockWorldGroundSurfaceZ(pos))
+end
+
+function ENT:TryBMBGroundUnsink(_reason)
+    local unsinkConvar = GetConVar("bmb_ground_unsink")
+    if unsinkConvar and not unsinkConvar:GetBool() then return false end
+    if self.BMBDead or self.BMBHeld then return false end
+    if not self:IsBMBOnGround() then return false end
+
+    local surfaceZ = self:GetBMBGroundSurfaceZ(self:GetPos())
+    if not surfaceZ then return false end
+
+    local pos = self:GetPos()
+    local epsConvar = GetConVar("bmb_ground_unsink_eps")
+    local eps = epsConvar and epsConvar:GetFloat() or 2
+    local lift = surfaceZ - pos.z
+    if lift <= eps or lift > self:GetBMBGroundUnsinkMaxLift() then return false end
+
+    local target = Vector(pos.x, pos.y, surfaceZ)
+    if not self:IsBMBHullClearAtPosition(target) then return false end
+
+    self:SetPos(target)
+    self.BMBStrandedCell = nil
+    self.BMBLastGroundUnsinkAt = CurTime()
+
+    if self.loco and self.loco.SetVelocity then
+        local velocity = self:GetVelocity()
+        self.loco:SetVelocity(Vector(velocity.x, velocity.y, 0))
+    end
+
+    return true
+end
+
 function ENT:OnLandOnGround(_)
     self.BMBLastLandTime = CurTime()
+
+    self:TryBMBGroundUnsink("land")
 
     if self.BMBKnockbackSuppressHopOnLand then
         self.BMBKnockbackSuppressHopOnLand = false
@@ -1985,6 +2124,11 @@ function ENT:ShouldRunBMBStrandedRecovery()
         return false
     end
 
+    if self:TryBMBGroundUnsink("stranded_check") and self:IsBMBCurrentPositionStandable() then
+        self.BMBStrandedCell = nil
+        return false
+    end
+
     local standable, cell = self:IsBMBCurrentPositionStandable()
     if standable then
         self.BMBStrandedCell = nil
@@ -2040,6 +2184,14 @@ function ENT:FindBMBStrandedEscapePoint()
     local standableOptions = { mob = self }
     local count = #strandedEscapeDirections
     local startIndex = ((self.BMBStrandedEscapeCursor or 1) - 1) % count + 1
+
+    local liftZ = self:GetBMBGroundSurfaceZ(current)
+    if liftZ and liftZ - current.z > 2 then
+        local lift = Vector(current.x, current.y, liftZ)
+        if self:IsBMBHullClearAtPosition(lift) then
+            return lift, "standable", 0
+        end
+    end
 
     for offset = 0, count - 1 do
         local directionKey = ((startIndex + offset - 2) % count) + 1
