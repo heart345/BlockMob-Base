@@ -81,13 +81,15 @@ The A* climb edge is intentionally spider-only. Zombies, skeletons, sheep, wolve
 
 Low one-block chase barriers are handled by the same spike, but they do not satisfy the high-target `bmb_spider_climb_chase_min_target_up` gate. `IsBMBSpiderLowChaseClimbReason()` whitelists blocked movement reasons such as `path_carrot`, `direct`, `move_to`, `source_path`, `path`, `chase_active_wall`, and `chase_active_blocked`; those may start the climb while target Z is level. The climb records `BMBSpiderClimbAllowLowTarget` so target-aware cancellation does not abort the mantle as `target_dropped` halfway through.
 
-Spider pathfinder options set `preferClimbOverHop = true`. When A* finds that a one-block obstacle top can be reached by both a normal `hop` edge and a spider `climb` edge, `sv_pathfinder.lua` suppresses the duplicate hop and keeps climb. This avoids low-ceiling glass corridors where cave spiders would choose `path_hop`, jump into the roof, and appear sunk into the floor; it also helps full-size spiders enter the same one-block-high crawl spaces through the climb spike instead of grinding direct wall pressure.
+`sv_pathfinder.lua` supports `preferClimbOverHop`, but spiders do not enable it by default. `bmb_spider_prefer_climb_over_hop` defaults to `0` because suppressing hop whenever climb reaches the same cell can block normal one-block crawl entrances: if a cave entrance has a climbable wall beside it, the spider may choose the wall instead of entering the low opening. Turn the convar on only as a temporary diagnostic when testing cases where a duplicate hop edge is known to be worse than climb.
 
 The older proactive chase bridge still exists as fallback. It scans a small fan of target/forward/side directions, walks toward the wall foot using `chase_climb_approach`, and can start the spike immediately when already close to a detected wall.
 
 Important: a wall scan hit is not enough to enter `climb_spike`. `RunBMBSpiderClimbSpike()` must first call `GetBMBSpiderClimbPinnedPosition()` at the current position and seed `BMBSpiderClimbLastPinnedPos` from that pinned point. Without this gate, a far wall can be seen by the wider scan while the pin trace still cannot reach it, causing repeated `start ... finish lost_wall` flashes.
 
 `climb_spike` uses `SetPos`, so it must not rely only on Source solid traces. `CanBMBSpiderMoveHull()` and mantle landing checks also scan the target hull with `ents.FindInBox()` and reject live players, BMB mobs, NPCs, and NextBots. If a player stands on the spider while it climbs, the move is treated as blocked/held instead of tunneling through and trapping the player.
+
+Low one-block crawl spaces are not climb targets. `RunBMBSpiderClimbSpike()` now checks `HasBMBSpiderClimbVerticalClearance(startPinned, normal)` before entering `climb_spike`; if the pinned wall position cannot move upward by at least half a block, it logs `skip climb start: low ceiling` and leaves the route to normal ground movement. During the climb spike, `BMBSpiderClimbFloorZ` plus `ClampBMBSpiderClimbPosition()` keep SetPos targets from dropping below the starting floor height.
 
 ## Cancellation Notes
 

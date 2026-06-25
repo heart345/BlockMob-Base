@@ -28,6 +28,7 @@ Assert-Contains $spider 'bmb_spider_climb_chase_start_distance",\s*"84"' "Spider
 Assert-Contains $spider 'bmb_spider_climb_max_cells",\s*"6"' "Spider Phase 3 should expose the A* climb edge height limit."
 Assert-Contains $spider 'bmb_spider_climb_edge_cost",\s*"2\.5"' "Spider Phase 3 should expose the A* climb edge cost."
 Assert-Contains $spider 'bmb_spider_climb_horizontal_cells",\s*"2"' "Spider Phase 3 should expose the wide-hull horizontal climb start range."
+Assert-Contains $spider 'bmb_spider_prefer_climb_over_hop",\s*"0"' "Spider climb-over-hop preference should default off so one-block crawl entrances stay routeable."
 
 Assert-Contains $spider 'function ENT:GetBMBSpiderClimbCombatTarget\(\)' "Spider Phase 3 should resolve the current retaliation target for climb decisions."
 Assert-Contains $spider 'function ENT:GetBMBSpiderClimbTargetPosition\(target\)' "Spider Phase 3 should bias wall scans toward the current combat or movement target."
@@ -65,7 +66,8 @@ Assert-Contains $spider 'reason\s*=\s*self\.BMBSpiderClimbPendingReason or "ambi
 Assert-Contains $spider 'scanTarget\s*=\s*targetPos or target' "Wall scanning should prefer the resolved combat target position when one exists."
 Assert-Contains $spider 'function ENT:ConfigureBMBPathfinderOptions\(pathOptions' "Spider should opt into climb-aware pathfinder options."
 Assert-Contains $spider 'pathOptions\.allowClimb\s*=\s*true' "Spider pathfinder options should enable climb edges."
-Assert-Contains $spider 'pathOptions\.preferClimbOverHop\s*=\s*true' "Spider pathfinder options should prefer climb over hop when both reach the same one-block obstacle top."
+Assert-Contains $spider 'function ENT:ShouldBMBSpiderPreferClimbOverHop\(\)' "Spider should gate climb-over-hop preference behind an explicit toggle."
+Assert-Contains $spider 'if self:ShouldBMBSpiderPreferClimbOverHop\(\) then(?s).*pathOptions\.preferClimbOverHop\s*=\s*true' "Spider should only suppress duplicate hop edges when the toggle is enabled."
 Assert-Contains $spider 'function ENT:RunBMBPathVerticalAction\(action,\s*node,\s*final' "Spider should execute path climb waypoints through the base vertical-action hook."
 Assert-Contains $spider 'BMBSpiderClimbPendingReason\s*=\s*"path_climb"' "Spider A* climb should use a distinct path_climb reason."
 Assert-Contains $spider 'BMBSpiderLastClimbResult\s*==\s*"success"' "Spider path climb should only advance the A* node after a successful spike."

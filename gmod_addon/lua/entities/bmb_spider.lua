@@ -120,6 +120,7 @@ ENT.SpiderClimbMaxCells = 6
 ENT.SpiderClimbEdgeCost = 2.5
 ENT.SpiderClimbHorizontalCells = 2
 ENT.SpiderClimbMaxWallNormalZ = 0.25
+ENT.SpiderPreferClimbOverHop = false
 ENT.BMBAllowClimbPath = true
 
 ENT.Sounds = {
@@ -191,6 +192,7 @@ if SERVER then
     createSpiderConVar("bmb_spider_climb_max_cells", "6", "Maximum vertical A* cells a spider climb edge may cover.")
     createSpiderConVar("bmb_spider_climb_edge_cost", "2.5", "Per-cell A* cost for spider climb edges.")
     createSpiderConVar("bmb_spider_climb_horizontal_cells", "2", "Horizontal A* cells from which a wide spider may start a climb edge.")
+    createSpiderConVar("bmb_spider_prefer_climb_over_hop", "0", "Prefer spider climb edges over duplicate hop edges; off keeps one-block crawl entrances routeable.")
     createSpiderConVar("bmb_debug_spider_climb", "0", "Print spider climb spike diagnostics.")
 
     migrateSpiderConVarDefault("bmb_spider_climb_speed", "82", "105")
@@ -599,6 +601,11 @@ function ENT:GetBMBSpiderClimbHorizontalCells()
     return math.max(1, math.floor(spiderConVarFloat("bmb_spider_climb_horizontal_cells", self.SpiderClimbHorizontalCells or 2)))
 end
 
+function ENT:ShouldBMBSpiderPreferClimbOverHop()
+    return self.SpiderPreferClimbOverHop == true
+        or spiderConVarBool("bmb_spider_prefer_climb_over_hop", false)
+end
+
 function ENT:ShouldBMBUseClimbPath(_target)
     return self:IsBMBSpiderClimbSpikeEnabled()
 end
@@ -611,7 +618,9 @@ function ENT:ConfigureBMBPathfinderOptions(pathOptions, _destination, moveOption
     pathOptions.maxClimbCells = self:GetBMBSpiderClimbMaxCells()
     pathOptions.climbEdgeCost = self:GetBMBSpiderClimbEdgeCost()
     pathOptions.climbHorizontalCells = self:GetBMBSpiderClimbHorizontalCells()
-    pathOptions.preferClimbOverHop = true
+    if self:ShouldBMBSpiderPreferClimbOverHop() then
+        pathOptions.preferClimbOverHop = true
+    end
 end
 
 function ENT:DebugBMBSpiderClimb(message)
@@ -1250,6 +1259,31 @@ function ENT:CanBMBSpiderMoveHull(fromPos, toPos, wallNormal)
     return true, trace
 end
 
+function ENT:GetBMBSpiderClimbMinVerticalClearance()
+    return math.max(self:GetBMBBlockSize() * 0.5, self:GetBMBSpiderClimbMantleStartBelow() + 2)
+end
+
+function ENT:HasBMBSpiderClimbVerticalClearance(pos, normal)
+    if not pos then return false end
+
+    local raised = pos + Vector(0, 0, self:GetBMBSpiderClimbMinVerticalClearance())
+    local clear, trace = self:CanBMBSpiderMoveHull(pos, raised, normal)
+    if not clear then return false, trace end
+
+    if self.IsBMBHullClearAtPosition and not self:IsBMBHullClearAtPosition(raised) then
+        return false, trace
+    end
+
+    return true, trace
+end
+
+function ENT:ClampBMBSpiderClimbPosition(pos)
+    local floorZ = self.BMBSpiderClimbFloorZ
+    if not floorZ or not pos or pos.z >= floorZ then return pos end
+
+    return Vector(pos.x, pos.y, floorZ)
+end
+
 function ENT:IsBMBSpiderLandingClear(pos)
     if self.IsBMBHullClearAtPosition and not self:IsBMBHullClearAtPosition(pos) then
         return false
@@ -1624,6 +1658,7 @@ function ENT:FinishBMBSpiderClimbSpike(result)
     self.BMBSpiderClimbHadCombatTarget = nil
     self.BMBSpiderClimbCancelCheckAt = nil
     self.BMBSpiderClimbAllowLowTarget = nil
+    self.BMBSpiderClimbFloorZ = nil
     self.BMBSpiderClimbForcedNormal = nil
     self.BMBSpiderClimbNextHoldLog = nil
     self.BMBSpiderClimbNextMantleCandidateLog = nil
@@ -1685,7 +1720,14 @@ function ENT:RunBMBSpiderClimbSpike(target)
         return false
     end
 
+    local verticalClear = self:HasBMBSpiderClimbVerticalClearance(startPinned, normal)
+    if not verticalClear then
+        self:DebugBMBSpiderClimb("skip climb start: low ceiling reason=" .. tostring(reason))
+        return false
+    end
+
     self.BMBSpiderClimbing = true
+    self.BMBSpiderClimbFloorZ = startPos.z
     self.BMBSpiderClimbStartZ = startPinned.z
     self.BMBSpiderClimbGoalZ = startPinned.z
     self.BMBSpiderClimbLastPinnedPos = startPinned
@@ -1702,7 +1744,7 @@ function ENT:RunBMBSpiderClimbSpike(target)
     self:SetBMBMoveMode("climb_spike")
     self:MaintainBMBMoveSpeed(0, 0)
     self:BeginBMBSpiderClimbMoveTypeOverride()
-    self:SetPos(startPinned)
+    self:SetPos(self:ClampBMBSpiderClimbPosition(startPinned))
 
     local deadline = CurTime() + math.max(0.5, self:GetBMBSpiderClimbTimeout())
     local lastTime = CurTime()
@@ -1783,7 +1825,7 @@ function ENT:RunBMBSpiderClimbSpike(target)
                 continue
             elseif plannedMantleReason == "not_ready" and plannedMantle then
                 local ledgeZ = math.min(desired.z, plannedMantle.topZ - self:GetBMBSpiderClimbMantleStartBelow())
-                local ledgePos = Vector(planned.x, planned.y, math.max(planned.z, ledgeZ))
+                local ledgePos = self:ClampBMBSpiderClimbPosition(Vector(planned.x, planned.y, math.max(planned.z, ledgeZ)))
                 self.BMBSpiderClimbGoalZ = ledgePos.z
                 self.BMBSpiderClimbLastPinnedPos = ledgePos
                 self:SetPos(ledgePos)
@@ -1799,6 +1841,7 @@ function ENT:RunBMBSpiderClimbSpike(target)
         end
 
         normal = updatedNormal or normal
+        pinned = self:ClampBMBSpiderClimbPosition(pinned)
         if self.loco then
             if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(0) end
             if self.loco.SetVelocity then self.loco:SetVelocity(Vector(0, 0, 0)) end
