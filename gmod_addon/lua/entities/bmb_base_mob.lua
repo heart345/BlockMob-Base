@@ -3147,6 +3147,13 @@ function ENT:GetBMBWaypointAction(waypoints, nodeIndex)
     return "walk"
 end
 
+function ENT:GetBMBEffectiveWaypointAction(waypoints, nodeIndex)
+    local action = self:GetBMBWaypointAction(waypoints, nodeIndex)
+    if self.HopOnlyLocomotion and action == "walk" then return "hop" end
+
+    return action
+end
+
 function ENT:IsBMBPathVerticalAction(action)
     return action == "hop" or action == "drop" or action == "climb"
 end
@@ -3295,7 +3302,7 @@ end
 function ENT:GetBMBHopForward(current, target, previousNode)
     local forward
 
-    if previousNode then
+    if previousNode and self.BlockHopUsePreviousNodeForward ~= false then
         forward = Vector(target.x - previousNode.x, target.y - previousNode.y, 0)
     else
         forward = Vector(target.x - current.x, target.y - current.y, 0)
@@ -3978,7 +3985,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             goalProgressWatch.deadline = CurTime() + (self.PathGoalProgressTimeout or 0.9)
         end
 
-        local activeAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
+        local activeAction = self:GetBMBEffectiveWaypointAction(waypoints, nodeIndex)
         local actionNode = waypoints[nodeIndex]
         local verticalAction = self:IsBMBPathVerticalAction(activeAction)
 
@@ -4061,9 +4068,21 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             local jumping = self.loco.IsClimbingOrJumping and self.loco:IsClimbingOrJumping() or false
             local manualAirControl = CurTime() < (self.BMBBlockHopAirControlUntil or 0)
             local hopSetupSteered = false
+            local hopInterval = math.max(0, self.BlockHopInterval or 0)
+            local lastLandTime = self.BMBLastLandTime or 0
+            local hopIntervalReady = hopInterval <= 0
+                or lastLandTime <= 0
+                or hopStartedAt[nodeIndex] ~= nil
+                or CurTime() - lastLandTime >= hopInterval
 
             if hopSuppressed then
                 self:SetBMBMoveMode("path_hop_suppressed")
+            elseif not hopIntervalReady then
+                self:SetBMBMoveMode("path_hop_wait")
+                if self.FaceTarget and actionNode then
+                    self:FaceTarget(actionNode)
+                end
+                hopSetupSteered = true
             end
 
             -- 跳过却落回地面且节点没推进 = 这一跳撞在方块面上掉回来了。
@@ -4085,7 +4104,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                 end
             end
 
-            if not hopSuppressed and not hopStartedAt[nodeIndex] and onGround and not jumping
+            if not hopSuppressed and hopIntervalReady and not hopStartedAt[nodeIndex] and onGround and not jumping
                 and flatDistance(current, actionNode) <= triggerDistance then
                 local launch = self:GetBMBHopLaunchControl(current, actionNode, pathSpeed, waypoints[nodeIndex - 1])
                 launch.nodeIndex = nodeIndex
@@ -4100,6 +4119,12 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                         -- 引擎标志若晚一帧翻转也不回 Approach：起跳当帧强制按跳跃态驱动
                         jumping = true
                     end
+                elseif self.HopOnlyLocomotion then
+                    self:UpdateBMBApproachDebug(launch.target, nodeIndex)
+                    if self.FaceTarget and launch.target then
+                        self:FaceTarget(launch.target)
+                    end
+                    hopSetupSteered = true
                 else
                     self:UpdateBMBApproachDebug(launch.target, nodeIndex)
                     self:SteerTowards(launch.target, progressWatch)
@@ -4542,7 +4567,20 @@ function ENT:StartTouch(ent)
     self:HandlePhysicsImpact(ent)
 end
 
+function ENT:GetBMBVectorPosition(position)
+    if not position then return nil end
+    if isvector and isvector(position) then return position end
+    if type(position) == "table" and position.x and position.y and position.z then
+        return Vector(position.x, position.y, position.z)
+    end
+
+    return nil
+end
+
 function ENT:FaceTarget(position)
+    position = self:GetBMBVectorPosition(position)
+    if not position then return end
+
     local direction = position - self:GetPos()
     direction.z = 0
 
@@ -4556,6 +4594,9 @@ end
 -- 移动循环统一入口：目标在身后超过 TurnInPlaceAngle 时先原地转身再走，
 -- 否则 Approach 会不顾朝向直接倒退（MC 生物不会面朝前倒着走）
 function ENT:SteerTowards(target, progressWatch)
+    target = self:GetBMBVectorPosition(target)
+    if not target then return end
+
     local direction = target - self:GetPos()
     direction.z = 0
 
