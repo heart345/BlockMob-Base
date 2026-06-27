@@ -1429,7 +1429,9 @@ function ENT:MaintainBMBMobSeparation()
     local probeDistance = self.MobSeparationApproachDistance or 18
     local probeTarget = origin + push * probeDistance
     probeTarget.z = origin.z
-    if self.IsMovementTargetSafe and not self:IsMovementTargetSafe(probeTarget, probeDistance) then
+    if self.MobSeparationUseSafety ~= false
+        and self.IsMovementTargetSafe
+        and not self:IsMovementTargetSafe(probeTarget, probeDistance) then
         return false
     end
 
@@ -1444,7 +1446,9 @@ function ENT:MaintainBMBMobSeparation()
         if nudge > 0.05 then
             local nudgeTarget = origin + push * nudge
             nudgeTarget.z = origin.z
-            if not self.IsMovementTargetSafe or self:IsMovementTargetSafe(nudgeTarget, math.max(nudge, 1)) then
+            if self.MobSeparationUseSafety == false
+                or not self.IsMovementTargetSafe
+                or self:IsMovementTargetSafe(nudgeTarget, math.max(nudge, 1)) then
                 self:SetPos(nudgeTarget)
             end
         end
@@ -4079,8 +4083,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                 self:SetBMBMoveMode("path_hop_suppressed")
             elseif not hopIntervalReady then
                 self:SetBMBMoveMode("path_hop_wait")
-                if self.FaceTarget and actionNode then
-                    self:FaceTarget(actionNode)
+                if self.FaceTarget and carrot then
+                    self:FaceTarget(carrot)
                 end
                 hopSetupSteered = true
             end
@@ -4121,8 +4125,8 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                     end
                 elseif self.HopOnlyLocomotion then
                     self:UpdateBMBApproachDebug(launch.target, nodeIndex)
-                    if self.FaceTarget and launch.target then
-                        self:FaceTarget(launch.target)
+                    if self.FaceTarget and carrot then
+                        self:FaceTarget(carrot)
                     end
                     hopSetupSteered = true
                 else
@@ -4145,6 +4149,11 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                     end
                 elseif not manualHopHandled then
                     self:SteerTowards(carrot, progressWatch)
+                end
+
+                if onGround and not jumping and not manualAirControl and not hopSuppressed
+                    and self.FaceTarget and carrot then
+                    self:FaceTarget(carrot)
                 end
             end
         elseif activeAction == "drop" and not self:IsBMBOnGround() then
@@ -4901,6 +4910,10 @@ function ENT:ScheduleBMBDeathCleanup(delay, corpse)
     if delay == false then return end
 
     timer.Simple(delay or 1.0, function()
+        if IsValid(self) and self.OnBMBDeathCleanup then
+            self:OnBMBDeathCleanup(corpse)
+        end
+
         if IsValid(self) then
             local origin = IsValid(corpse) and corpse:WorldSpaceCenter() or self:GetBMBDeathEffectOrigin()
             self:EmitBMBDeathPoofAt(origin, self:GetBMBDeathEffectScale())

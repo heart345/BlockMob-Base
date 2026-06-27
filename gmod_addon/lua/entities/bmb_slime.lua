@@ -26,11 +26,21 @@ ENT.AttackKnockback = 80
 ENT.AttackVerticalKnockback = 70
 ENT.AttackGroundedVerticalKnockback = 95
 ENT.AttackDamageType = DMG_SLASH
-ENT.DeathRemoveDelay = 0.7
+ENT.DeathRemoveDelay = 0.85
 ENT.DeathKnockbackEnabled = false
-ENT.MobSeparationRadiusScale = 1.0
-ENT.MobSeparationSearchScale = 1.7
-ENT.MobSeparationPositionNudgeMax = 3
+ENT.DeathTipDuration = 0.55
+ENT.DeathTipDegrees = 90
+ENT.SlimeLandEffect = "bmb_slime_land"
+ENT.MobSeparationRadiusScale = 1.12
+ENT.MobSeparationSearchScale = 2.3
+ENT.MobSeparationMinSpeed = 70
+ENT.MobSeparationMaxSpeed = 155
+ENT.MobSeparationApproachDistance = 34
+ENT.MobSeparationPositionNudgeMinOverlap = 1
+ENT.MobSeparationPositionNudgeScale = 0.42
+ENT.MobSeparationPositionNudgeMax = 9
+ENT.MobSeparationVerticalOverlapScale = 0.95
+ENT.MobSeparationUseSafety = false
 ENT.BlockHopAllowCloseLaunch = true
 ENT.BlockHopAllowBlockedCloseLaunch = true
 ENT.BlockHopUsePreviousNodeForward = false
@@ -80,10 +90,10 @@ local slimeSizeData = {
         damage = 0,
         attackRange = 24,
         verticalRange = 18,
-        speed = 78,
+        speed = 92,
         hopHeightScale = 0.85,
-        hopDistanceScale = 0.92,
-        hopInterval = 0.18,
+        hopDistanceScale = 1.08,
+        hopInterval = 0.12,
         soundLevel = 64,
         soundVolume = 0.58,
         lookAtEyeHeight = 8
@@ -96,10 +106,10 @@ local slimeSizeData = {
         damage = 4,
         attackRange = 38,
         verticalRange = 26,
-        speed = 92,
+        speed = 116,
         hopHeightScale = 1.15,
-        hopDistanceScale = 1.04,
-        hopInterval = 0.28,
+        hopDistanceScale = 1.3,
+        hopInterval = 0.18,
         soundLevel = 68,
         soundVolume = 0.72,
         lookAtEyeHeight = 16
@@ -112,10 +122,10 @@ local slimeSizeData = {
         damage = 8,
         attackRange = 70,
         verticalRange = 46,
-        speed = 108,
+        speed = 140,
         hopHeightScale = 1.55,
-        hopDistanceScale = 1.18,
-        hopInterval = 0.42,
+        hopDistanceScale = 1.48,
+        hopInterval = 0.26,
         soundLevel = 74,
         soundVolume = 0.9,
         lookAtEyeHeight = 32
@@ -186,6 +196,11 @@ ENT.Sounds = {
         "bmb/mob/slime/small3.ogg",
         "bmb/mob/slime/small4.ogg",
         "bmb/mob/slime/small5.ogg"
+    },
+    Hit = {
+        "bmb/damage/hit1.ogg",
+        "bmb/damage/hit2.ogg",
+        "bmb/damage/hit3.ogg"
     }
 }
 
@@ -225,7 +240,8 @@ function ENT:ApplySlimeSize(size, keepHealth)
     local config = self:GetBMBSlimeConfig(size)
     local damageScale = math.max(0, conVarFloat("bmb_slime_contact_damage_scale", 1))
     local minDamage = conVarFloat("bmb_slime_min_size_damage", 0)
-    local hopDistanceScale = math.max(0.1, conVarFloat("bmb_slime_hop_dist_scale", 1))
+    local hopDistanceConVarScale = math.max(0.1, conVarFloat("bmb_slime_hop_dist_scale", 1))
+    local hopDistanceScale = hopDistanceConVarScale * math.max(0.1, config.hopDistanceScale or 1)
     local hopHeightScale = math.max(0.1, conVarFloat("bmb_slime_hop_height_scale", 1))
     local hopIntervalScale = math.max(0, conVarFloat("bmb_slime_hop_interval_scale", 1))
     local radius = config.radius
@@ -254,18 +270,18 @@ function ENT:ApplySlimeSize(size, keepHealth)
     self.AttackVerticalRange = config.verticalRange
     self.AttackVerticalOverlapRange = math.max(config.verticalRange, config.height + 10)
     self.AttackVerticalOverlapFlatRange = math.min(config.attackRange, radius + 8)
-    self.WalkSpeed = config.speed * hopDistanceScale
+    self.WalkSpeed = config.speed * hopDistanceConVarScale
     self.RunSpeed = self.WalkSpeed
     self.AttackMoveSpeed = self.WalkSpeed
     self.BlockHopApexScale = config.hopHeightScale * hopHeightScale
     self.BlockHopJumpHeightScale = config.hopHeightScale * hopHeightScale
     self.BlockHopInterval = math.max(0, config.hopInterval * hopIntervalScale)
-    self.BlockHopManualHorizontalMaxScale = 1.08 + (0.14 * hopDistanceScale)
-    self.BlockHopLaunchMaxDistanceScale = 1.35 + (0.18 * hopDistanceScale)
-    self.BlockHopLaunchIdealDistanceScale = 0.95 + (0.16 * hopDistanceScale)
+    self.BlockHopManualHorizontalMaxScale = 1.08 + (0.16 * hopDistanceScale)
+    self.BlockHopLaunchMaxDistanceScale = 1.35 + (0.22 * hopDistanceScale)
+    self.BlockHopLaunchIdealDistanceScale = 0.95 + (0.18 * hopDistanceScale)
     self.BlockHopLaunchMinFaceDistanceScale = 0.42
     self.BlockHopLaunchIdealFaceDistanceScale = 0.58
-    self.MobSeparationApproachDistance = math.max(12, radius * 1.2)
+    self.MobSeparationApproachDistance = math.max(22, radius * 1.35)
     self.LookAtEyeHeight = config.lookAtEyeHeight
 
     if self.loco then
@@ -403,8 +419,38 @@ function ENT:PlayBMBSlimeAttackSound(target)
     emitter:EmitSound(soundName, 70, math.random(96, 104), 0.72)
 end
 
+function ENT:PlayBMBSlimePlayerHitSound(target)
+    if not IsValid(target) or not target:IsPlayer() then return end
+
+    local soundName = randomSound(self.Sounds and self.Sounds.Hit)
+    if not soundName then return end
+
+    target:EmitSound(soundName, 74, math.random(96, 104), 0.82)
+end
+
+function ENT:GetBMBSlimeLandParticleCount(config)
+    config = config or self:GetBMBSlimeConfig()
+
+    return math.max(1, math.ceil((config.modelScale or 1) * 0.52 * 32))
+end
+
+function ENT:EmitBMBSlimeLandEffect()
+    if CLIENT then return end
+    if not self.SlimeLandEffect then return end
+
+    local config = self:GetBMBSlimeConfig()
+    local data = EffectData()
+
+    data:SetOrigin(self:GetPos() + Vector(0, 0, 2))
+    data:SetMagnitude(self:GetBMBSlimeLandParticleCount(config))
+    data:SetRadius((config.radius or 9) * 2)
+    data:SetScale(math.Clamp(0.9 + ((config.modelScale or 1) - 1) * 0.18, 0.9, 1.45))
+    util.Effect(self.SlimeLandEffect, data, true, true)
+end
+
 function ENT:OnBMBMeleeHit(target, _damageInfo)
     self:PlayBMBSlimeAttackSound(target)
+    self:PlayBMBSlimePlayerHitSound(target)
 end
 
 function ENT:OnBMBHurtSound(damageInfo)
@@ -421,7 +467,19 @@ function ENT:OnLandOnGround(ent)
     if now < (self.BMBNextSlimeLandSoundAt or 0) then return end
 
     self.BMBNextSlimeLandSoundAt = now + 0.12
+    self:SetNWFloat("BMBSlimeLastLandAt", now)
+    self:EmitBMBSlimeLandEffect()
     self:PlayBMBSlimeSound(0.78)
+end
+
+function ENT:StartBMBBlockHop(target, speed, launch)
+    local nativeHop, hopStarted = callBaseMob(self, "StartBMBBlockHop", target, speed, launch)
+
+    if SERVER and hopStarted then
+        self:SetNWFloat("BMBSlimeLastHopAt", CurTime())
+    end
+
+    return nativeHop, hopStarted
 end
 
 function ENT:MaybePlayStep()
@@ -539,7 +597,8 @@ function ENT:SplitBMBSlime()
     local count = math.Clamp(conVarInt("bmb_slime_split_count", 2), 0, 4)
     if count <= 0 then return end
 
-    local inheritedTarget = IsValid(self.TargetEntity) and self.TargetEntity or self.BMBRetaliationTarget
+    local inheritedTarget = IsValid(self.BMBSlimeSplitInheritedTarget) and self.BMBSlimeSplitInheritedTarget
+        or (IsValid(self.TargetEntity) and self.TargetEntity or self.BMBRetaliationTarget)
     local positions = self:FindBMBSlimeSplitPositions(childSize, count)
 
     for _, spawnData in ipairs(positions) do
@@ -547,10 +606,149 @@ function ENT:SplitBMBSlime()
     end
 end
 
+function ENT:SnapBMBSlimeDeathToGround()
+    if CLIENT or not self.GetBMBGroundSurfaceZ then return end
+
+    local pos = self:GetPos()
+    local surfaceZ = self:GetBMBGroundSurfaceZ(pos)
+    if not surfaceZ then return end
+
+    local config = self:GetBMBSlimeConfig()
+    local maxDrop = math.max((config.height or 18) * 2, self:GetBMBBlockSize() * 4)
+
+    if pos.z >= surfaceZ and pos.z - surfaceZ > maxDrop then return end
+
+    self:SetPos(Vector(pos.x, pos.y, surfaceZ))
+    if self.loco and self.loco.SetVelocity then
+        self.loco:SetVelocity(vector_origin)
+    end
+end
+
+function ENT:OnBMBDeathCleanup(_corpse)
+    self:SplitBMBSlime()
+end
+
 function ENT:OnKilled(damageInfo)
     if CLIENT then return end
 
+    local inheritedTarget = IsValid(self.TargetEntity) and self.TargetEntity or self.BMBRetaliationTarget
+    if self:CanBMBTarget(inheritedTarget) then
+        self.BMBSlimeSplitInheritedTarget = inheritedTarget
+    end
+
     self:PlayBMBSlimeSound(1.05)
-    self:SplitBMBSlime()
+    self:SnapBMBSlimeDeathToGround()
     self:BeginBMBDeath(damageInfo)
+end
+
+if CLIENT then
+    local function slimePulse(age, duration)
+        if age < 0 or age > duration then return 0 end
+
+        local t = 1 - age / duration
+        return t * t
+    end
+
+    local function smoothStep(value)
+        value = math.Clamp(value, 0, 1)
+
+        return value * value * (3 - 2 * value)
+    end
+
+    function ENT:GetBMBSlimeDeathVisualScale()
+        local now = CurTime()
+        local startedAt = self:GetNWFloat("BMBStateStartedAt", now)
+        local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
+        local duration = deathUntil > startedAt and deathUntil - startedAt or (self.DeathRemoveDelay or 0.7)
+        local progress = math.Clamp((now - startedAt) / math.max(duration, 0.1), 0, 1)
+        local tipProgress = math.Clamp((now - startedAt) / math.max(self.DeathTipDuration or 0.55, 0.1), 0, 1)
+        local collapse = smoothStep(progress)
+        local tip = smoothStep(tipProgress) * (self.DeathTipDegrees or 90)
+        if self:EntIndex() % 2 == 0 then
+            tip = -tip
+        end
+
+        local bounce = math.sin(progress * math.pi) * (1 - progress)
+        local horizontal = math.Clamp(1 + bounce * 0.35 - collapse * 0.15, 0.5, 1.35)
+        local vertical = math.Clamp(1 - collapse * 0.72 + bounce * 0.08, 0.22, 1.12)
+
+        return horizontal, vertical, tip
+    end
+
+    function ENT:GetBMBSlimeSquishAmount()
+        local now = CurTime()
+        local hopAge = now - self:GetNWFloat("BMBSlimeLastHopAt", -1000)
+        local landAge = now - self:GetNWFloat("BMBSlimeLastLandAt", -1000)
+        local stretch = slimePulse(hopAge, 0.42) * 1.0
+        local squash = slimePulse(landAge, 0.38) * 0.95
+
+        return stretch - squash
+    end
+
+    function ENT:GetBMBSlimeVisualScale()
+        if self:GetNWBool("BMBDead", false) then
+            return self:GetBMBSlimeDeathVisualScale()
+        end
+
+        local squish = self:GetBMBSlimeSquishAmount()
+
+        if math.abs(squish) < 0.01 then
+            return 1, 1
+        end
+
+        local horizontal = math.Clamp(1 - squish * 0.16, 0.78, 1.22)
+        local vertical = math.Clamp(1 + squish * 0.3, 0.68, 1.36)
+
+        return horizontal, vertical
+    end
+
+    function ENT:GetBMBSlimeDeathTipLift(tip, horizontal)
+        local config = self:GetBMBSlimeConfig(self:GetNWInt("BMBSlimeSize", 3))
+        local radians = math.rad(math.abs(tip or 0))
+
+        return math.sin(radians) * (config.radius or 9) * math.Clamp(horizontal or 1, 0.25, 1.45)
+    end
+
+    function ENT:Draw()
+        local horizontal, vertical, tip = self:GetBMBSlimeVisualScale()
+        tip = tip or 0
+
+        if math.abs(horizontal - 1) < 0.001 and math.abs(vertical - 1) < 0.001 and math.abs(tip) < 0.001 then
+            callBaseMob(self, "Draw")
+            return
+        end
+
+        local matrix = Matrix()
+
+        matrix:Scale(Vector(horizontal, horizontal, vertical))
+        local oldRenderAngles
+        local oldRenderOrigin
+        local renderTipActive = math.abs(tip) >= 0.001 and self.SetRenderAngles
+
+        if renderTipActive then
+            oldRenderAngles = self.GetRenderAngles and self:GetRenderAngles() or self:GetAngles()
+            if self.SetRenderOrigin then
+                oldRenderOrigin = self.GetRenderOrigin and self:GetRenderOrigin() or self:GetPos()
+            end
+
+            local deathAngles = self:GetAngles()
+            deathAngles:RotateAroundAxis(deathAngles:Right(), tip)
+            self:SetRenderAngles(deathAngles)
+
+            if self.SetRenderOrigin then
+                self:SetRenderOrigin(self:GetPos() + Vector(0, 0, self:GetBMBSlimeDeathTipLift(tip, horizontal)))
+            end
+        end
+
+        self:EnableMatrix("RenderMultiply", matrix)
+        callBaseMob(self, "Draw")
+        self:DisableMatrix("RenderMultiply")
+
+        if renderTipActive then
+            if self.SetRenderOrigin then
+                self:SetRenderOrigin(oldRenderOrigin or self:GetPos())
+            end
+            self:SetRenderAngles(oldRenderAngles or self:GetAngles())
+        end
+    end
 end

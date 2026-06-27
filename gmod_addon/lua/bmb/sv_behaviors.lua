@@ -29,6 +29,10 @@ if SERVER and not GetConVar("bmb_debug_chase") then
     CreateConVar("bmb_debug_chase", "0", FCVAR_ARCHIVE, "Print BMB chase pathfinding decision diagnostics.")
 end
 
+if SERVER and not GetConVar("bmb_chase_direct_resuppress_time") then
+    CreateConVar("bmb_chase_direct_resuppress_time", "0.6", FCVAR_ARCHIVE, "Seconds to stay on path-follow before retrying direct chase after a failed direct attempt.")
+end
+
 if SERVER and not GetConVar("bmb_chase_cliff_memory_cooldown") then
     CreateConVar("bmb_chase_cliff_memory_cooldown", "3.0", FCVAR_ARCHIVE, "Seconds before a cached chase cliff shortcut may be reconsidered.")
 end
@@ -1322,10 +1326,17 @@ function BMB.Behaviors.Chase.Run(mob, target)
         return true
     end
 
-    if BMB.Behaviors.Chase.CanDirect(mob, target) then
+    local directSuppressUntil = mob.BMBChaseDirectSuppressUntil or 0
+    if CurTime() >= directSuppressUntil and BMB.Behaviors.Chase.CanDirect(mob, target) then
         local directResult = BMB.Behaviors.Chase.RunDirect(mob, target, speed)
-        if directResult then return true end
+        if directResult then
+            mob.BMBChaseDirectSuppressUntil = nil
+            return true
+        end
         if mob.BMBMoveInterrupt then return false end
+
+        mob.BMBChaseDirectSuppressUntil = CurTime()
+            + getConVarFloat("bmb_chase_direct_resuppress_time", mob.ChaseDirectReSuppressTime or 0.6)
     end
 
     if not BMB.Behaviors.SeekTarget.IsValid(mob, target, mob.TargetLoseRange or mob.TargetRange) then

@@ -3,6 +3,8 @@ BMB.Version = "1.0.0"
 
 local resourceFiles = {
     "materials/icon16/bmb.png",
+    "materials/bmb/particles/slime_ball.vmt",
+    "materials/bmb/particles/slime_ball.vtf",
     "sound/bmb/mob/sheep/say1.ogg",
     "sound/bmb/mob/sheep/say2.ogg",
     "sound/bmb/mob/sheep/say3.ogg",
