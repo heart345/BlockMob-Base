@@ -3828,6 +3828,20 @@ function ENT:StartBMBBlockHop(target, speed, launch)
     return false, true
 end
 
+function ENT:RunBMBHopOnlyLiftBlockedSlide(actionNode, speed)
+    local slideTarget = self:GetBMBVectorPosition(actionNode)
+    if not slideTarget then return false end
+
+    local pos = self:GetPos()
+    local slideSpeed = speed or self.WalkSpeed
+
+    self:SetBMBMoveMode("path_hop_slide")
+    self.loco:Approach(Vector(slideTarget.x, slideTarget.y, pos.z), slideSpeed)
+    if self.loco.SetDesiredSpeed then self.loco:SetDesiredSpeed(slideSpeed) end
+
+    return true
+end
+
 function ENT:SteerBMBInAir(target, speed, progressWatch)
     local current = self:GetPos()
     local aim = Vector(target.x, target.y, current.z)
@@ -4125,6 +4139,10 @@ function ENT:MoveAlongPath(waypoints, speed, options)
                     end
                 elseif self.HopOnlyLocomotion then
                     self:UpdateBMBApproachDebug(launch.target, nodeIndex)
+                    if launch.reason == "lift_blocked" then
+                        self:RunBMBHopOnlyLiftBlockedSlide(actionNode, pathSpeed)
+                    end
+
                     if self.FaceTarget and carrot then
                         self:FaceTarget(carrot)
                     end

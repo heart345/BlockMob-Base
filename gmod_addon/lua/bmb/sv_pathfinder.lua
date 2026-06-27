@@ -27,8 +27,19 @@ local function copyMeta(meta)
     return copied
 end
 
-local function heuristic(a, b)
+local DIAGONAL_WALK_COST = 1.41
+
+local function manhattanDistance(a, b)
     return math.abs(a.x - b.x) + math.abs(a.y - b.y) + math.abs((a.z or 0) - (b.z or 0))
+end
+
+local function heuristic(a, b)
+    local dx = math.abs(a.x - b.x)
+    local dy = math.abs(a.y - b.y)
+    local diagonal = math.min(dx, dy)
+    local straight = math.max(dx, dy) - diagonal
+
+    return diagonal * DIAGONAL_WALK_COST + straight + math.abs((a.z or 0) - (b.z or 0))
 end
 
 local directions = {
@@ -36,6 +47,13 @@ local directions = {
     { x = -1, y = 0 },
     { x = 0, y = 1 },
     { x = 0, y = -1 }
+}
+
+local diagonalDirections = {
+    { x = 1, y = 1 },
+    { x = 1, y = -1 },
+    { x = -1, y = 1 },
+    { x = -1, y = -1 }
 }
 
 -- 可通行/支撑都带 per-FindPath 缓存：A* 里同一个格子会被反复当作 walk 邻居、hop 目标、
@@ -309,6 +327,35 @@ local function findClimbNeighbor(blockWorld, current, direction, options)
     return nil
 end
 
+local function addDiagonalWalkNeighbors(found, coord, blockWorld, options, allowVertical)
+    for _, direction in ipairs(diagonalDirections) do
+        local sameLevel = {
+            x = coord.x + direction.x,
+            y = coord.y + direction.y,
+            z = coord.z
+        }
+        local orthoA = {
+            x = coord.x + direction.x,
+            y = coord.y,
+            z = coord.z
+        }
+        local orthoB = {
+            x = coord.x,
+            y = coord.y + direction.y,
+            z = coord.z
+        }
+
+        -- Diagonal walk is same-level only. Both side cells must be passable so A*
+        -- cannot slice through a solid block corner.
+        if isPassable(blockWorld, orthoA, options)
+            and isPassable(blockWorld, orthoB, options)
+            and ((allowVertical and isStandable(blockWorld, sameLevel, options))
+                or (not allowVertical and isPassable(blockWorld, sameLevel, options))) then
+            addNeighbor(found, copyCoord(sameLevel), "walk", DIAGONAL_WALK_COST)
+        end
+    end
+end
+
 local function neighbors(coord, blockWorld, options)
     local found = {}
     local allowVertical = blockWorld.SupportsVerticalPath ~= false
@@ -371,6 +418,8 @@ local function neighbors(coord, blockWorld, options)
             end
         end
     end
+
+    addDiagonalWalkNeighbors(found, coord, blockWorld, options, allowVertical)
 
     return found
 end
@@ -629,10 +678,11 @@ function pathfinder.FindPath(startPos, goalPos, options)
     local goalKey = coordKey(goalCoord)
     local startKey = coordKey(startCoord)
     local hStart = heuristic(startCoord, goalCoord)
+    local budgetStart = manhattanDistance(startCoord, goalCoord)
 
     -- 搜索预算：f = g + h 超过它的节点不展开（椭圆界）。yield 只把卡顿摊开，
     -- 总开销没变；预算才是把"无路"结论的代价从扫满迭代上限压到起点-目标走廊一圈
-    local fLimit = options.searchBudget or (hStart * 2 + 24)
+    local fLimit = options.searchBudget or (budgetStart * 2 + 24)
 
     local open = { startCoord }
     local openSet = { [startKey] = true }

@@ -28,8 +28,11 @@ ENT.AttackGroundedVerticalKnockback = 95
 ENT.AttackDamageType = DMG_SLASH
 ENT.DeathRemoveDelay = 0.85
 ENT.DeathKnockbackEnabled = false
-ENT.DeathTipDuration = 0.55
-ENT.DeathTipDegrees = 90
+ENT.UsePhysicsCorpseOnDeath = true
+ENT.DeathCorpseRollVelocity = 220
+ENT.DeathCorpseRightRollVelocity = 140
+ENT.DeathCorpseTorqueHeight = 14
+ENT.DeathCorpseRightPushSpeed = 40
 ENT.SlimeLandEffect = "bmb_slime_land"
 ENT.MobSeparationRadiusScale = 1.12
 ENT.MobSeparationSearchScale = 2.3
@@ -482,6 +485,13 @@ function ENT:StartBMBBlockHop(target, speed, launch)
     return nativeHop, hopStarted
 end
 
+function ENT:CopyBMBVisualStateToCorpse(corpse)
+    callBaseMob(self, "CopyBMBVisualStateToCorpse", corpse)
+
+    local config = self:GetBMBSlimeConfig()
+    corpse:SetModelScale(config.modelScale or 1, 0)
+end
+
 function ENT:MaybePlayStep()
     -- Slime movement sound is landing-driven from OnLandOnGround.
 end
@@ -661,18 +671,13 @@ if CLIENT then
         local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
         local duration = deathUntil > startedAt and deathUntil - startedAt or (self.DeathRemoveDelay or 0.7)
         local progress = math.Clamp((now - startedAt) / math.max(duration, 0.1), 0, 1)
-        local tipProgress = math.Clamp((now - startedAt) / math.max(self.DeathTipDuration or 0.55, 0.1), 0, 1)
         local collapse = smoothStep(progress)
-        local tip = smoothStep(tipProgress) * (self.DeathTipDegrees or 90)
-        if self:EntIndex() % 2 == 0 then
-            tip = -tip
-        end
 
         local bounce = math.sin(progress * math.pi) * (1 - progress)
         local horizontal = math.Clamp(1 + bounce * 0.35 - collapse * 0.15, 0.5, 1.35)
         local vertical = math.Clamp(1 - collapse * 0.72 + bounce * 0.08, 0.22, 1.12)
 
-        return horizontal, vertical, tip
+        return horizontal, vertical
     end
 
     function ENT:GetBMBSlimeSquishAmount()
@@ -702,18 +707,10 @@ if CLIENT then
         return horizontal, vertical
     end
 
-    function ENT:GetBMBSlimeDeathTipLift(tip, horizontal)
-        local config = self:GetBMBSlimeConfig(self:GetNWInt("BMBSlimeSize", 3))
-        local radians = math.rad(math.abs(tip or 0))
-
-        return math.sin(radians) * (config.radius or 9) * math.Clamp(horizontal or 1, 0.25, 1.45)
-    end
-
     function ENT:Draw()
-        local horizontal, vertical, tip = self:GetBMBSlimeVisualScale()
-        tip = tip or 0
+        local horizontal, vertical = self:GetBMBSlimeVisualScale()
 
-        if math.abs(horizontal - 1) < 0.001 and math.abs(vertical - 1) < 0.001 and math.abs(tip) < 0.001 then
+        if math.abs(horizontal - 1) < 0.001 and math.abs(vertical - 1) < 0.001 then
             callBaseMob(self, "Draw")
             return
         end
@@ -721,34 +718,8 @@ if CLIENT then
         local matrix = Matrix()
 
         matrix:Scale(Vector(horizontal, horizontal, vertical))
-        local oldRenderAngles
-        local oldRenderOrigin
-        local renderTipActive = math.abs(tip) >= 0.001 and self.SetRenderAngles
-
-        if renderTipActive then
-            oldRenderAngles = self.GetRenderAngles and self:GetRenderAngles() or self:GetAngles()
-            if self.SetRenderOrigin then
-                oldRenderOrigin = self.GetRenderOrigin and self:GetRenderOrigin() or self:GetPos()
-            end
-
-            local deathAngles = self:GetAngles()
-            deathAngles:RotateAroundAxis(deathAngles:Right(), tip)
-            self:SetRenderAngles(deathAngles)
-
-            if self.SetRenderOrigin then
-                self:SetRenderOrigin(self:GetPos() + Vector(0, 0, self:GetBMBSlimeDeathTipLift(tip, horizontal)))
-            end
-        end
-
         self:EnableMatrix("RenderMultiply", matrix)
         callBaseMob(self, "Draw")
         self:DisableMatrix("RenderMultiply")
-
-        if renderTipActive then
-            if self.SetRenderOrigin then
-                self:SetRenderOrigin(oldRenderOrigin or self:GetPos())
-            end
-            self:SetRenderAngles(oldRenderAngles or self:GetAngles())
-        end
     end
 end
