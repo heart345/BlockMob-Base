@@ -291,30 +291,38 @@ if CLIENT then
         sheepTintMaterial:SetVector("$color2", Vector(color.r / 255, color.g / 255, color.b / 255))
     end
 
-    function ENT:GetBMBSheepFlashGreenBlue()
+    function ENT:GetBMBSheepFullBodyFlashAmount()
         local deathUntil = self:GetNWFloat("BMBDeathUntil", 0)
         if self:GetNWBool("BMBDead", false) and deathUntil > CurTime() and self.DeathKeepRed ~= false then
-            return 1 - (self.HurtFlashRedAmount or 0.65)
+            return self.HurtFlashRedAmount or 0.65
         end
 
         local flashUntil = self:GetNWFloat("BMBHurtFlashUntil", 0)
         if flashUntil > CurTime() then
-            return 1 - (self.HurtFlashRedAmount or 0.65)
+            return self.HurtFlashRedAmount or 0.65
         end
 
         return nil
     end
 
-    function ENT:DrawBMBSheepFullBodyFlash(greenBlue)
-        if not greenBlue or not sheepHurtFlashMaterial or sheepHurtFlashMaterial:IsError() then return end
+    function ENT:DrawBMBSheepBaseWithoutFlash()
+        if self.DrawBMBModelWithMCLight then
+            self:DrawBMBModelWithMCLight(self)
+        else
+            self:DrawModel()
+        end
+    end
+
+    function ENT:DrawBMBSheepFullBodyFlash(amount)
+        if not amount or not sheepHurtFlashMaterial or sheepHurtFlashMaterial:IsError() then return end
 
         render.MaterialOverride(sheepHurtFlashMaterial)
-        render.SetBlend(0.42)
+        render.SetBlend(math.Clamp(amount, 0, 1))
 
         if self.DrawBMBModelWithMCLight then
-            self:DrawBMBModelWithMCLight(self, 1, greenBlue, greenBlue)
+            self:DrawBMBModelWithMCLight(self, 1, 0, 0)
         else
-            render.SetColorModulation(1, greenBlue, greenBlue)
+            render.SetColorModulation(1, 0, 0)
             self:DrawModel()
             render.SetColorModulation(1, 1, 1)
         end
@@ -324,17 +332,21 @@ if CLIENT then
     end
 
     function ENT:Draw()
-        local flashGreenBlue = self:GetBMBSheepFlashGreenBlue()
+        local flashAmount = self:GetBMBSheepFullBodyFlashAmount()
 
         self:UpdateBMBSheepTintMaterial()
+
+        if flashAmount then
+            self:DrawBMBSheepBaseWithoutFlash()
+            self:DrawBMBSheepFullBodyFlash(flashAmount)
+            return
+        end
 
         if self.BaseClass and self.BaseClass.Draw then
             self.BaseClass.Draw(self)
         else
             self:DrawModel()
         end
-
-        self:DrawBMBSheepFullBodyFlash(flashGreenBlue)
     end
 
     local function resetSheepBones(ent, bones)

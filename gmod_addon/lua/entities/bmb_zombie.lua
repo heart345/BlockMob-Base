@@ -7,6 +7,7 @@ ENT.Author = "Heart#"
 ENT.Category = "BlockMob Base"
 ENT.Spawnable = true
 ENT.AdminOnly = false
+ENT.IsUndead = true
 
 ENT.Model = "models/mcgm/zombie/zombie.mdl"
 ENT.StartHealth = 70

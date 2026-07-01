@@ -37,6 +37,38 @@ if SERVER then
     if not GetConVar("bmb_freeze") then
         CreateConVar("bmb_freeze", "0", 0, "Freeze all BMB mobs for screenshots.")
     end
+
+    local function shouldMigrateConVarValue(value, oldDefaults)
+        if not oldDefaults then return false end
+        if type(oldDefaults) ~= "table" then
+            oldDefaults = { oldDefaults }
+        end
+
+        for _, oldDefault in ipairs(oldDefaults) do
+            if math.abs(value - oldDefault) < 0.000001 then return true end
+        end
+
+        return false
+    end
+
+    local function createOrMigrateNumberConVar(name, defaultValue, helpText, oldDefaults)
+        local convar = GetConVar(name)
+
+        if not convar then
+            return CreateConVar(name, tostring(defaultValue), FCVAR_ARCHIVE, helpText)
+        end
+
+        if shouldMigrateConVarValue(convar:GetFloat(), oldDefaults) then
+            convar:SetFloat(defaultValue)
+        end
+
+        return convar
+    end
+
+    createOrMigrateNumberConVar("bmb_physics_impact_min_speed", 90, "Minimum prop speed before BMB mobs consider physics impact damage.")
+    createOrMigrateNumberConVar("bmb_physics_impact_min_momentum", 22000, "Minimum prop momentum before BMB mobs take physics impact damage.", { 10000, 18000 })
+    createOrMigrateNumberConVar("bmb_physics_impact_momentum_scale", 0.00014, "Damage per momentum unit above the BMB physics impact threshold.", { 0.0008, 0.0003 })
+    createOrMigrateNumberConVar("bmb_physics_impact_max_damage", 18, "Maximum BMB mob damage from one physics impact.", { 80, 35 })
 end
 
 ENT.Base = "base_nextbot"
@@ -202,9 +234,10 @@ ENT.PropSupportDirectTimeoutMax = 1.5
 ENT.PhysicsImpactRadius = 44
 ENT.PhysicsImpactInterval = 0.3
 ENT.PhysicsImpactCooldown = 0.22
-ENT.PhysicsImpactMinSpeed = 260
-ENT.PhysicsImpactDamageScale = 0.035
-ENT.PhysicsImpactMaxDamage = 80
+ENT.PhysicsImpactMinSpeed = 90
+ENT.PhysicsImpactMinMomentum = 22000
+ENT.PhysicsImpactMomentumScale = 0.00014
+ENT.PhysicsImpactMaxDamage = 18
 ENT.PhysicsPropImpactDamping = 0.45
 ENT.PhysicsPropKillDamping = 0.68
 ENT.HurtFlashTime = 0.5
@@ -1847,6 +1880,7 @@ end
 function ENT:StartBMBKnockback(damageInfo)
     if self.BMBHeld then return false end
     if self:IsBMBPhysicsDamage(damageInfo) then return false end
+    if self:HasBMBDamageType(damageInfo, DMG_POISON) then return false end
 
     local direction = self:GetBMBKnockbackDirection(damageInfo)
     if not direction then return false end
@@ -4536,6 +4570,26 @@ function ENT:CheckPhysicsImpacts()
     end
 end
 
+function ENT:GetBMBPhysicsImpactMinSpeed()
+    local convar = GetConVar and GetConVar("bmb_physics_impact_min_speed")
+    return convar and convar:GetFloat() or (self.PhysicsImpactMinSpeed or 90)
+end
+
+function ENT:GetBMBPhysicsImpactMinMomentum()
+    local convar = GetConVar and GetConVar("bmb_physics_impact_min_momentum")
+    return convar and convar:GetFloat() or (self.PhysicsImpactMinMomentum or 22000)
+end
+
+function ENT:GetBMBPhysicsImpactMomentumScale()
+    local convar = GetConVar and GetConVar("bmb_physics_impact_momentum_scale")
+    return convar and convar:GetFloat() or (self.PhysicsImpactMomentumScale or 0.00014)
+end
+
+function ENT:GetBMBPhysicsImpactMaxDamage()
+    local convar = GetConVar and GetConVar("bmb_physics_impact_max_damage")
+    return convar and convar:GetFloat() or (self.PhysicsImpactMaxDamage or 18)
+end
+
 function ENT:HandlePhysicsImpact(ent)
     if not self:IsPhysicsImpactEntity(ent) then return false end
 
@@ -4547,20 +4601,28 @@ function ENT:HandlePhysicsImpact(ent)
     local phys = ent:GetPhysicsObject()
     local velocity = phys:GetVelocity()
     local speed = velocity:Length()
+    local mass = phys:GetMass()
 
-    if speed < self.PhysicsImpactMinSpeed then return false end
+    if speed < self:GetBMBPhysicsImpactMinSpeed() then return false end
+
+    local minMomentum = self:GetBMBPhysicsImpactMinMomentum()
+    local momentum = mass * speed
+    if momentum < minMomentum then return false end
 
     self.PhysicsImpactTimes[ent] = now + self.PhysicsImpactCooldown
 
-    local massScale = math.Clamp(phys:GetMass() / 45, 0.75, 2.25)
-    local damageAmount = math.Clamp((speed - self.PhysicsImpactMinSpeed) * self.PhysicsImpactDamageScale * massScale, 1, self.PhysicsImpactMaxDamage)
+    local damageAmount = math.Clamp(
+        (momentum - minMomentum) * self:GetBMBPhysicsImpactMomentumScale(),
+        1,
+        self:GetBMBPhysicsImpactMaxDamage()
+    )
 
     local damage = DamageInfo()
     damage:SetAttacker(IsValid(ent:GetOwner()) and ent:GetOwner() or ent)
     damage:SetInflictor(ent)
     damage:SetDamage(damageAmount)
     damage:SetDamageType(DMG_CRUSH)
-    damage:SetDamageForce(velocity * phys:GetMass())
+    damage:SetDamageForce(velocity * mass)
     damage:SetDamagePosition(ent:WorldSpaceCenter())
 
     self:TakeDamageInfo(damage)

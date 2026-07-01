@@ -13,7 +13,8 @@ status.Effects.poison = {
     interval = 1.0,
     dps = 2,
     damageType = poisonDamageType,
-    nonlethal = true
+    nonlethal = true,
+    undeadImmune = true
 }
 
 status.Effects.slowness = {
@@ -258,6 +259,7 @@ function status.Apply(target, effectType, params)
     local now = effectNow()
     local effect = copyEffectDefaults(effectType)
     if not effect then return false end
+    if effect.undeadImmune and target.IsUndead then return false end
 
     for key, value in pairs(params) do
         effect[key] = value
