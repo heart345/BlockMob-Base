@@ -59,6 +59,7 @@ ENT.AmbientSoundTickRate = 20
 ENT.AmbientSoundMaxCatchupTicks = 4
 ENT.CollisionMins = Vector(-11, -11, 0)
 ENT.CollisionMaxs = Vector(11, 11, 106)
+ENT.StepHeight = 40
 ENT.LookAtPitchSign = -1
 ENT.LookAtPitchLimit = 38
 ENT.LookAtEyeHeight = 94
@@ -93,6 +94,10 @@ ENT.EndermanFarTeleportMinCells = 16
 ENT.EndermanFarTeleportDelay = 1.5
 ENT.EndermanReachTeleportRetryDelay = 0.25
 ENT.EndermanAttackRequireLineOfSight = true
+ENT.EndermanScaryFaceHeadOffset = Vector(0, 11.4, 0)
+ENT.EndermanScaryFaceHatOffset = Vector(0, -11.4, 0)
+ENT.EndermanCreepyJitterScale = 0.012
+ENT.EndermanCreepyAngleJitter = 0.2
 
 ENT.Sounds = {
     Say = {
@@ -934,6 +939,62 @@ end
 if CLIENT then
     local ENDERMAN_PORTAL_PARTICLE_TICK = 0.05
     local ENDERMAN_PORTAL_AMBIENT_FLAGS = 1
+    local function shouldMigrateClientNumber(value, oldDefaults)
+        if not oldDefaults then return false end
+
+        for _, oldDefault in ipairs(oldDefaults) do
+            if math.abs(value - oldDefault) <= 0.00001 then return true end
+        end
+
+        return false
+    end
+
+    local function createOrMigrateClientNumberConVar(name, defaultValue, helpText, oldDefaults)
+        local convar = GetConVar(name)
+        if not convar then
+            return CreateClientConVar(name, tostring(defaultValue), true, false, helpText)
+        end
+
+        if shouldMigrateClientNumber(convar:GetFloat(), oldDefaults) then
+            convar:SetFloat(defaultValue)
+        end
+
+        return convar
+    end
+
+    local endermanScaryHeadOffset = {
+        x = createOrMigrateClientNumberConVar("bmb_enderman_scary_head_x", 0, "Enderman scary face head offset X."),
+        y = createOrMigrateClientNumberConVar("bmb_enderman_scary_head_y", 11.4, "Enderman scary face head offset Y.", { 0 }),
+        z = createOrMigrateClientNumberConVar("bmb_enderman_scary_head_z", 0, "Enderman scary face head offset Z.", { 11.4 })
+    }
+    local endermanScaryHatOffset = {
+        x = createOrMigrateClientNumberConVar("bmb_enderman_scary_hat_x", 0, "Enderman scary face hat offset X."),
+        y = createOrMigrateClientNumberConVar("bmb_enderman_scary_hat_y", -11.4, "Enderman scary face hat offset Y.", { 0 }),
+        z = createOrMigrateClientNumberConVar("bmb_enderman_scary_hat_z", 0, "Enderman scary face hat offset Z.", { -11.4 })
+    }
+    local endermanJitterScale = createOrMigrateClientNumberConVar(
+        "bmb_enderman_creepy_jitter_scale",
+        0.012,
+        "Enderman provoked render jitter in MC blocks.",
+        { 0.02, 0.045 }
+    )
+    local endermanAngleJitter = createOrMigrateClientNumberConVar(
+        "bmb_enderman_creepy_angle_jitter",
+        0.2,
+        "Enderman provoked silhouette jitter in degrees.",
+        { 0, 1.1 }
+    )
+
+    local function vectorFromConVars(convars)
+        return Vector(convars.x:GetFloat(), convars.y:GetFloat(), convars.z:GetFloat())
+    end
+
+    local function randomGaussian()
+        local u1 = math.max(0.000001, math.Rand(0, 1))
+        local u2 = math.Rand(0, 1)
+
+        return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+    end
 
     local endermanAnimations = {
         attack = {
@@ -956,6 +1017,7 @@ if CLIENT then
             model = model,
             root = self:LookupBone("root"),
             head = self:LookupBone("head"),
+            hat = self:LookupBone("hat"),
             rightArm = self:LookupBone("rightArm"),
             leftArm = self:LookupBone("leftArm"),
             rightLeg = self:LookupBone("rightLeg"),
@@ -1000,6 +1062,44 @@ if CLIENT then
         self:SetBMBVisualBoneAngle(bones.leftArm, Angle(0, 0, armForward + armSwing))
     end
 
+    function ENT:ApplyBMBEndermanScaryFace(bones)
+        local provoked = self:GetNWBool("BMBEndermanProvoked", false)
+        self:SetBMBVisualBonePosition(bones.head, provoked and vectorFromConVars(endermanScaryHeadOffset) or vector_origin)
+        self:SetBMBVisualBonePosition(bones.hat, provoked and vectorFromConVars(endermanScaryHatOffset) or vector_origin)
+    end
+
+    function ENT:IsBMBEndermanCreepyVisualActive()
+        if self:GetNWBool("BMBDead", false) then return false end
+
+        return self:GetNWBool("BMBEndermanProvoked", false)
+            or self:GetNWBool("BMBEndermanStaredAt", false)
+            or self:GetNWString("BMBState", "") == "stare_freeze"
+    end
+
+    function ENT:GetBMBEndermanCreepyRootJitter()
+        if not self:IsBMBEndermanCreepyVisualActive() then
+            return vector_origin, angle_zero
+        end
+
+        local moveAmount = math.max(0, endermanJitterScale:GetFloat()) * self:GetBMBBlockSize()
+        local position = vector_origin
+        if moveAmount > 0 then
+            position = Vector(randomGaussian() * moveAmount, randomGaussian() * moveAmount * 0.45, 0)
+        end
+
+        local amount = math.max(0, endermanAngleJitter:GetFloat())
+        local angle = angle_zero
+        if amount > 0 then
+            angle = Angle(0, randomGaussian() * amount, randomGaussian() * amount * 0.35)
+        end
+
+        return position, angle
+    end
+
+    function ENT:Draw()
+        callBaseMethod(self, "Draw")
+    end
+
     function ENT:UpdateBMBVisualBones()
         local bones = self:CacheBMBEndermanBones()
         if not bones then return end
@@ -1012,6 +1112,9 @@ if CLIENT then
             self:SetBMBVisualBoneAngle(bones.leftArm, angle_zero)
             self:SetBMBVisualBoneAngle(bones.rightLeg, angle_zero)
             self:SetBMBVisualBoneAngle(bones.leftLeg, angle_zero)
+            self:SetBMBVisualBonePosition(bones.head, vector_origin)
+            self:SetBMBVisualBonePosition(bones.hat, vector_origin)
+            self:SetBMBVisualBonePosition(bones.root, vector_origin)
 
             if bones.root then
                 local startedAt = self:GetNWFloat("BMBStateStartedAt", CurTime())
@@ -1025,8 +1128,11 @@ if CLIENT then
             return
         end
 
-        self:SetBMBVisualBoneAngle(bones.root, angle_zero)
+        local rootJitterPosition, rootJitterAngle = self:GetBMBEndermanCreepyRootJitter()
+        self:SetBMBVisualBoneAngle(bones.root, rootJitterAngle)
+        self:SetBMBVisualBonePosition(bones.root, rootJitterPosition)
         self:UpdateBMBLookAtHeadPose(bones.head)
+        self:ApplyBMBEndermanScaryFace(bones)
 
         local speed = self:GetVelocity():Length2D()
         local phase, amount = self:UpdateBMBLimbSwing(speed)

@@ -66,9 +66,9 @@ if SERVER then
     end
 
     createOrMigrateNumberConVar("bmb_physics_impact_min_speed", 90, "Minimum prop speed before BMB mobs consider physics impact damage.")
-    createOrMigrateNumberConVar("bmb_physics_impact_min_momentum", 22000, "Minimum prop momentum before BMB mobs take physics impact damage.", { 10000, 18000 })
-    createOrMigrateNumberConVar("bmb_physics_impact_momentum_scale", 0.00014, "Damage per momentum unit above the BMB physics impact threshold.", { 0.0008, 0.0003 })
-    createOrMigrateNumberConVar("bmb_physics_impact_max_damage", 18, "Maximum BMB mob damage from one physics impact.", { 80, 35 })
+    createOrMigrateNumberConVar("bmb_physics_impact_min_momentum", 18000, "Minimum prop momentum before BMB mobs take physics impact damage.", { 10000, 22000 })
+    createOrMigrateNumberConVar("bmb_physics_impact_momentum_scale", 0.00026, "Damage per momentum unit above the BMB physics impact threshold.", { 0.0008, 0.00014 })
+    createOrMigrateNumberConVar("bmb_physics_impact_max_damage", 30, "Maximum BMB mob damage from one physics impact.", { 80, 18 })
 end
 
 ENT.Base = "base_nextbot"
@@ -235,11 +235,14 @@ ENT.PhysicsImpactRadius = 44
 ENT.PhysicsImpactInterval = 0.3
 ENT.PhysicsImpactCooldown = 0.22
 ENT.PhysicsImpactMinSpeed = 90
-ENT.PhysicsImpactMinMomentum = 22000
-ENT.PhysicsImpactMomentumScale = 0.00014
-ENT.PhysicsImpactMaxDamage = 18
+ENT.PhysicsImpactMinMomentum = 18000
+ENT.PhysicsImpactMomentumScale = 0.00026
+ENT.PhysicsImpactMaxDamage = 30
 ENT.PhysicsPropImpactDamping = 0.45
 ENT.PhysicsPropKillDamping = 0.68
+ENT.PhysicsPropImpactBounceSpeed = 170
+ENT.PhysicsPropImpactClosingVelocity = true
+ENT.PhysicsPropHeldDamageScale = 0
 ENT.HurtFlashTime = 0.5
 ENT.HurtFlashRedAmount = 0.65
 ENT.DamageInvulnerabilityTime = 0.5
@@ -1561,6 +1564,7 @@ function ENT:Think()
             self:CheckPhysicsImpacts()
             self:MaintainBMBMobSeparation()
             self:TryBMBGroundUnsink("think")
+            self:MaintainBMBKnockbackHopSuppressFallback()
         end
 
         if not self.BMBDead and self.MaybePlayIdleSound then
@@ -1710,16 +1714,28 @@ function ENT:TryBMBGroundUnsink(_reason)
     return true
 end
 
+function ENT:ArmBMBKnockbackHopSuppress(_reason)
+    if not self.BMBKnockbackSuppressHopOnLand then return false end
+
+    self.BMBKnockbackSuppressHopOnLand = false
+    self.BMBBlockHopSuppressUntil = CurTime() + (self.BlockHopPostKnockbackSuppressDuration or 1.0)
+    self.BMBBlockHopSuppressOrigin = self:GetPos()
+    return true
+end
+
+function ENT:MaintainBMBKnockbackHopSuppressFallback()
+    if not self.BMBKnockbackSuppressHopOnLand then return false end
+    if self:IsBMBKnockbackActive() then return false end
+    if not self:IsBMBOnGround() then return false end
+
+    return self:ArmBMBKnockbackHopSuppress("think_grounded")
+end
+
 function ENT:OnLandOnGround(_)
     self.BMBLastLandTime = CurTime()
 
     self:TryBMBGroundUnsink("land")
-
-    if self.BMBKnockbackSuppressHopOnLand then
-        self.BMBKnockbackSuppressHopOnLand = false
-        self.BMBBlockHopSuppressUntil = CurTime() + (self.BlockHopPostKnockbackSuppressDuration or 1.0)
-        self.BMBBlockHopSuppressOrigin = self:GetPos()
-    end
+    self:ArmBMBKnockbackHopSuppress("land")
 
     self.CurrentMoveActivity = nil
     self:UpdateBMBActivityFromLocomotion()
@@ -1761,14 +1777,22 @@ function ENT:OnBMBPhysgunDrop(_)
 end
 
 if SERVER then
-    hook.Add("PhysgunPickup", "BMB_PhysgunHold", function(_, ent)
-        if ent.IsBMBMob and ent.OnBMBPhysgunPickup then
+    hook.Add("PhysgunPickup", "BMB_PhysgunHold", function(ply, ent)
+        if IsValid(ent) then
+            ent.BMBPhysgunHeldBy = ply
+        end
+
+        if IsValid(ent) and ent.IsBMBMob and ent.OnBMBPhysgunPickup then
             ent:OnBMBPhysgunPickup()
         end
     end)
 
     hook.Add("PhysgunDrop", "BMB_PhysgunHold", function(_, ent)
-        if ent.IsBMBMob and ent.OnBMBPhysgunDrop then
+        if IsValid(ent) then
+            ent.BMBPhysgunHeldBy = nil
+        end
+
+        if IsValid(ent) and ent.IsBMBMob and ent.OnBMBPhysgunDrop then
             ent:OnBMBPhysgunDrop()
         end
     end)
@@ -1892,7 +1916,7 @@ function ENT:StartBMBKnockback(damageInfo)
     local now = CurTime()
     local currentVelocity = self:GetVelocity()
     local verticalSpeed = self:GetBMBKnockbackVerticalVelocity(currentVelocity)
-    self.BMBKnockbackSuppressHopOnLand = verticalSpeed > currentVelocity.z + 8
+    self.BMBKnockbackSuppressHopOnLand = self.BMBKnockbackSuppressHopOnLand or verticalSpeed > currentVelocity.z + 8
 
     self.BMBKnockbackStartedAt = now
     self.BMBKnockbackUntil = now + (self.KnockbackDuration or 0.12)
@@ -3188,8 +3212,16 @@ end
 function ENT:GetBMBEffectiveWaypointAction(waypoints, nodeIndex)
     local action = self:GetBMBWaypointAction(waypoints, nodeIndex)
     if self.HopOnlyLocomotion and action == "walk" then return "hop" end
+    if action == "hop" and self:CanBMBConsumeHopAsStep() then return "walk" end
 
     return action
+end
+
+function ENT:CanBMBConsumeHopAsStep()
+    if self.HopOnlyLocomotion then return false end
+
+    local stepHeight = self.StepHeight or 0
+    return stepHeight >= self:GetBMBBlockSize() - 1
 end
 
 function ENT:IsBMBPathVerticalAction(action)
@@ -4037,13 +4069,16 @@ function ENT:MoveAlongPath(waypoints, speed, options)
             goalProgressWatch.deadline = CurTime() + (self.PathGoalProgressTimeout or 0.9)
         end
 
+        local waypointAction = self:GetBMBWaypointAction(waypoints, nodeIndex)
         local activeAction = self:GetBMBEffectiveWaypointAction(waypoints, nodeIndex)
         local actionNode = waypoints[nodeIndex]
+        local waypointVerticalAction = self:IsBMBPathVerticalAction(waypointAction)
         local verticalAction = self:IsBMBPathVerticalAction(activeAction)
+        local verticalNode = verticalAction or waypointVerticalAction
 
         -- 缓存路径 TTL 过期（ShouldRepath 桩）：只在普通 walk 段（非 hop/drop、无进行中 hop）打断，
         -- 走失败出口让行为层重寻路，世界变了最多 ~0.75s 自愈；绝不在垂直动作中途打断。
-        if not verticalAction and not self.BMBActiveBlockHop
+        if not verticalNode and not self.BMBActiveBlockHop
             and BMB.Pathfinder.ShouldRepath and BMB.Pathfinder.ShouldRepath(waypoints) then
             self:RestoreBMBStepHeight()
             return false
@@ -4070,7 +4105,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
         local pathSpeed, pathCarrotDistance, cornering
         local carrot
 
-        if verticalAction and actionNode then
+        if verticalNode and actionNode then
             pathSpeed = desiredSpeed
             pathCarrotDistance = math.min(carrotDistance, self:GetBMBPathCornerCarrotDistance())
             cornering = false
@@ -4091,7 +4126,7 @@ function ENT:MoveAlongPath(waypoints, speed, options)
 
         if self:RunBMBMoveOverride("path_carrot", carrot) then return true end
 
-        if not verticalAction then
+        if not verticalNode then
             local sourceSafe, sourceReason = self:IsPathSourceTargetSafe(carrot)
             if not sourceSafe then
                 self:FailBMBMove(sourceReason == "cliff" and "path_cliff" or "path_wall", sourceReason == "wall")
@@ -4577,17 +4612,36 @@ end
 
 function ENT:GetBMBPhysicsImpactMinMomentum()
     local convar = GetConVar and GetConVar("bmb_physics_impact_min_momentum")
-    return convar and convar:GetFloat() or (self.PhysicsImpactMinMomentum or 22000)
+    return convar and convar:GetFloat() or (self.PhysicsImpactMinMomentum or 18000)
 end
 
 function ENT:GetBMBPhysicsImpactMomentumScale()
     local convar = GetConVar and GetConVar("bmb_physics_impact_momentum_scale")
-    return convar and convar:GetFloat() or (self.PhysicsImpactMomentumScale or 0.00014)
+    return convar and convar:GetFloat() or (self.PhysicsImpactMomentumScale or 0.00026)
 end
 
 function ENT:GetBMBPhysicsImpactMaxDamage()
     local convar = GetConVar and GetConVar("bmb_physics_impact_max_damage")
-    return convar and convar:GetFloat() or (self.PhysicsImpactMaxDamage or 18)
+    return convar and convar:GetFloat() or (self.PhysicsImpactMaxDamage or 30)
+end
+
+function ENT:GetBMBPhysicsPropHeldDamageScale()
+    return self.PhysicsPropHeldDamageScale or 0
+end
+
+function ENT:IsBMBPhysicsImpactHeld(ent)
+    return IsValid(ent) and IsValid(ent.BMBPhysgunHeldBy)
+end
+
+function ENT:IsBMBPhysicsImpactClosing(ent, velocity)
+    if self.PhysicsPropImpactClosingVelocity == false then return true end
+    if not IsValid(ent) then return false end
+
+    local toMob = self:WorldSpaceCenter() - ent:WorldSpaceCenter()
+    if toMob:LengthSqr() <= 1 then return true end
+
+    toMob:Normalize()
+    return velocity:Dot(toMob) > 0
 end
 
 function ENT:HandlePhysicsImpact(ent)
@@ -4602,6 +4656,10 @@ function ENT:HandlePhysicsImpact(ent)
     local velocity = phys:GetVelocity()
     local speed = velocity:Length()
     local mass = phys:GetMass()
+    local heldDamageScale = self:IsBMBPhysicsImpactHeld(ent) and self:GetBMBPhysicsPropHeldDamageScale() or 1
+
+    if heldDamageScale <= 0 then return false end
+    if not self:IsBMBPhysicsImpactClosing(ent, velocity) then return false end
 
     if speed < self:GetBMBPhysicsImpactMinSpeed() then return false end
 
@@ -4615,7 +4673,7 @@ function ENT:HandlePhysicsImpact(ent)
         (momentum - minMomentum) * self:GetBMBPhysicsImpactMomentumScale(),
         1,
         self:GetBMBPhysicsImpactMaxDamage()
-    )
+    ) * heldDamageScale
 
     local damage = DamageInfo()
     damage:SetAttacker(IsValid(ent:GetOwner()) and ent:GetOwner() or ent)
@@ -4644,8 +4702,24 @@ end
 
 function ENT:ReactToPhysicsImpact(ent, phys, velocity, killed)
     local damping = killed and self.PhysicsPropKillDamping or self.PhysicsPropImpactDamping
+    local normal = self:WorldSpaceCenter() - ent:WorldSpaceCenter()
+    if normal:LengthSqr() <= 1 then
+        phys:SetVelocity(velocity * damping)
+        return
+    end
 
-    phys:SetVelocity(velocity * damping)
+    normal:Normalize()
+
+    local closingSpeed = math.max(0, velocity:Dot(normal))
+    local reflected = velocity - normal * (2 * closingSpeed)
+    local bounceSpeed = math.max(0, self.PhysicsPropImpactBounceSpeed or 0)
+    local bounceVelocity = reflected * damping - normal * math.min(bounceSpeed, closingSpeed)
+
+    phys:SetVelocity(bounceVelocity)
+
+    if ent.EmitSound then
+        ent:EmitSound("physics/body/body_medium_impact_hard" .. math.random(1, 6) .. ".wav", 66, math.random(94, 106), 0.55)
+    end
 end
 
 function ENT:OnContact(ent)
