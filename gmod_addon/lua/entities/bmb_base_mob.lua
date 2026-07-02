@@ -181,8 +181,8 @@ ENT.BlockHopLaunchGroundProbeDown = 8
 ENT.BlockHopLaunchGroundNormal = 0.65
 -- 重试间隔必须 < MoveNoProgressGrace(0.35)：落地贴墙期间 watchdog 在计时，
 -- 重跳要赶在它把路径判死之前
-ENT.BlockHopPostKnockbackSuppressDuration = 1.0
-ENT.BlockHopPostKnockbackSuppressMoveDistanceScale = 0.7
+ENT.BlockHopPostKnockbackSuppressDuration = 1.25
+ENT.BlockHopPostKnockbackSuppressMoveDistanceScale = 1.25
 ENT.BlockHopRetryDelay = 0.25
 ENT.BlockHopMaxAttempts = 3
 ENT.MaxPathDropCells = 3
@@ -464,6 +464,7 @@ function ENT:BaseInitialize()
     self.BMBBlockHopSuppressUntil = 0
     self.BMBBlockHopSuppressOrigin = nil
     self.BMBKnockbackSuppressHopOnLand = false
+    self.BMBKnockbackSuppressHopSawAir = false
     self.NextPhysicsImpactCheck = CurTime() + math.Rand(0, self.PhysicsImpactInterval or 0.3)
     self.PhysicsImpactTimes = {}
 
@@ -1718,6 +1719,7 @@ function ENT:ArmBMBKnockbackHopSuppress(_reason)
     if not self.BMBKnockbackSuppressHopOnLand then return false end
 
     self.BMBKnockbackSuppressHopOnLand = false
+    self.BMBKnockbackSuppressHopSawAir = false
     self.BMBBlockHopSuppressUntil = CurTime() + (self.BlockHopPostKnockbackSuppressDuration or 1.0)
     self.BMBBlockHopSuppressOrigin = self:GetPos()
     return true
@@ -1725,8 +1727,13 @@ end
 
 function ENT:MaintainBMBKnockbackHopSuppressFallback()
     if not self.BMBKnockbackSuppressHopOnLand then return false end
+    if not self:IsBMBOnGround() then
+        self.BMBKnockbackSuppressHopSawAir = true
+        return false
+    end
+
     if self:IsBMBKnockbackActive() then return false end
-    if not self:IsBMBOnGround() then return false end
+    if not self.BMBKnockbackSuppressHopSawAir then return false end
 
     return self:ArmBMBKnockbackHopSuppress("think_grounded")
 end
@@ -1916,7 +1923,11 @@ function ENT:StartBMBKnockback(damageInfo)
     local now = CurTime()
     local currentVelocity = self:GetVelocity()
     local verticalSpeed = self:GetBMBKnockbackVerticalVelocity(currentVelocity)
-    self.BMBKnockbackSuppressHopOnLand = self.BMBKnockbackSuppressHopOnLand or verticalSpeed > currentVelocity.z + 8
+    local shouldSuppressHopOnLand = verticalSpeed > currentVelocity.z + 8
+    self.BMBKnockbackSuppressHopOnLand = self.BMBKnockbackSuppressHopOnLand or shouldSuppressHopOnLand
+    if shouldSuppressHopOnLand and not self.BMBKnockbackSuppressHopSawAir then
+        self.BMBKnockbackSuppressHopSawAir = not self:IsBMBOnGround()
+    end
 
     self.BMBKnockbackStartedAt = now
     self.BMBKnockbackUntil = now + (self.KnockbackDuration or 0.12)
